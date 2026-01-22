@@ -1,0 +1,16 @@
+[package]
+name = "kalla-recipe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Match Recipe schema and transpiler for Kalla"
+
+[dependencies]
+kalla-core.workspace = true
+datafusion.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+jsonschema = "0.26"

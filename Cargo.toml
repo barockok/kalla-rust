@@ -1,0 +1,61 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kalla-core",
+    "crates/kalla-connectors",
+    "crates/kalla-recipe",
+    "crates/kalla-evidence",
+    "crates/kalla-ai",
+    "crates/kalla-cli",
+    "kalla-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/your-org/kalla"
+
+[workspace.dependencies]
+# DataFusion ecosystem
+datafusion = "44"
+arrow = "53"
+parquet = { version = "53", features = ["async"] }
+
+# Database connectivity
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "tls-rustls"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Web framework
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+anyhow = "1"
+
+# Logging/tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Internal crates
+kalla-core = { path = "crates/kalla-core" }
+kalla-connectors = { path = "crates/kalla-connectors" }
+kalla-recipe = { path = "crates/kalla-recipe" }
+kalla-evidence = { path = "crates/kalla-evidence" }
+kalla-ai = { path = "crates/kalla-ai" }

@@ -1,0 +1,41 @@
+{
+  "version": "1.0",
+  "recipe_id": "invoice-payment-match",
+  "sources": {
+    "left": {
+      "alias": "invoices",
+      "uri": "file://testdata/invoices.csv",
+      "primary_key": ["invoice_id"]
+    },
+    "right": {
+      "alias": "payments",
+      "uri": "file://testdata/payments.csv",
+      "primary_key": ["payment_id"]
+    }
+  },
+  "match_rules": [
+    {
+      "name": "id_and_amount_match",
+      "pattern": "1:1",
+      "conditions": [
+        {
+          "left": "invoice_id",
+          "op": "eq",
+          "right": "payment_ref"
+        },
+        {
+          "left": "amount",
+          "op": "tolerance",
+          "right": "paid_amount",
+          "threshold": 0.02
+        }
+      ],
+      "priority": 1
+    }
+  ],
+  "output": {
+    "matched": "matched.parquet",
+    "unmatched_left": "unmatched_invoices.parquet",
+    "unmatched_right": "unmatched_payments.parquet"
+  }
+}

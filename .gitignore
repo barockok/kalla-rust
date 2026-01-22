@@ -1,0 +1,32 @@
+# Generated files
+/target/
+Cargo.lock
+
+# Evidence store
+/evidence/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Environment
+.env
+.env.local
+
+# Test data (keep sample data, ignore generated)
+*.generated.csv
+*.generated.parquet
+
+# Node.js (for web UI)
+node_modules/
+.next/
+.turbo/
+dist/
+
+# Logs
+*.log
