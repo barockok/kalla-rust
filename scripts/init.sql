@@ -224,7 +224,7 @@ INSERT INTO recipes (recipe_id, name, description, config) VALUES
       "pattern": "1:N",
       "conditions": [
         {"left": "customer_id", "op": "eq", "right": "payer_id"},
-        {"left": "invoice_id", "op": "startsWith", "right": "reference_number"}
+        {"left": "invoice_id", "op": "startswith", "right": "reference_number"}
       ],
       "priority": 3
     }

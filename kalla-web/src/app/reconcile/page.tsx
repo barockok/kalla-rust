@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -15,23 +15,71 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Wand2, Play, Edit, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
-import { MatchRecipe, generateRecipe, validateRecipe, createRun } from "@/lib/api";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Wand2, Play, Edit, CheckCircle, AlertCircle, Loader2, FileText } from "lucide-react";
+import { MatchRecipe, SavedRecipe, generateRecipe, validateRecipe, createRun, listRecipes } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 type Step = "input" | "review" | "running" | "complete";
+type Mode = "existing" | "new";
 
 export default function ReconcilePage() {
   const router = useRouter();
   const [step, setStep] = useState<Step>("input");
+  const [mode, setMode] = useState<Mode>("existing");
+
+  // Existing recipe selection state
+  const [savedRecipes, setSavedRecipes] = useState<SavedRecipe[]>([]);
+  const [selectedRecipeId, setSelectedRecipeId] = useState<string>("");
+  const [loadingRecipes, setLoadingRecipes] = useState(true);
+
+  // New recipe generation state
   const [leftSource, setLeftSource] = useState("");
   const [rightSource, setRightSource] = useState("");
   const [prompt, setPrompt] = useState("");
+
+  // Common state
   const [recipe, setRecipe] = useState<MatchRecipe | null>(null);
   const [recipeJson, setRecipeJson] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
+
+  // Fetch saved recipes on mount
+  useEffect(() => {
+    async function fetchRecipes() {
+      try {
+        const recipes = await listRecipes();
+        setSavedRecipes(recipes);
+        if (recipes.length === 0) {
+          setMode("new");
+        }
+      } catch (err) {
+        console.error("Failed to fetch recipes:", err);
+      } finally {
+        setLoadingRecipes(false);
+      }
+    }
+    fetchRecipes();
+  }, []);
+
+  const handleSelectRecipe = () => {
+    if (!selectedRecipeId) {
+      setError("Please select a recipe");
+      return;
+    }
+
+    const selected = savedRecipes.find((r) => r.recipe_id === selectedRecipeId);
+    if (!selected) {
+      setError("Recipe not found");
+      return;
+    }
+
+    setRecipe(selected.config);
+    setRecipeJson(JSON.stringify(selected.config, null, 2));
+    setError(null);
+    setStep("review");
+  };
 
   const handleGenerate = async () => {
     if (!leftSource || !rightSource || !prompt) {
@@ -98,12 +146,26 @@ export default function ReconcilePage() {
     }
   };
 
+  const handleReset = () => {
+    setStep("input");
+    setRecipe(null);
+    setRecipeJson("");
+    setRunId(null);
+    setSelectedRecipeId("");
+    setLeftSource("");
+    setRightSource("");
+    setPrompt("");
+    setError(null);
+  };
+
+  const selectedRecipe = savedRecipes.find((r) => r.recipe_id === selectedRecipeId);
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">New Reconciliation</h1>
         <p className="text-muted-foreground mt-2">
-          Describe your reconciliation in natural language
+          Use an existing recipe or create a new one
         </p>
       </div>
 
@@ -143,68 +205,143 @@ export default function ReconcilePage() {
       {step === "input" && (
         <Card>
           <CardHeader>
-            <CardTitle>Describe Your Reconciliation</CardTitle>
+            <CardTitle>Select Recipe</CardTitle>
             <CardDescription>
-              Select your data sources and describe how they should be matched
+              Choose an existing recipe or create a new one with AI
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="left">Left Source (alias)</Label>
-                <Input
-                  id="left"
-                  placeholder="e.g., invoices"
-                  value={leftSource}
-                  onChange={(e) => setLeftSource(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  The alias of your registered left data source
-                </p>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="right">Right Source (alias)</Label>
-                <Input
-                  id="right"
-                  placeholder="e.g., payments"
-                  value={rightSource}
-                  onChange={(e) => setRightSource(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  The alias of your registered right data source
-                </p>
-              </div>
-            </div>
+          <CardContent>
+            <Tabs value={mode} onValueChange={(v) => setMode(v as Mode)}>
+              <TabsList className="grid w-full grid-cols-2 mb-6">
+                <TabsTrigger value="existing" disabled={loadingRecipes || savedRecipes.length === 0}>
+                  <FileText className="mr-2 h-4 w-4" />
+                  Use Existing Recipe
+                </TabsTrigger>
+                <TabsTrigger value="new">
+                  <Wand2 className="mr-2 h-4 w-4" />
+                  Create New Recipe
+                </TabsTrigger>
+              </TabsList>
 
-            <div className="space-y-2">
-              <Label htmlFor="prompt">Matching Instructions</Label>
-              <Textarea
-                id="prompt"
-                placeholder="Describe how records should be matched. For example:&#10;&#10;Match invoices to payments by invoice_id = payment_ref, allowing a 1 cent tolerance on the amount field."
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                rows={5}
-              />
-              <p className="text-xs text-muted-foreground">
-                Use natural language to describe the matching logic. The AI will generate a recipe for your approval.
-              </p>
-            </div>
-
-            <div className="flex gap-4">
-              <Button onClick={handleGenerate} disabled={loading}>
-                {loading ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Generating...
-                  </>
+              {/* Use Existing Recipe Tab */}
+              <TabsContent value="existing" className="space-y-6">
+                {loadingRecipes ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="h-6 w-6 animate-spin mr-2" />
+                    Loading recipes...
+                  </div>
+                ) : savedRecipes.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <p>No saved recipes found.</p>
+                    <p className="text-sm mt-2">Create a new recipe to get started.</p>
+                  </div>
                 ) : (
                   <>
-                    <Wand2 className="mr-2 h-4 w-4" />
-                    Generate Recipe
+                    <div className="space-y-2">
+                      <Label htmlFor="recipe-select">Select Recipe</Label>
+                      <Select value={selectedRecipeId} onValueChange={setSelectedRecipeId}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Choose a saved recipe..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {savedRecipes.map((r) => (
+                            <SelectItem key={r.recipe_id} value={r.recipe_id}>
+                              {r.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {selectedRecipe && (
+                      <div className="p-4 rounded-lg border bg-muted/50">
+                        <h4 className="font-medium mb-2">{selectedRecipe.name}</h4>
+                        {selectedRecipe.description && (
+                          <p className="text-sm text-muted-foreground mb-3">
+                            {selectedRecipe.description}
+                          </p>
+                        )}
+                        <div className="flex gap-2">
+                          <Badge variant="outline">
+                            {selectedRecipe.config.sources.left.alias}
+                          </Badge>
+                          <span className="text-muted-foreground">↔</span>
+                          <Badge variant="outline">
+                            {selectedRecipe.config.sources.right.alias}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-2">
+                          {selectedRecipe.config.match_rules.length} match rule(s)
+                        </p>
+                      </div>
+                    )}
+
+                    <Button onClick={handleSelectRecipe} disabled={!selectedRecipeId}>
+                      <Play className="mr-2 h-4 w-4" />
+                      Continue with Selected Recipe
+                    </Button>
                   </>
                 )}
-              </Button>
-            </div>
+              </TabsContent>
+
+              {/* Create New Recipe Tab */}
+              <TabsContent value="new" className="space-y-6">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="left">Left Source (alias)</Label>
+                    <Input
+                      id="left"
+                      placeholder="e.g., invoices"
+                      value={leftSource}
+                      onChange={(e) => setLeftSource(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      The alias of your registered left data source
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="right">Right Source (alias)</Label>
+                    <Input
+                      id="right"
+                      placeholder="e.g., payments"
+                      value={rightSource}
+                      onChange={(e) => setRightSource(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      The alias of your registered right data source
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="prompt">Matching Instructions</Label>
+                  <Textarea
+                    id="prompt"
+                    placeholder="Describe how records should be matched. For example:&#10;&#10;Match invoices to payments by invoice_id = payment_ref, allowing a 1 cent tolerance on the amount field."
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    rows={5}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Use natural language to describe the matching logic. The AI will generate a recipe for your approval.
+                  </p>
+                </div>
+
+                <Button onClick={handleGenerate} disabled={loading}>
+                  {loading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Generating...
+                    </>
+                  ) : (
+                    <>
+                      <Wand2 className="mr-2 h-4 w-4" />
+                      Generate Recipe
+                    </>
+                  )}
+                </Button>
+              </TabsContent>
+            </Tabs>
           </CardContent>
         </Card>
       )}
@@ -215,7 +352,7 @@ export default function ReconcilePage() {
           <Card>
             <CardHeader>
               <CardTitle>Recipe Summary</CardTitle>
-              <CardDescription>Review the generated matching rules</CardDescription>
+              <CardDescription>Review the matching rules before running</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div>
@@ -311,12 +448,7 @@ export default function ReconcilePage() {
               <Button onClick={handleViewRun}>
                 View Results
               </Button>
-              <Button variant="outline" onClick={() => {
-                setStep("input");
-                setRecipe(null);
-                setRecipeJson("");
-                setRunId(null);
-              }}>
+              <Button variant="outline" onClick={handleReset}>
                 New Reconciliation
               </Button>
             </div>

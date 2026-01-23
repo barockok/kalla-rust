@@ -97,6 +97,53 @@ export async function registerSource(alias: string, uri: string): Promise<{ succ
   return res.json();
 }
 
+// Saved recipe from database
+export interface SavedRecipe {
+  recipe_id: string;
+  name: string;
+  description: string | null;
+  config: MatchRecipe;
+}
+
+export async function listRecipes(): Promise<SavedRecipe[]> {
+  const res = await fetch(`${API_BASE}/api/recipes`);
+  if (!res.ok) {
+    throw new Error("Failed to fetch recipes");
+  }
+  return res.json();
+}
+
+export async function getRecipe(id: string): Promise<SavedRecipe> {
+  const res = await fetch(`${API_BASE}/api/recipes/${id}`);
+  if (!res.ok) {
+    throw new Error("Recipe not found");
+  }
+  return res.json();
+}
+
+export async function saveRecipe(
+  recipeId: string,
+  name: string,
+  description: string | null,
+  config: MatchRecipe
+): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`${API_BASE}/api/recipes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      recipe_id: recipeId,
+      name,
+      description,
+      config,
+    }),
+  });
+  if (!res.ok) {
+    const error = await res.text();
+    throw new Error(error);
+  }
+  return res.json();
+}
+
 export async function validateRecipe(recipe: MatchRecipe): Promise<{ valid: boolean; errors: string[] }> {
   const res = await fetch(`${API_BASE}/api/recipes/validate`, {
     method: "POST",

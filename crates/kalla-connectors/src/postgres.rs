@@ -103,8 +103,8 @@ fn pg_type_to_arrow(pg_type: &str) -> DataType {
         "BOOL" | "BOOLEAN" => DataType::Boolean,
         "TEXT" | "VARCHAR" | "CHAR" | "BPCHAR" | "NAME" => DataType::Utf8,
         "BYTEA" => DataType::Binary,
-        "DATE" => DataType::Date32,
-        "TIMESTAMP" | "TIMESTAMPTZ" => DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None),
+        // Store dates and timestamps as strings for simplicity
+        "DATE" | "TIMESTAMP" | "TIMESTAMPTZ" => DataType::Utf8,
         "UUID" => DataType::Utf8, // Store as string
         _ => {
             debug!("Unknown PostgreSQL type '{}', defaulting to Utf8", pg_type);

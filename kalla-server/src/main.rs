@@ -17,9 +17,10 @@ use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 use uuid::Uuid;
 
+use kalla_connectors::PostgresConnector;
 use kalla_core::ReconciliationEngine;
-use kalla_evidence::{EvidenceStore, RunMetadata};
-use kalla_recipe::MatchRecipe;
+use kalla_evidence::{EvidenceStore, MatchedRecord, RunMetadata, UnmatchedRecord};
+use kalla_recipe::{MatchRecipe, Transpiler};
 
 /// Registered data source info
 #[derive(Clone, Serialize, FromRow)]
@@ -30,13 +31,272 @@ struct RegisteredSource {
     status: String,
 }
 
+/// Saved recipe from database
+#[derive(Clone, Serialize, FromRow)]
+struct SavedRecipe {
+    recipe_id: String,
+    name: String,
+    description: Option<String>,
+    config: serde_json::Value,
+}
+
 /// Application state shared across handlers
 struct AppState {
     engine: RwLock<ReconciliationEngine>,
     evidence_store: EvidenceStore,
     runs: RwLock<Vec<RunMetadata>>,
     sources: RwLock<Vec<RegisteredSource>>,
+    recipes: RwLock<Vec<SavedRecipe>>,
     db_pool: Option<PgPool>,
+}
+
+/// Parse a PostgreSQL URI to extract connection string and table name
+/// Example: `postgres://user:pass@host:port/db?table=tablename`
+/// Returns: (connection_string, table_name)
+fn parse_postgres_uri(uri: &str) -> Result<(String, String), String> {
+    // Parse the URI
+    let url = url::Url::parse(uri).map_err(|e| format!("Invalid URI: {}", e))?;
+
+    // Extract the table name from query parameters
+    let table_name = url
+        .query_pairs()
+        .find(|(k, _)| k == "table")
+        .map(|(_, v)| v.to_string())
+        .ok_or("Missing 'table' query parameter in URI")?;
+
+    // Build the connection string without the table parameter
+    let mut connection_url = url.clone();
+    connection_url.set_query(None);
+
+    Ok((connection_url.to_string(), table_name))
+}
+
+/// Extract a string value from a record batch column at the given row index
+fn extract_string_value(batch: &arrow::array::RecordBatch, column_name: &str, row_idx: usize) -> Option<String> {
+    let col_idx = batch.schema().index_of(column_name).ok()?;
+    let col = batch.column(col_idx);
+
+    // Try to extract as string array
+    if let Some(arr) = col.as_any().downcast_ref::<arrow::array::StringArray>() {
+        return Some(arr.value(row_idx).to_string());
+    }
+
+    // Try other common types and convert to string
+    if let Some(arr) = col.as_any().downcast_ref::<arrow::array::Int32Array>() {
+        return Some(arr.value(row_idx).to_string());
+    }
+    if let Some(arr) = col.as_any().downcast_ref::<arrow::array::Int64Array>() {
+        return Some(arr.value(row_idx).to_string());
+    }
+    if let Some(arr) = col.as_any().downcast_ref::<arrow::array::Float64Array>() {
+        return Some(arr.value(row_idx).to_string());
+    }
+
+    None
+}
+
+/// Execute the reconciliation process in the background
+async fn execute_reconciliation(
+    state: Arc<AppState>,
+    run_id: Uuid,
+    recipe: MatchRecipe,
+) -> Result<(), String> {
+    info!("Starting reconciliation execution for run {}", run_id);
+
+    // Parse source URIs
+    let (left_conn, left_table) = parse_postgres_uri(&recipe.sources.left.uri)?;
+    let (_right_conn, right_table) = parse_postgres_uri(&recipe.sources.right.uri)?;
+
+    // Create a new engine for this reconciliation
+    let engine = ReconciliationEngine::new();
+
+    // Connect to PostgreSQL and register tables
+    let connector = PostgresConnector::new(&left_conn)
+        .await
+        .map_err(|e| format!("Failed to connect to database: {}", e))?;
+
+    connector
+        .register_table(engine.context(), &recipe.sources.left.alias, &left_table, None)
+        .await
+        .map_err(|e| format!("Failed to register left table: {}", e))?;
+
+    connector
+        .register_table(engine.context(), &recipe.sources.right.alias, &right_table, None)
+        .await
+        .map_err(|e| format!("Failed to register right table: {}", e))?;
+
+    // Get source record counts
+    let left_count_df = engine
+        .sql(&format!("SELECT COUNT(*) as cnt FROM {}", recipe.sources.left.alias))
+        .await
+        .map_err(|e| format!("Failed to count left records: {}", e))?;
+    let left_count: u64 = left_count_df
+        .collect()
+        .await
+        .map_err(|e| format!("Failed to collect left count: {}", e))?
+        .first()
+        .and_then(|b| b.column(0).as_any().downcast_ref::<arrow::array::Int64Array>())
+        .and_then(|a| a.value(0).try_into().ok())
+        .unwrap_or(0);
+
+    let right_count_df = engine
+        .sql(&format!("SELECT COUNT(*) as cnt FROM {}", recipe.sources.right.alias))
+        .await
+        .map_err(|e| format!("Failed to count right records: {}", e))?;
+    let right_count: u64 = right_count_df
+        .collect()
+        .await
+        .map_err(|e| format!("Failed to collect right count: {}", e))?
+        .first()
+        .and_then(|b| b.column(0).as_any().downcast_ref::<arrow::array::Int64Array>())
+        .and_then(|a| a.value(0).try_into().ok())
+        .unwrap_or(0);
+
+    info!("Left source has {} records, right source has {} records", left_count, right_count);
+
+    // Transpile the recipe to SQL queries
+    let transpiled = Transpiler::transpile(&recipe)
+        .map_err(|e| format!("Failed to transpile recipe: {}", e))?;
+
+    // Execute match queries and collect results
+    let mut total_matched: u64 = 0;
+    let mut matched_records: Vec<MatchedRecord> = Vec::new();
+
+    for rule in &transpiled.match_queries {
+        info!("Executing match rule: {} with query: {}", rule.name, rule.query);
+
+        match engine.sql(&rule.query).await {
+            Ok(df) => {
+                let batches = df.collect().await.map_err(|e| format!("Failed to collect match results: {}", e))?;
+                let count: u64 = batches.iter().map(|b| b.num_rows() as u64).sum();
+                info!("Rule '{}' matched {} records", rule.name, count);
+
+                // Create matched record entries
+                for batch in &batches {
+                    // Get primary key column names
+                    let left_pk_col = recipe.sources.left.primary_key
+                        .as_ref()
+                        .and_then(|v| v.first())
+                        .map(|s| s.as_str())
+                        .unwrap_or("id");
+                    let right_pk_col = recipe.sources.right.primary_key
+                        .as_ref()
+                        .and_then(|v| v.first())
+                        .map(|s| s.as_str())
+                        .unwrap_or("id");
+
+                    for row_idx in 0..batch.num_rows() {
+                        // Extract keys from columns if available, otherwise use row index
+                        let left_key = extract_string_value(batch, left_pk_col, row_idx)
+                            .unwrap_or_else(|| format!("row_{}", row_idx));
+                        let right_key = extract_string_value(batch, right_pk_col, row_idx)
+                            .unwrap_or_else(|| format!("row_{}", row_idx));
+                        matched_records.push(MatchedRecord::new(
+                            left_key,
+                            right_key,
+                            rule.name.clone(),
+                            1.0,
+                        ));
+                    }
+                }
+
+                total_matched += count;
+            }
+            Err(e) => {
+                warn!("Failed to execute match rule '{}': {}", rule.name, e);
+            }
+        }
+    }
+
+    // Execute orphan detection queries
+    let mut unmatched_left: u64 = 0;
+    let mut unmatched_right: u64 = 0;
+    let mut left_orphan_records: Vec<UnmatchedRecord> = Vec::new();
+    let mut right_orphan_records: Vec<UnmatchedRecord> = Vec::new();
+
+    if let Some(ref query) = transpiled.left_orphan_query {
+        info!("Executing left orphan query: {}", query);
+        match engine.sql(query).await {
+            Ok(df) => {
+                let batches = df.collect().await.map_err(|e| format!("Failed to collect left orphans: {}", e))?;
+                unmatched_left = batches.iter().map(|b| b.num_rows() as u64).sum();
+                info!("Found {} unmatched left records", unmatched_left);
+
+                for batch in &batches {
+                    for row_idx in 0..batch.num_rows() {
+                        left_orphan_records.push(UnmatchedRecord {
+                            record_key: format!("left_row_{}", row_idx),
+                            attempted_rules: transpiled.match_queries.iter().map(|r| r.name.clone()).collect(),
+                            closest_candidate: None,
+                            rejection_reason: "No matching record found".to_string(),
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to execute left orphan query: {}", e);
+            }
+        }
+    }
+
+    if let Some(ref query) = transpiled.right_orphan_query {
+        info!("Executing right orphan query: {}", query);
+        match engine.sql(query).await {
+            Ok(df) => {
+                let batches = df.collect().await.map_err(|e| format!("Failed to collect right orphans: {}", e))?;
+                unmatched_right = batches.iter().map(|b| b.num_rows() as u64).sum();
+                info!("Found {} unmatched right records", unmatched_right);
+
+                for batch in &batches {
+                    for row_idx in 0..batch.num_rows() {
+                        right_orphan_records.push(UnmatchedRecord {
+                            record_key: format!("right_row_{}", row_idx),
+                            attempted_rules: transpiled.match_queries.iter().map(|r| r.name.clone()).collect(),
+                            closest_candidate: None,
+                            rejection_reason: "No matching record found".to_string(),
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to execute right orphan query: {}", e);
+            }
+        }
+    }
+
+    // Update run metadata
+    {
+        let mut runs = state.runs.write().await;
+        if let Some(run) = runs.iter_mut().find(|r| r.run_id == run_id) {
+            run.left_record_count = left_count;
+            run.right_record_count = right_count;
+            run.matched_count = total_matched;
+            run.unmatched_left_count = unmatched_left;
+            run.unmatched_right_count = unmatched_right;
+            run.complete();
+
+            // Update evidence store metadata
+            let _ = state.evidence_store.update_metadata(run);
+        }
+    }
+
+    // Write evidence files
+    if !matched_records.is_empty() {
+        let _ = state.evidence_store.write_matched(&run_id, &matched_records);
+    }
+    if !left_orphan_records.is_empty() {
+        let _ = state.evidence_store.write_unmatched(&run_id, &left_orphan_records, "left");
+    }
+    if !right_orphan_records.is_empty() {
+        let _ = state.evidence_store.write_unmatched(&run_id, &right_orphan_records, "right");
+    }
+
+    info!(
+        "Reconciliation complete for run {}. Matched: {}, Unmatched Left: {}, Unmatched Right: {}",
+        run_id, total_matched, unmatched_left, unmatched_right
+    );
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -47,9 +307,9 @@ async fn main() -> anyhow::Result<()> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
-    // Connect to database and load sources
+    // Connect to database and load sources/recipes
     let database_url = std::env::var("DATABASE_URL").ok();
-    let (db_pool, initial_sources) = if let Some(url) = database_url {
+    let (db_pool, initial_sources, initial_recipes) = if let Some(url) = database_url {
         match PgPoolOptions::new()
             .max_connections(5)
             .connect(&url)
@@ -68,16 +328,29 @@ async fn main() -> anyhow::Result<()> {
                     Vec::new()
                 });
                 info!("Loaded {} sources from database", sources.len());
-                (Some(pool), sources)
+
+                // Load recipes from database
+                let recipes: Vec<SavedRecipe> = sqlx::query_as(
+                    "SELECT recipe_id, name, description, config FROM recipes"
+                )
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!("Failed to load recipes from database: {}", e);
+                    Vec::new()
+                });
+                info!("Loaded {} recipes from database", recipes.len());
+
+                (Some(pool), sources, recipes)
             }
             Err(e) => {
                 warn!("Failed to connect to database: {}. Running without persistence.", e);
-                (None, Vec::new())
+                (None, Vec::new(), Vec::new())
             }
         }
     } else {
         info!("DATABASE_URL not set. Running without persistence.");
-        (None, Vec::new())
+        (None, Vec::new(), Vec::new())
     };
 
     // Initialize state
@@ -87,6 +360,7 @@ async fn main() -> anyhow::Result<()> {
         evidence_store,
         runs: RwLock::new(Vec::new()),
         sources: RwLock::new(initial_sources),
+        recipes: RwLock::new(initial_recipes),
         db_pool,
     });
 
@@ -94,8 +368,10 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/api/sources", get(list_sources).post(register_source))
+        .route("/api/recipes", get(list_recipes).post(save_recipe))
         .route("/api/recipes/validate", post(validate_recipe))
         .route("/api/recipes/generate", post(generate_recipe))
+        .route("/api/recipes/:id", get(get_recipe))
         .route("/api/runs", post(create_run))
         .route("/api/runs", get(list_runs))
         .route("/api/runs/:id", get(get_run))
@@ -201,6 +477,90 @@ async fn register_source(
 }
 
 // === Recipe Endpoints ===
+
+async fn list_recipes(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<SavedRecipe>> {
+    let recipes = state.recipes.read().await;
+    Json(recipes.clone())
+}
+
+async fn get_recipe(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<SavedRecipe>, (StatusCode, String)> {
+    let recipes = state.recipes.read().await;
+
+    recipes
+        .iter()
+        .find(|r| r.recipe_id == id)
+        .cloned()
+        .map(Json)
+        .ok_or((StatusCode::NOT_FOUND, "Recipe not found".to_string()))
+}
+
+#[derive(Deserialize)]
+struct SaveRecipeRequest {
+    recipe_id: String,
+    name: String,
+    description: Option<String>,
+    config: MatchRecipe,
+}
+
+#[derive(Serialize)]
+struct SaveRecipeResponse {
+    success: bool,
+    message: String,
+}
+
+async fn save_recipe(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SaveRecipeRequest>,
+) -> Result<Json<SaveRecipeResponse>, (StatusCode, String)> {
+    // Validate the recipe config
+    if let Err(errors) = kalla_recipe::validate_recipe(&req.config) {
+        let error_msg = errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ");
+        return Err((StatusCode::BAD_REQUEST, format!("Invalid recipe: {}", error_msg)));
+    }
+
+    let config_json = serde_json::to_value(&req.config)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let saved = SavedRecipe {
+        recipe_id: req.recipe_id.clone(),
+        name: req.name.clone(),
+        description: req.description.clone(),
+        config: config_json.clone(),
+    };
+
+    // Save to database if available
+    if let Some(pool) = &state.db_pool {
+        sqlx::query(
+            "INSERT INTO recipes (recipe_id, name, description, config) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (recipe_id) DO UPDATE SET name = $2, description = $3, config = $4, updated_at = NOW()"
+        )
+        .bind(&req.recipe_id)
+        .bind(&req.name)
+        .bind(&req.description)
+        .bind(&config_json)
+        .execute(pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    // Update in-memory state
+    let mut recipes = state.recipes.write().await;
+    if let Some(existing) = recipes.iter_mut().find(|r| r.recipe_id == req.recipe_id) {
+        *existing = saved;
+    } else {
+        recipes.push(saved);
+    }
+
+    Ok(Json(SaveRecipeResponse {
+        success: true,
+        message: format!("Recipe '{}' saved successfully", req.recipe_id),
+    }))
+}
 
 #[derive(Serialize)]
 struct ValidateRecipeResponse {
@@ -324,13 +684,28 @@ async fn create_run(
     // Store run metadata
     state.runs.write().await.push(metadata);
 
-    // In a real implementation, we'd spawn a background task to run the reconciliation
-    // For now, just return the run ID
     info!("Created run {}", run_id);
+
+    // Spawn background task to execute reconciliation
+    let state_clone = state.clone();
+    let recipe_clone = req.recipe.clone();
+    let run_id_clone = run_id;
+
+    tokio::spawn(async move {
+        if let Err(e) = execute_reconciliation(state_clone.clone(), run_id_clone, recipe_clone).await {
+            warn!("Reconciliation failed for run {}: {}", run_id_clone, e);
+            // Update run status to failed
+            let mut runs = state_clone.runs.write().await;
+            if let Some(run) = runs.iter_mut().find(|r| r.run_id == run_id_clone) {
+                run.fail();
+                let _ = state_clone.evidence_store.update_metadata(run);
+            }
+        }
+    });
 
     Ok(Json(CreateRunResponse {
         run_id,
-        status: "created".to_string(),
+        status: "running".to_string(),
     }))
 }
 

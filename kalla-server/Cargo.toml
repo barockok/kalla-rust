@@ -27,3 +27,8 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 sqlx.workspace = true
+url.workspace = true
+arrow.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
