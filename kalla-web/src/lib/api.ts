@@ -69,6 +69,21 @@ export async function healthCheck(): Promise<string> {
   return res.text();
 }
 
+export interface RegisteredSource {
+  alias: string;
+  uri: string;
+  source_type: string;
+  status: string;
+}
+
+export async function listSources(): Promise<RegisteredSource[]> {
+  const res = await fetch(`${API_BASE}/api/sources`);
+  if (!res.ok) {
+    throw new Error("Failed to fetch sources");
+  }
+  return res.json();
+}
+
 export async function registerSource(alias: string, uri: string): Promise<{ success: boolean; message: string }> {
   const res = await fetch(`${API_BASE}/api/sources`, {
     method: "POST",

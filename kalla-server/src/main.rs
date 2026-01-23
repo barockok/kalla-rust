@@ -7,11 +7,13 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{FromRow, PgPool};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::{info, Level};
+use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 use uuid::Uuid;
 
@@ -19,11 +21,22 @@ use kalla_core::ReconciliationEngine;
 use kalla_evidence::{EvidenceStore, RunMetadata};
 use kalla_recipe::MatchRecipe;
 
+/// Registered data source info
+#[derive(Clone, Serialize, FromRow)]
+struct RegisteredSource {
+    alias: String,
+    uri: String,
+    source_type: String,
+    status: String,
+}
+
 /// Application state shared across handlers
 struct AppState {
     engine: RwLock<ReconciliationEngine>,
     evidence_store: EvidenceStore,
     runs: RwLock<Vec<RunMetadata>>,
+    sources: RwLock<Vec<RegisteredSource>>,
+    db_pool: Option<PgPool>,
 }
 
 #[tokio::main]
@@ -34,18 +47,53 @@ async fn main() -> anyhow::Result<()> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
+    // Connect to database and load sources
+    let database_url = std::env::var("DATABASE_URL").ok();
+    let (db_pool, initial_sources) = if let Some(url) = database_url {
+        match PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&url)
+            .await
+        {
+            Ok(pool) => {
+                info!("Connected to database");
+                // Load sources from database
+                let sources: Vec<RegisteredSource> = sqlx::query_as(
+                    "SELECT alias, uri, source_type, status FROM sources"
+                )
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!("Failed to load sources from database: {}", e);
+                    Vec::new()
+                });
+                info!("Loaded {} sources from database", sources.len());
+                (Some(pool), sources)
+            }
+            Err(e) => {
+                warn!("Failed to connect to database: {}. Running without persistence.", e);
+                (None, Vec::new())
+            }
+        }
+    } else {
+        info!("DATABASE_URL not set. Running without persistence.");
+        (None, Vec::new())
+    };
+
     // Initialize state
     let evidence_store = EvidenceStore::new("./evidence")?;
     let state = Arc::new(AppState {
         engine: RwLock::new(ReconciliationEngine::new()),
         evidence_store,
         runs: RwLock::new(Vec::new()),
+        sources: RwLock::new(initial_sources),
+        db_pool,
     });
 
     // Build router
     let app = Router::new()
         .route("/health", get(health_check))
-        .route("/api/sources", post(register_source))
+        .route("/api/sources", get(list_sources).post(register_source))
         .route("/api/recipes/validate", post(validate_recipe))
         .route("/api/recipes/generate", post(generate_recipe))
         .route("/api/runs", post(create_run))
@@ -82,11 +130,20 @@ struct RegisterSourceResponse {
     message: String,
 }
 
+async fn list_sources(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<RegisteredSource>> {
+    let sources = state.sources.read().await;
+    Json(sources.clone())
+}
+
 async fn register_source(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RegisterSourceRequest>,
 ) -> Result<Json<RegisterSourceResponse>, (StatusCode, String)> {
     let engine = state.engine.read().await;
+
+    let source_type: String;
 
     // Handle file:// URIs
     if req.uri.starts_with("file://") {
@@ -96,17 +153,46 @@ async fn register_source(
                 .register_csv(&req.alias, path)
                 .await
                 .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+            source_type = "csv".to_string();
         } else if path.ends_with(".parquet") {
             engine
                 .register_parquet(&req.alias, path)
                 .await
                 .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+            source_type = "parquet".to_string();
         } else {
             return Err((StatusCode::BAD_REQUEST, "Unsupported file format".to_string()));
         }
+    } else if req.uri.starts_with("postgres://") {
+        // For postgres URIs, we'll store them but actual registration happens during recipe execution
+        source_type = "postgres".to_string();
     } else {
         return Err((StatusCode::BAD_REQUEST, "Unsupported URI scheme".to_string()));
     }
+
+    // Store the registered source
+    let registered = RegisteredSource {
+        alias: req.alias.clone(),
+        uri: req.uri.clone(),
+        source_type: source_type.clone(),
+        status: "connected".to_string(),
+    };
+
+    // Save to database if available
+    if let Some(pool) = &state.db_pool {
+        let _ = sqlx::query(
+            "INSERT INTO sources (alias, uri, source_type, status) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (alias) DO UPDATE SET uri = $2, source_type = $3, status = $4, updated_at = NOW()"
+        )
+        .bind(&req.alias)
+        .bind(&req.uri)
+        .bind(&source_type)
+        .bind("connected")
+        .execute(pool)
+        .await;
+    }
+
+    state.sources.write().await.push(registered);
 
     Ok(Json(RegisterSourceResponse {
         success: true,

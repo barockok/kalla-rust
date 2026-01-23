@@ -1,11 +1,16 @@
-invoice_id,customer_name,amount,invoice_date
-INV001,Acme Corp,1000.00,2024-01-15
-INV002,Beta Inc,2500.50,2024-01-16
-INV003,Gamma LLC,750.25,2024-01-17
-INV004,Delta Co,3200.00,2024-01-18
-INV005,Epsilon Ltd,500.00,2024-01-19
-INV006,Zeta Corp,1800.75,2024-01-20
-INV007,Eta Industries,4500.00,2024-01-21
-INV008,Theta Services,925.30,2024-01-22
-INV009,Iota Tech,1250.00,2024-01-23
-INV010,Kappa Holdings,6000.00,2024-01-24
+invoice_id,customer_id,customer_name,invoice_date,due_date,amount,currency,status,description
+INV-2024-001,CUST-001,Acme Corporation,2024-01-15,2024-02-15,15000.00,USD,pending,Software license Q1 2024
+INV-2024-002,CUST-002,TechStart Inc,2024-01-18,2024-02-18,7500.50,USD,pending,Consulting services January
+INV-2024-003,CUST-003,Global Traders Ltd,2024-01-20,2024-02-20,25000.00,USD,pending,Annual maintenance contract
+INV-2024-004,CUST-001,Acme Corporation,2024-01-25,2024-02-25,3200.00,USD,pending,Additional user licenses
+INV-2024-005,CUST-004,Innovate Solutions,2024-01-28,2024-02-28,12750.00,USD,pending,Custom development Phase 1
+INV-2024-006,CUST-005,DataFlow Systems,2024-02-01,2024-03-01,8500.00,USD,pending,Data integration services
+INV-2024-007,CUST-006,CloudNine Hosting,2024-02-05,2024-03-05,4999.99,USD,pending,Cloud hosting February
+INV-2024-008,CUST-007,Enterprise Holdings,2024-02-08,2024-03-08,50000.00,USD,pending,Enterprise license bundle
+INV-2024-009,CUST-008,StartupXYZ,2024-02-10,2024-03-10,2500.00,USD,pending,Starter package
+INV-2024-010,CUST-009,MegaCorp Industries,2024-02-12,2024-03-12,175000.00,USD,pending,Enterprise deployment
+INV-2024-011,CUST-010,SmallBiz Co,2024-02-15,2024-03-15,850.00,USD,pending,Monthly subscription
+INV-2024-012,CUST-011,FutureTech Labs,2024-02-18,2024-03-18,32000.00,USD,pending,R&D collaboration
+INV-2024-013,CUST-012,Euro Partners GmbH,2024-02-20,2024-03-20,10000.00,EUR,pending,European market expansion
+INV-2024-014,CUST-013,British Solutions Ltd,2024-02-22,2024-03-22,8500.00,GBP,pending,UK market support
+INV-2024-015,CUST-014,QuickPay Corp,2024-01-05,2024-02-05,6000.00,USD,paid,Express service

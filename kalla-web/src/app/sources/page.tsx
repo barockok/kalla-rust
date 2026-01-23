@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,8 +8,8 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Database, FileUp, Plus, Trash2, CheckCircle, AlertCircle } from "lucide-react";
-import { registerSource } from "@/lib/api";
+import { Database, FileUp, Plus, Trash2, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
+import { registerSource, listSources, type RegisteredSource as ApiSource } from "@/lib/api";
 
 interface RegisteredSource {
   alias: string;
@@ -20,6 +20,26 @@ interface RegisteredSource {
 
 export default function SourcesPage() {
   const [sources, setSources] = useState<RegisteredSource[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    async function fetchSources() {
+      try {
+        const data = await listSources();
+        setSources(data.map((s: ApiSource) => ({
+          alias: s.alias,
+          uri: s.uri,
+          type: s.source_type as "csv" | "postgres" | "parquet",
+          status: s.status as "connected" | "error",
+        })));
+      } catch (err) {
+        console.error("Failed to fetch sources:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    fetchSources();
+  }, []);
   const [alias, setAlias] = useState("");
   const [uri, setUri] = useState("");
   const [loading, setLoading] = useState(false);
@@ -174,7 +194,12 @@ export default function SourcesPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {sources.length === 0 ? (
+            {isLoading ? (
+              <div className="text-center py-8 text-muted-foreground">
+                <Loader2 className="h-10 w-10 mx-auto mb-4 animate-spin" />
+                <p>Loading sources...</p>
+              </div>
+            ) : sources.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">
                 <Database className="h-10 w-10 mx-auto mb-4 opacity-50" />
                 <p>No sources registered yet</p>

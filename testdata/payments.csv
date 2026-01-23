@@ -1,11 +1,16 @@
-payment_id,payment_ref,paid_amount,payment_date
-PAY001,INV001,1000.00,2024-01-20
-PAY002,INV002,2500.49,2024-01-21
-PAY003,INV003,750.25,2024-01-22
-PAY004,INV005,500.00,2024-01-24
-PAY005,INV006,1800.76,2024-01-25
-PAY006,INV007,4500.00,2024-01-26
-PAY007,INV009,1250.01,2024-01-28
-PAY008,INV010,6000.00,2024-01-29
-PAY009,INV011,350.00,2024-01-30
-PAY010,INV012,2100.00,2024-01-31
+payment_id,payer_id,payer_name,payment_date,paid_amount,currency,payment_method,reference_number,bank_reference,notes
+PAY-2024-001,CUST-001,Acme Corporation,2024-02-10,15000.00,USD,wire_transfer,INV-2024-001,WT-78234523,Payment for INV-2024-001
+PAY-2024-002,CUST-002,TechStart Inc,2024-02-15,7500.50,USD,ach,INV-2024-002,ACH-92834756,Invoice payment
+PAY-2024-003,CUST-003,Global Traders Ltd,2024-02-18,25000.00,USD,wire_transfer,INV-2024-003,WT-82736455,Annual maintenance
+PAY-2024-004,CUST-001,Acme Corporation,2024-02-20,3200.00,USD,credit_card,INV-2024-004,CC-12983746,Additional licenses
+PAY-2024-005,CUST-004,Innovate Solutions,2024-02-25,12750.00,USD,wire_transfer,INV-2024-005,WT-98273645,Development Phase 1
+PAY-2024-006,CUST-005,DataFlow Systems,2024-02-28,8485.00,USD,wire_transfer,INV-2024-006,WT-72634589,Wire fee deducted
+PAY-2024-007,CUST-006,CloudNine Hosting,2024-03-01,5000.00,USD,ach,INV-2024-007,ACH-83746529,Rounded payment
+PAY-2024-008A,CUST-007,Enterprise Holdings,2024-02-25,25000.00,USD,wire_transfer,INV-2024-008-PART1,WT-19283746,Partial payment 1 of 2
+PAY-2024-008B,CUST-007,Enterprise Holdings,2024-03-05,25000.00,USD,wire_transfer,INV-2024-008-PART2,WT-28374659,Partial payment 2 of 2
+PAY-2024-009,CUST-015,NewClient LLC,2024-02-28,5000.00,USD,wire_transfer,ADVANCE-001,WT-38475962,Advance payment for future work
+PAY-2024-010,CUST-016,Mystery Payer Inc,2024-03-01,1234.56,USD,ach,,ACH-47586930,Unknown reference
+PAY-2024-011,CUST-017,Duplicate Payment Co,2024-03-02,7500.50,USD,wire_transfer,INV-2024-002-DUP,WT-58697041,Possible duplicate
+PAY-2024-012,CUST-018,International Buyer,2024-03-03,15000.00,EUR,wire_transfer,INT-ORDER-001,WT-INTL-001,International payment
+PAY-2024-013,CUST-001,ACME Corp.,2024-03-05,1500.00,USD,check,MISC-001,CHK-001234,Miscellaneous payment
+PAY-2024-014,CUST-014,Quick Pay Corporation,2024-02-01,6000.00,USD,ach,INV-2024-015,ACH-99887766,Early payment

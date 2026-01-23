@@ -1,0 +1,32 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Build artifacts
+target/
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Documentation
+*.md
+!README.md
+
+# Test data (optional, comment out if needed in container)
+testdata/
+
+# Frontend (built separately)
+kalla-web/node_modules
+kalla-web/.next
+
+# Claude
+.claude
