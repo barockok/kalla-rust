@@ -95,6 +95,57 @@ fn extract_string_value(batch: &arrow::array::RecordBatch, column_name: &str, ro
     None
 }
 
+/// Register a source with the engine's SessionContext by looking up its URI
+async fn register_source_with_engine(
+    state: &Arc<AppState>,
+    source_alias: &str,
+) -> Result<(), String> {
+    // Check if table is already registered
+    {
+        let engine = state.engine.read().await;
+        if engine.context().table_exist(source_alias).map_err(|e| e.to_string())? {
+            // Table already registered, nothing to do
+            return Ok(());
+        }
+    }
+
+    // Look up the source by alias
+    let sources = state.sources.read().await;
+    let source = sources
+        .iter()
+        .find(|s| s.alias == source_alias)
+        .ok_or_else(|| format!("Source '{}' not found", source_alias))?;
+
+    // Only handle PostgreSQL sources
+    if !source.uri.starts_with("postgres://") {
+        return Err(format!("Source '{}' is not a PostgreSQL source", source_alias));
+    }
+
+    // Parse the PostgreSQL URI
+    let (conn_string, table_name) = parse_postgres_uri(&source.uri)?;
+    drop(sources); // Release the read lock before acquiring write lock
+
+    // Get write access to engine to register the table
+    let engine = state.engine.write().await;
+
+    // Double-check table isn't registered (race condition prevention)
+    if engine.context().table_exist(source_alias).map_err(|e| e.to_string())? {
+        return Ok(());
+    }
+
+    // Create connector and register table
+    let connector = PostgresConnector::new(&conn_string)
+        .await
+        .map_err(|e| format!("Failed to connect to database: {}", e))?;
+
+    connector
+        .register_table(engine.context(), source_alias, &table_name, None)
+        .await
+        .map_err(|e| format!("Failed to register table: {}", e))?;
+
+    Ok(())
+}
+
 /// Execute the reconciliation process in the background
 async fn execute_reconciliation(
     state: Arc<AppState>,
@@ -603,9 +654,18 @@ async fn generate_recipe(
     use kalla_ai::{extract_schema, LlmClient};
     use kalla_ai::prompt::{build_user_prompt, parse_recipe_response, SYSTEM_PROMPT};
 
+    // Register sources with the engine before extracting schemas
+    register_source_with_engine(&state, &req.left_source)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Failed to register left source: {}", e)))?;
+
+    register_source_with_engine(&state, &req.right_source)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Failed to register right source: {}", e)))?;
+
     let engine = state.engine.read().await;
 
-    // Extract schemas
+    // Extract schemas (tables are now registered)
     let left_schema = extract_schema(engine.context(), &req.left_source)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Failed to extract left schema: {}", e)))?;

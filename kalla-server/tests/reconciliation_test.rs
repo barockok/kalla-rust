@@ -8,6 +8,12 @@ use std::time::Duration;
 
 const API_URL: &str = "http://localhost:3001";
 
+/// Get the postgres host to use in connection strings.
+/// Use POSTGRES_HOST env var to override (e.g., "postgres" for Docker networking)
+fn postgres_host() -> String {
+    std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "localhost".to_string())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct RecipeConfig {
     version: String,
@@ -78,18 +84,19 @@ struct RunSummary {
 }
 
 fn create_test_recipe() -> RecipeConfig {
+    let pg_host = postgres_host();
     RecipeConfig {
         version: "1.0".to_string(),
         recipe_id: "invoice-payment-match-test".to_string(),
         sources: Sources {
             left: DataSource {
                 alias: "invoices".to_string(),
-                uri: "postgres://kalla:kalla_secret@localhost:5432/kalla?table=invoices".to_string(),
+                uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices", pg_host),
                 primary_key: vec!["invoice_id".to_string()],
             },
             right: DataSource {
                 alias: "payments".to_string(),
-                uri: "postgres://kalla:kalla_secret@localhost:5432/kalla?table=payments".to_string(),
+                uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=payments", pg_host),
                 primary_key: vec!["payment_id".to_string()],
             },
         },
