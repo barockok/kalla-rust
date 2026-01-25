@@ -7,7 +7,7 @@ use tracing::{debug, info};
 /// LLM provider configuration
 #[derive(Debug, Clone)]
 pub enum LlmProvider {
-    OpenAI { api_key: String, model: String },
+    OpenAI { api_key: String, model: String, base_url: String },
     Anthropic { api_key: String, model: String },
 }
 
@@ -30,7 +30,9 @@ impl LlmClient {
         // Try OpenAI first, then Anthropic
         if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
             let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
-            Ok(Self::new(LlmProvider::OpenAI { api_key, model }))
+            let base_url = std::env::var("OPENAI_API_BASE")
+                .unwrap_or_else(|_| "https://api.openai.com".to_string());
+            Ok(Self::new(LlmProvider::OpenAI { api_key, model, base_url }))
         } else if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
             let model = std::env::var("ANTHROPIC_MODEL")
                 .unwrap_or_else(|_| "claude-sonnet-4-20250514".to_string());
@@ -43,8 +45,8 @@ impl LlmClient {
     /// Generate a response from the LLM
     pub async fn generate(&self, system_prompt: &str, user_prompt: &str) -> Result<String> {
         match &self.provider {
-            LlmProvider::OpenAI { api_key, model } => {
-                self.call_openai(api_key, model, system_prompt, user_prompt)
+            LlmProvider::OpenAI { api_key, model, base_url } => {
+                self.call_openai(api_key, model, base_url, system_prompt, user_prompt)
                     .await
             }
             LlmProvider::Anthropic { api_key, model } => {
@@ -58,6 +60,7 @@ impl LlmClient {
         &self,
         api_key: &str,
         model: &str,
+        base_url: &str,
         system_prompt: &str,
         user_prompt: &str,
     ) -> Result<String> {
@@ -104,11 +107,11 @@ impl LlmClient {
             temperature: 0.1,
         };
 
-        debug!("Calling OpenAI API with model: {}", model);
+        debug!("Calling OpenAI-compatible API at {} with model: {}", base_url, model);
 
         let response = self
             .client
-            .post("https://api.openai.com/v1/chat/completions")
+            .post(format!("{}/v1/chat/completions", base_url))
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
             .json(&request)
