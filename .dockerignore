@@ -1,7 +1,6 @@
 # Git
 .git
 .gitignore
-
 # IDE
 .idea
 .vscode

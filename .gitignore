@@ -17,6 +17,7 @@ Cargo.lock
 # Environment
 .env
 .env.local
+instruction.md
 
 # Test data (keep sample data, ignore generated)
 *.generated.csv
@@ -30,3 +31,4 @@ dist/
 
 # Logs
 *.log
+
