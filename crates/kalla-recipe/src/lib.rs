@@ -3,6 +3,7 @@
 //! This crate defines the Match Recipe JSON schema and provides
 //! a transpiler to convert recipes into DataFusion logical plans.
 
+pub mod field_resolver;
 pub mod schema;
 pub mod transpiler;
 pub mod validation;
