@@ -153,6 +153,31 @@ export async function validateRecipe(recipe: MatchRecipe): Promise<{ valid: bool
   return res.json();
 }
 
+export interface SchemaValidationResult {
+  valid: boolean;
+  errors: Array<{
+    rule_name: string;
+    field: string;
+    source: string;
+    message: string;
+    suggestion: string | null;
+  }>;
+  warnings: string[];
+  resolved_fields: Array<[string, string]>;
+}
+
+export async function validateRecipeSchema(recipe: MatchRecipe): Promise<SchemaValidationResult> {
+  const res = await fetch(`${API_BASE}/api/recipes/validate-schema`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(recipe),
+  });
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+  return res.json();
+}
+
 export async function generateRecipe(
   leftSource: string,
   rightSource: string,

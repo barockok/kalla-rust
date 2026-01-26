@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Wand2, Play, Edit, CheckCircle, AlertCircle, Loader2, FileText } from "lucide-react";
-import { MatchRecipe, SavedRecipe, generateRecipe, validateRecipe, createRun, listRecipes } from "@/lib/api";
+import { MatchRecipe, SavedRecipe, generateRecipe, validateRecipe, validateRecipeSchema, createRun, listRecipes, SchemaValidationResult } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 type Step = "input" | "review" | "running" | "complete";
@@ -44,6 +44,8 @@ export default function ReconcilePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
+  const [schemaValidation, setSchemaValidation] = useState<SchemaValidationResult | null>(null);
+  const [validatingSchema, setValidatingSchema] = useState(false);
 
   // Fetch saved recipes on mount
   useEffect(() => {
@@ -79,6 +81,7 @@ export default function ReconcilePage() {
     setRecipeJson(JSON.stringify(selected.config, null, 2));
     setError(null);
     setStep("review");
+    runSchemaValidation(selected.config);
   };
 
   const handleGenerate = async () => {
@@ -98,6 +101,7 @@ export default function ReconcilePage() {
         setRecipe(result.recipe);
         setRecipeJson(JSON.stringify(result.recipe, null, 2));
         setStep("review");
+        runSchemaValidation(result.recipe);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to generate recipe");
@@ -115,9 +119,35 @@ export default function ReconcilePage() {
       } else {
         setRecipe(parsed);
         setError(null);
+        // Re-run schema validation after JSON edit
+        runSchemaValidation(parsed);
       }
     } catch (err) {
       setError("Invalid JSON format");
+    }
+  };
+
+  const runSchemaValidation = async (recipeToValidate: MatchRecipe) => {
+    setValidatingSchema(true);
+    setSchemaValidation(null);
+    try {
+      const result = await validateRecipeSchema(recipeToValidate);
+      setSchemaValidation(result);
+    } catch (err) {
+      setSchemaValidation({
+        valid: false,
+        errors: [{
+          rule_name: '',
+          field: '',
+          source: '',
+          message: err instanceof Error ? err.message : 'Schema validation failed',
+          suggestion: null,
+        }],
+        warnings: [],
+        resolved_fields: [],
+      });
+    } finally {
+      setValidatingSchema(false);
     }
   };
 
@@ -156,6 +186,7 @@ export default function ReconcilePage() {
     setRightSource("");
     setPrompt("");
     setError(null);
+    setSchemaValidation(null);
   };
 
   const selectedRecipe = savedRecipes.find((r) => r.recipe_id === selectedRecipeId);
@@ -389,8 +420,58 @@ export default function ReconcilePage() {
                 ))}
               </div>
 
+              {/* Schema Validation Status */}
+              {validatingSchema && (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Validating fields against sources...
+                </div>
+              )}
+
+              {schemaValidation && !schemaValidation.valid && (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Schema Validation Errors</AlertTitle>
+                  <AlertDescription>
+                    <ul className="mt-2 space-y-1">
+                      {schemaValidation.errors.map((err, idx) => (
+                        <li key={idx} className="text-sm">
+                          <strong>{err.field}</strong> in {err.source} source: {err.message}
+                          {err.suggestion && (
+                            <span className="text-muted-foreground"> (Did you mean: {err.suggestion}?)</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {schemaValidation && schemaValidation.valid && schemaValidation.warnings.length > 0 && (
+                <Alert>
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Warnings</AlertTitle>
+                  <AlertDescription>
+                    <ul className="mt-2 space-y-1">
+                      {schemaValidation.warnings.map((warn, idx) => (
+                        <li key={idx} className="text-sm">{warn}</li>
+                      ))}
+                    </ul>
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {schemaValidation && schemaValidation.valid && schemaValidation.warnings.length === 0 && (
+                <Alert className="border-green-200 bg-green-50">
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                  <AlertDescription className="text-green-800">
+                    All fields validated successfully against source schemas.
+                  </AlertDescription>
+                </Alert>
+              )}
+
               <div className="flex gap-2">
-                <Button onClick={handleApprove} disabled={loading}>
+                <Button onClick={handleApprove} disabled={loading || validatingSchema || (schemaValidation !== null && !schemaValidation.valid)}>
                   <CheckCircle className="mr-2 h-4 w-4" />
                   Approve & Run
                 </Button>
