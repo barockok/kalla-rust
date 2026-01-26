@@ -419,6 +419,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/api/sources", get(list_sources).post(register_source))
+        .route("/api/sources/:alias/primary-key", get(get_source_primary_key))
         .route("/api/recipes", get(list_recipes).post(save_recipe))
         .route("/api/recipes/validate", post(validate_recipe))
         .route("/api/recipes/generate", post(generate_recipe))
@@ -462,6 +463,33 @@ async fn list_sources(
 ) -> Json<Vec<RegisteredSource>> {
     let sources = state.sources.read().await;
     Json(sources.clone())
+}
+
+// GET /api/sources/:alias/primary-key
+async fn get_source_primary_key(
+    State(state): State<Arc<AppState>>,
+    Path(alias): Path<String>,
+) -> Result<Json<PrimaryKeyResponse>, (StatusCode, String)> {
+    let engine = state.engine.read().await;
+
+    let detected = kalla_ai::schema_extractor::detect_primary_key(engine.context(), &alias)
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("Source not found or error: {}", e)))?;
+
+    let confidence = if detected.is_empty() { "low" } else { "high" }.to_string();
+
+    Ok(Json(PrimaryKeyResponse {
+        alias: alias.clone(),
+        detected_keys: detected,
+        confidence,
+    }))
+}
+
+#[derive(Serialize)]
+struct PrimaryKeyResponse {
+    alias: String,
+    detected_keys: Vec<String>,
+    confidence: String,
 }
 
 async fn register_source(
