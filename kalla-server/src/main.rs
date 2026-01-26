@@ -1,7 +1,7 @@
 //! Kalla Server - REST API for the reconciliation engine
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
     Json, Router,
@@ -420,6 +420,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health_check))
         .route("/api/sources", get(list_sources).post(register_source))
         .route("/api/sources/:alias/primary-key", get(get_source_primary_key))
+        .route("/api/sources/:alias/preview", get(get_source_preview))
         .route("/api/recipes", get(list_recipes).post(save_recipe))
         .route("/api/recipes/validate", post(validate_recipe))
         .route("/api/recipes/validate-schema", post(validate_recipe_schema))
@@ -491,6 +492,138 @@ struct PrimaryKeyResponse {
     alias: String,
     detected_keys: Vec<String>,
     confidence: String,
+}
+
+// GET /api/sources/:alias/preview?limit=10
+async fn get_source_preview(
+    State(state): State<Arc<AppState>>,
+    Path(alias): Path<String>,
+    Query(params): Query<PreviewParams>,
+) -> Result<Json<SourcePreviewResponse>, (StatusCode, String)> {
+    use arrow::array::{ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray};
+
+    let limit = params.limit.unwrap_or(10).min(100); // Max 100 rows
+    let engine = state.engine.read().await;
+
+    // Get schema
+    let table = engine
+        .context()
+        .table(&alias)
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("Source not found: {}", e)))?;
+    let schema = table.schema();
+
+    let columns: Vec<ColumnInfo> = schema
+        .fields()
+        .iter()
+        .map(|f| ColumnInfo {
+            name: f.name().to_string(),
+            data_type: format!("{:?}", f.data_type()),
+            nullable: f.is_nullable(),
+        })
+        .collect();
+
+    // Get sample rows
+    let query = format!("SELECT * FROM \"{}\" LIMIT {}", alias, limit);
+    let df = engine
+        .context()
+        .sql(&query)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Query failed: {}", e)))?;
+
+    let batches = df
+        .collect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Collect failed: {}", e)))?;
+
+    // Helper function to convert arrow values to strings
+    fn arrow_value_to_string(array: &ArrayRef, idx: usize) -> String {
+        if array.is_null(idx) {
+            return "null".to_string();
+        }
+
+        if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
+            return arr.value(idx).to_string();
+        }
+        if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
+            return arr.value(idx).to_string();
+        }
+        if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
+            return arr.value(idx).to_string();
+        }
+        if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
+            return arr.value(idx).to_string();
+        }
+        if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
+            return arr.value(idx).to_string();
+        }
+
+        // Fallback for other types
+        format!("{:?}", array.slice(idx, 1))
+    }
+
+    // Convert to JSON-friendly format
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for batch in &batches {
+        for row_idx in 0..batch.num_rows() {
+            let mut row: Vec<String> = Vec::new();
+            for col_idx in 0..batch.num_columns() {
+                let col = batch.column(col_idx);
+                let value = arrow_value_to_string(col, row_idx);
+                row.push(value);
+            }
+            rows.push(row);
+        }
+    }
+
+    // Get total count
+    let count_query = format!("SELECT COUNT(*) FROM \"{}\"", alias);
+    let count_df = engine
+        .context()
+        .sql(&count_query)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let count_batches = count_df
+        .collect()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total_rows = count_batches
+        .first()
+        .and_then(|b| b.column(0).as_any().downcast_ref::<Int64Array>())
+        .map(|a| a.value(0) as u64)
+        .unwrap_or(0);
+
+    let preview_rows = rows.len();
+
+    Ok(Json(SourcePreviewResponse {
+        alias,
+        columns,
+        rows,
+        total_rows,
+        preview_rows,
+    }))
+}
+
+#[derive(Deserialize)]
+struct PreviewParams {
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct SourcePreviewResponse {
+    alias: String,
+    columns: Vec<ColumnInfo>,
+    rows: Vec<Vec<String>>,
+    total_rows: u64,
+    preview_rows: usize,
+}
+
+#[derive(Serialize)]
+struct ColumnInfo {
+    name: String,
+    data_type: String,
+    nullable: bool,
 }
 
 async fn register_source(
