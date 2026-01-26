@@ -8,8 +8,10 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Database, FileUp, Plus, Trash2, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
+import { Database, FileUp, Plus, Trash2, CheckCircle, AlertCircle, Loader2, Eye, EyeOff, Key } from "lucide-react";
 import { registerSource, listSources, type RegisteredSource as ApiSource } from "@/lib/api";
+import { SourcePreview } from "@/components/SourcePreview";
+import { PrimaryKeyConfirmation } from "@/components/PrimaryKeyConfirmation";
 
 interface RegisteredSource {
   alias: string;
@@ -45,6 +47,8 @@ export default function SourcesPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [previewSource, setPreviewSource] = useState<string | null>(null);
+  const [pkConfirmSource, setPkConfirmSource] = useState<string | null>(null);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -208,34 +212,68 @@ export default function SourcesPage() {
             ) : (
               <div className="space-y-3">
                 {sources.map((source) => (
-                  <div
-                    key={source.alias}
-                    className="flex items-center justify-between p-3 rounded-lg border"
-                  >
-                    <div className="flex items-center gap-3">
-                      <Database className="h-5 w-5 text-muted-foreground" />
-                      <div>
-                        <p className="font-medium">{source.alias}</p>
-                        <p className="text-xs text-muted-foreground truncate max-w-[200px]">
-                          {source.uri}
-                        </p>
+                  <div key={source.alias} className="space-y-2">
+                    <div className="flex items-center justify-between p-3 rounded-lg border">
+                      <div className="flex items-center gap-3">
+                        <Database className="h-5 w-5 text-muted-foreground" />
+                        <div>
+                          <p className="font-medium">{source.alias}</p>
+                          <p className="text-xs text-muted-foreground truncate max-w-[200px]">
+                            {source.uri}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant={source.type === "postgres" ? "default" : "secondary"}>
+                          {source.type}
+                        </Badge>
+                        <Badge variant={source.status === "connected" ? "default" : "destructive"}>
+                          {source.status}
+                        </Badge>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setPreviewSource(previewSource === source.alias ? null : source.alias)}
+                          title="Preview data"
+                        >
+                          {previewSource === source.alias ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setPkConfirmSource(pkConfirmSource === source.alias ? null : source.alias)}
+                          title="Check primary key"
+                        >
+                          <Key className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleRemoveSource(source.alias)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant={source.type === "postgres" ? "default" : "secondary"}>
-                        {source.type}
-                      </Badge>
-                      <Badge variant={source.status === "connected" ? "default" : "destructive"}>
-                        {source.status}
-                      </Badge>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleRemoveSource(source.alias)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
+
+                    {previewSource === source.alias && (
+                      <div className="ml-8">
+                        <SourcePreview sourceAlias={source.alias} limit={10} />
+                      </div>
+                    )}
+
+                    {pkConfirmSource === source.alias && (
+                      <div className="ml-8">
+                        <PrimaryKeyConfirmation
+                          sourceAlias={source.alias}
+                          onConfirm={(keys) => {
+                            console.log('Confirmed PK for', source.alias, ':', keys);
+                            setPkConfirmSource(null);
+                          }}
+                          onCancel={() => setPkConfirmSource(null)}
+                        />
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
