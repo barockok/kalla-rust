@@ -422,6 +422,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sources/:alias/primary-key", get(get_source_primary_key))
         .route("/api/recipes", get(list_recipes).post(save_recipe))
         .route("/api/recipes/validate", post(validate_recipe))
+        .route("/api/recipes/validate-schema", post(validate_recipe_schema))
         .route("/api/recipes/generate", post(generate_recipe))
         .route("/api/recipes/:id", get(get_recipe))
         .route("/api/runs", post(create_run))
@@ -660,6 +661,90 @@ async fn validate_recipe(
             errors: errors.iter().map(|e| e.to_string()).collect(),
         }),
     }
+}
+
+// POST /api/recipes/validate-schema
+async fn validate_recipe_schema(
+    State(state): State<Arc<AppState>>,
+    Json(recipe): Json<MatchRecipe>,
+) -> Result<Json<SchemaValidationResponse>, (StatusCode, String)> {
+    let engine = state.engine.read().await;
+
+    // Get left source schema
+    let left_table = engine
+        .context()
+        .table(&recipe.sources.left.alias)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Left source not found: {}", e),
+            )
+        })?;
+    let left_fields: Vec<String> = left_table
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().to_string())
+        .collect();
+
+    // Get right source schema
+    let right_table = engine
+        .context()
+        .table(&recipe.sources.right.alias)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Right source not found: {}", e),
+            )
+        })?;
+    let right_fields: Vec<String> = right_table
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().to_string())
+        .collect();
+
+    let result = kalla_recipe::schema_validation::validate_recipe_against_schema(
+        &recipe,
+        &left_fields,
+        &right_fields,
+    );
+
+    Ok(Json(SchemaValidationResponse {
+        valid: result.valid,
+        errors: result
+            .errors
+            .iter()
+            .map(|e| SchemaError {
+                rule_name: e.rule_name.clone(),
+                field: e.field.clone(),
+                source: e.source.clone(),
+                message: e.message.clone(),
+                suggestion: e.suggestion.clone(),
+            })
+            .collect(),
+        warnings: result.warnings,
+        resolved_fields: result.resolved_fields,
+    }))
+}
+
+#[derive(Serialize)]
+struct SchemaValidationResponse {
+    valid: bool,
+    errors: Vec<SchemaError>,
+    warnings: Vec<String>,
+    resolved_fields: Vec<(String, String)>,
+}
+
+#[derive(Serialize)]
+struct SchemaError {
+    rule_name: String,
+    field: String,
+    source: String,
+    message: String,
+    suggestion: Option<String>,
 }
 
 #[derive(Deserialize)]
