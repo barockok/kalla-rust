@@ -5,6 +5,7 @@
 
 pub mod field_resolver;
 pub mod schema;
+pub mod schema_validation;
 pub mod transpiler;
 pub mod validation;
 
