@@ -17,22 +17,6 @@ services:
       timeout: 5s
       retries: 5
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: kalla-ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-
-  ollama-pull:
-    image: ollama/ollama:latest
-    container_name: kalla-ollama-pull
-    entrypoint: ["/bin/sh", "-c", "sleep 10 && ollama pull llama3.1:8b"]
-    environment:
-      OLLAMA_HOST: http://ollama:11434
-    restart: "no"
-
   server:
     build:
       context: .
@@ -48,9 +32,8 @@ services:
       - ./testdata:/app/testdata:ro
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-kalla}:${POSTGRES_PASSWORD:-kalla_secret}@postgres:5432/${POSTGRES_DB:-kalla}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_API_BASE: http://host.docker.internal:11434
-      OPENAI_MODEL: ${OPENAI_MODEL:-llama3.1:8b}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: ${}
       RUST_LOG: ${RUST_LOG:-debug}
 
   web:
