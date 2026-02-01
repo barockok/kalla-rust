@@ -60,3 +60,6 @@ kalla-connectors = { path = "crates/kalla-connectors" }
 kalla-recipe = { path = "crates/kalla-recipe" }
 kalla-evidence = { path = "crates/kalla-evidence" }
 kalla-ai = { path = "crates/kalla-ai" }
+
+[profile.release]
+codegen-units = 4
