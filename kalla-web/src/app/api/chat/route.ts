@@ -4,6 +4,7 @@ import { runAgent } from '@/lib/agent';
 import type { ChatMessage, CardResponse } from '@/lib/chat-types';
 
 export async function POST(request: NextRequest) {
+  let session: ReturnType<typeof getSession> | ReturnType<typeof createSession> | undefined;
   try {
     const body = await request.json();
     const { session_id, message, card_response } = body as {
@@ -13,7 +14,7 @@ export async function POST(request: NextRequest) {
     };
 
     // Get or create session
-    let session = session_id ? getSession(session_id) : undefined;
+    session = session_id ? getSession(session_id) : undefined;
     if (!session) {
       session = createSession();
     }
@@ -92,9 +93,22 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     console.error('Chat API error:', err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Internal error' },
-      { status: 500 }
-    );
+    const errorSegment = {
+      type: 'text' as const,
+      content: `Error: ${err instanceof Error ? err.message : 'Something went wrong'}`,
+    };
+    const errorMsg: ChatMessage = {
+      role: 'agent' as const,
+      segments: [errorSegment],
+      timestamp: new Date().toISOString(),
+    };
+
+    return NextResponse.json({
+      session_id: session?.id || null,
+      phase: session?.phase || 'greeting',
+      status: session?.status || 'error',
+      message: errorMsg,
+      recipe_draft: null,
+    });
   }
 }

@@ -155,7 +155,7 @@ export default function ReconcilePage() {
             disabled={loading}
             className="flex-1"
           />
-          <Button type="submit" disabled={loading || !input.trim()}>
+          <Button type="submit" disabled={loading || !input.trim()} aria-label="Send">
             <Send className="h-4 w-4" />
           </Button>
         </form>

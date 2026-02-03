@@ -357,111 +357,119 @@ export async function runAgent(
   let currentMessages = conversationMessages;
   let continueLoop = true;
 
-  while (continueLoop) {
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 4096,
-      system: systemPrompt,
-      tools,
-      messages: currentMessages,
-    });
+  try {
+    while (continueLoop) {
+      const response = await client.messages.create({
+        model: MODEL,
+        max_tokens: 4096,
+        system: systemPrompt,
+        tools,
+        messages: currentMessages,
+      });
 
-    // Assume this is the final turn unless we encounter a tool_use block.
-    continueLoop = false;
+      // Assume this is the final turn unless we encounter a tool_use block.
+      continueLoop = false;
 
-    // Collect all tool_use blocks from this response (there may be several).
-    const toolUseBlocks: Array<{ id: string; name: string; input: unknown }> = [];
+      // Collect all tool_use blocks from this response (there may be several).
+      const toolUseBlocks: Array<{ id: string; name: string; input: unknown }> = [];
 
-    for (const block of response.content) {
-      if (block.type === 'text') {
-        segments.push({ type: 'text', content: block.text });
-        if (onTextChunk) onTextChunk(block.text);
-      } else if (block.type === 'tool_use') {
-        toolUseBlocks.push({ id: block.id, name: block.name, input: block.input });
-      }
-    }
-
-    // If there were tool_use blocks, execute them all and feed results back.
-    if (toolUseBlocks.length > 0) {
-      const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
-      for (const tu of toolUseBlocks) {
-        try {
-          const result = await executeTool(
-            tu.name,
-            tu.input as Record<string, unknown>,
-            session,
-          );
-
-          // --- Phase transition detection ---
-          if (tu.name === 'list_sources' && session.phase === 'greeting') {
-            phaseTransition = 'intent';
-          } else if (tu.name === 'load_sample' && session.phase === 'sampling') {
-            phaseTransition = 'demonstration';
-          } else if (tu.name === 'infer_rules') {
-            phaseTransition = 'inference';
-          } else if (tu.name === 'build_recipe') {
-            phaseTransition = 'validation';
-            sessionUpdates.recipe_draft = result as Record<string, unknown>;
-          } else if (tu.name === 'validate_recipe') {
-            // Stay in validation phase
-            if (!phaseTransition) phaseTransition = 'validation';
-          } else if (tu.name === 'run_full') {
-            phaseTransition = 'execution';
-            sessionUpdates.status = 'running';
-          }
-
-          // --- Store sample data on session ---
-          if (tu.name === 'load_sample' || tu.name === 'get_source_preview') {
-            const preview = result as {
-              alias: string;
-              rows: string[][];
-              columns: Array<{ name: string }>;
-            };
-            const asObjects = preview.rows.map((row) => {
-              const obj: Record<string, unknown> = {};
-              preview.columns.forEach((col, j) => {
-                obj[col.name] = row[j];
-              });
-              return obj;
-            });
-
-            if (session.left_source_alias && preview.alias === session.left_source_alias) {
-              sessionUpdates.sample_left = asObjects;
-            } else if (
-              session.right_source_alias &&
-              preview.alias === session.right_source_alias
-            ) {
-              sessionUpdates.sample_right = asObjects;
-            }
-          }
-
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: tu.id,
-            content: JSON.stringify(result),
-          });
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : 'Tool execution failed';
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: tu.id,
-            content: JSON.stringify({ error: errorMsg }),
-            is_error: true,
-          });
+      for (const block of response.content) {
+        if (block.type === 'text') {
+          segments.push({ type: 'text', content: block.text });
+          if (onTextChunk) onTextChunk(block.text);
+        } else if (block.type === 'tool_use') {
+          toolUseBlocks.push({ id: block.id, name: block.name, input: block.input });
         }
       }
 
-      // Feed the assistant response (with tool_use blocks) and the tool results
-      // back into the conversation so Claude can produce a follow-up.
-      currentMessages = [
-        ...currentMessages,
-        { role: 'assistant' as const, content: response.content },
-        { role: 'user' as const, content: toolResults },
-      ];
+      // If there were tool_use blocks, execute them all and feed results back.
+      if (toolUseBlocks.length > 0) {
+        const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
-      continueLoop = true;
+        for (const tu of toolUseBlocks) {
+          try {
+            const result = await executeTool(
+              tu.name,
+              tu.input as Record<string, unknown>,
+              session,
+            );
+
+            // --- Phase transition detection ---
+            if (tu.name === 'list_sources' && session.phase === 'greeting') {
+              phaseTransition = 'intent';
+            } else if (tu.name === 'load_sample' && session.phase === 'sampling') {
+              phaseTransition = 'demonstration';
+            } else if (tu.name === 'infer_rules') {
+              phaseTransition = 'inference';
+            } else if (tu.name === 'build_recipe') {
+              phaseTransition = 'validation';
+              sessionUpdates.recipe_draft = result as Record<string, unknown>;
+            } else if (tu.name === 'validate_recipe') {
+              // Stay in validation phase
+              if (!phaseTransition) phaseTransition = 'validation';
+            } else if (tu.name === 'run_full') {
+              phaseTransition = 'execution';
+              sessionUpdates.status = 'running';
+            }
+
+            // --- Store sample data on session ---
+            if (tu.name === 'load_sample' || tu.name === 'get_source_preview') {
+              const preview = result as {
+                alias: string;
+                rows: string[][];
+                columns: Array<{ name: string }>;
+              };
+              const asObjects = preview.rows.map((row) => {
+                const obj: Record<string, unknown> = {};
+                preview.columns.forEach((col, j) => {
+                  obj[col.name] = row[j];
+                });
+                return obj;
+              });
+
+              if (session.left_source_alias && preview.alias === session.left_source_alias) {
+                sessionUpdates.sample_left = asObjects;
+              } else if (
+                session.right_source_alias &&
+                preview.alias === session.right_source_alias
+              ) {
+                sessionUpdates.sample_right = asObjects;
+              }
+            }
+
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: tu.id,
+              content: JSON.stringify(result),
+            });
+          } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : 'Tool execution failed';
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: tu.id,
+              content: JSON.stringify({ error: errorMsg }),
+              is_error: true,
+            });
+          }
+        }
+
+        // Feed the assistant response (with tool_use blocks) and the tool results
+        // back into the conversation so Claude can produce a follow-up.
+        currentMessages = [
+          ...currentMessages,
+          { role: 'assistant' as const, content: response.content },
+          { role: 'user' as const, content: toolResults },
+        ];
+
+        continueLoop = true;
+      }
     }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Agent failed';
+    segments.push({
+      type: 'text',
+      content: `I encountered an issue connecting to the AI service: ${errorMsg}. Please check your API key configuration.`,
+    });
   }
 
   return { segments, phaseTransition, sessionUpdates };

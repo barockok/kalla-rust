@@ -12,7 +12,7 @@ export default defineConfig({
     timeout: 30_000,
   },
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL: 'http://localhost:3002',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
@@ -29,9 +29,9 @@ export default defineConfig({
       reuseExistingServer: true,
     },
     {
-      command: 'npm run dev',
-      port: 3000,
-      reuseExistingServer: !process.env.CI,
+      command: 'npx next dev --port 3002',
+      port: 3002,
+      reuseExistingServer: false,
       env: {
         ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
         NEXT_PUBLIC_API_URL: 'http://localhost:3001',

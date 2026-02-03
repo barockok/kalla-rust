@@ -31,19 +31,21 @@ RUN cargo update home --precise 0.5.9 && \
 # Build dependencies only — cached between builds via BuildKit cache mounts
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
-    cargo build --release --bin kalla-server ; true
+    cargo build --release --bin kalla-server 2>&1 || true
 
 # Copy real source code (overwrites dummy stubs)
 COPY crates ./crates
 COPY kalla-server ./kalla-server
 
-# Build with real source — only project crates recompile thanks to cached target dir
+# Touch source files to force recompilation of project crates
+RUN find /app/crates -name '*.rs' -exec touch {} + && \
+    find /app/kalla-server -name '*.rs' -exec touch {} +
+
+# Build with real source
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
     cargo build --release --bin kalla-server && \
-    cp /app/target/release/kalla-server /usr/local/bin/kalla-server
+    cp target/release/kalla-server /usr/local/bin/kalla-server
 
 # Stage 2: Runtime
 FROM debian:bookworm-slim

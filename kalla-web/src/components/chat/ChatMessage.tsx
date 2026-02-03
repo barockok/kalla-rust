@@ -13,7 +13,10 @@ export function ChatMessage({ message, onCardAction }: ChatMessageProps) {
   const isAgent = message.role === 'agent';
 
   return (
-    <div className={cn('flex gap-3 px-4 py-3', isAgent ? '' : 'flex-row-reverse')}>
+    <div
+      className={cn('flex gap-3 px-4 py-3', isAgent ? '' : 'flex-row-reverse')}
+      data-testid={isAgent ? 'agent-message' : 'user-message'}
+    >
       <div className={cn(
         'h-8 w-8 rounded-full flex items-center justify-center text-sm font-medium shrink-0',
         isAgent ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'

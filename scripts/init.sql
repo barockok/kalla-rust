@@ -298,6 +298,29 @@ GROUP BY payment_method, currency
 ORDER BY total_amount DESC;
 
 -- ============================================
+-- CHAT SESSIONS (Agentic Recipe Builder)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
+    phase VARCHAR(20) NOT NULL DEFAULT 'greeting',
+    left_source_alias VARCHAR(255),
+    right_source_alias VARCHAR(255),
+    recipe_draft JSONB,
+    sample_left JSONB,
+    sample_right JSONB,
+    sample_criteria_left TEXT,
+    sample_criteria_right TEXT,
+    confirmed_pairs JSONB DEFAULT '[]',
+    messages JSONB DEFAULT '[]',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_status ON chat_sessions(status);
+
+-- ============================================
 -- GRANT PERMISSIONS
 -- ============================================
 
