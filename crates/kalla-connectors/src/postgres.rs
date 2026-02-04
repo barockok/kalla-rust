@@ -10,6 +10,8 @@ use sqlx::{Column, Row};
 use std::sync::Arc;
 use tracing::{debug, info};
 
+use crate::filter::{build_where_clause, FilterCondition};
+
 /// PostgreSQL connector that can register tables with DataFusion
 pub struct PostgresConnector {
     pool: PgPool,
@@ -86,10 +88,66 @@ impl PostgresConnector {
         Ok(())
     }
 
+    /// Register a scoped (filtered) subset of a PostgreSQL table with DataFusion.
+    pub async fn register_scoped(
+        &self,
+        ctx: &SessionContext,
+        table_name: &str,
+        pg_table: &str,
+        conditions: &[FilterCondition],
+        limit: Option<usize>,
+    ) -> Result<usize> {
+        // Deregister existing table if present to reload with new scope
+        let _ = ctx.deregister_table(table_name);
+
+        let query = build_scoped_query(pg_table, conditions, limit);
+        debug!("Scoped query: {}", query);
+
+        let rows: Vec<PgRow> = sqlx::query(&query).fetch_all(&self.pool).await?;
+        let row_count = rows.len();
+
+        if rows.is_empty() {
+            info!("Scoped query returned 0 rows for '{}'", table_name);
+            return Ok(0);
+        }
+
+        // Reuse existing row-to-RecordBatch logic
+        let first_row = &rows[0];
+        let columns = first_row.columns();
+        let fields: Vec<Field> = columns
+            .iter()
+            .map(|col| {
+                let data_type = pg_type_to_arrow(col.type_info().to_string().as_str());
+                Field::new(col.name(), data_type, true)
+            })
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
+        let batch = rows_to_record_batch(&rows, schema.clone())?;
+        let mem_table = MemTable::try_new(schema, vec![vec![batch]])?;
+        ctx.register_table(table_name, Arc::new(mem_table))?;
+
+        info!("Registered scoped table '{}' with {} rows", table_name, row_count);
+        Ok(row_count)
+    }
+
     /// Get the connection pool for direct queries
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
+}
+
+/// Build a scoped SELECT query from table, conditions, and optional limit.
+pub fn build_scoped_query(
+    table: &str,
+    conditions: &[FilterCondition],
+    limit: Option<usize>,
+) -> String {
+    let mut query = format!("SELECT * FROM {}", table);
+    query.push_str(&build_where_clause(conditions));
+    if let Some(lim) = limit {
+        query.push_str(&format!(" LIMIT {}", lim));
+    }
+    query
 }
 
 /// Convert PostgreSQL type name to Arrow DataType
@@ -175,4 +233,48 @@ fn rows_to_record_batch(rows: &[PgRow], schema: Arc<Schema>) -> Result<RecordBat
     }
 
     Ok(RecordBatch::try_new(schema, columns)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::filter::{FilterCondition, FilterOp, FilterValue};
+
+    #[test]
+    fn test_build_scoped_query() {
+        let conditions = vec![
+            FilterCondition {
+                column: "invoice_date".to_string(),
+                op: FilterOp::Between,
+                value: FilterValue::Range(["2024-01-01".to_string(), "2024-01-31".to_string()]),
+            },
+            FilterCondition {
+                column: "amount".to_string(),
+                op: FilterOp::Gte,
+                value: FilterValue::Number(100.0),
+            },
+        ];
+        let query = build_scoped_query("invoices", &conditions, Some(50));
+        assert_eq!(
+            query,
+            "SELECT * FROM invoices WHERE \"invoice_date\" BETWEEN '2024-01-01' AND '2024-01-31' AND \"amount\" >= 100 LIMIT 50"
+        );
+    }
+
+    #[test]
+    fn test_build_scoped_query_no_conditions() {
+        let query = build_scoped_query("payments", &[], Some(200));
+        assert_eq!(query, "SELECT * FROM payments LIMIT 200");
+    }
+
+    #[test]
+    fn test_build_scoped_query_no_limit() {
+        let conditions = vec![FilterCondition {
+            column: "status".to_string(),
+            op: FilterOp::Eq,
+            value: FilterValue::String("active".to_string()),
+        }];
+        let query = build_scoped_query("orders", &conditions, None);
+        assert_eq!(query, "SELECT * FROM orders WHERE \"status\" = 'active'");
+    }
 }
