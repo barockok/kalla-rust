@@ -66,6 +66,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-kalla}:${POSTGRES_PASSWORD:-kalla_secret}@postgres:5432/${POSTGRES_DB:-kalla}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      SERVER_API_URL: http://server:3001
 
 volumes:
   postgres_data:
