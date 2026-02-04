@@ -104,7 +104,6 @@ async fn register_source_with_engine(
     {
         let engine = state.engine.read().await;
         if engine.context().table_exist(source_alias).map_err(|e| e.to_string())? {
-            // Table already registered, nothing to do
             return Ok(());
         }
     }
@@ -116,32 +115,44 @@ async fn register_source_with_engine(
         .find(|s| s.alias == source_alias)
         .ok_or_else(|| format!("Source '{}' not found", source_alias))?;
 
-    // Only handle PostgreSQL sources
-    if !source.uri.starts_with("postgres://") {
-        return Err(format!("Source '{}' is not a PostgreSQL source", source_alias));
+    let uri = source.uri.clone();
+    drop(sources);
+
+    if uri.starts_with("postgres://") {
+        let (conn_string, table_name) = parse_postgres_uri(&uri)?;
+        let engine = state.engine.write().await;
+        if engine.context().table_exist(source_alias).map_err(|e| e.to_string())? {
+            return Ok(());
+        }
+        let connector = PostgresConnector::new(&conn_string)
+            .await
+            .map_err(|e| format!("Failed to connect to database: {}", e))?;
+        connector
+            .register_table(engine.context(), source_alias, &table_name, None)
+            .await
+            .map_err(|e| format!("Failed to register table: {}", e))?;
+    } else if uri.starts_with("file://") {
+        let path = uri.strip_prefix("file://").unwrap();
+        let engine = state.engine.write().await;
+        if engine.context().table_exist(source_alias).map_err(|e| e.to_string())? {
+            return Ok(());
+        }
+        if path.ends_with(".csv") {
+            engine
+                .register_csv(source_alias, path)
+                .await
+                .map_err(|e| format!("Failed to register CSV: {}", e))?;
+        } else if path.ends_with(".parquet") {
+            engine
+                .register_parquet(source_alias, path)
+                .await
+                .map_err(|e| format!("Failed to register parquet: {}", e))?;
+        } else {
+            return Err(format!("Unsupported file format for '{}'", source_alias));
+        }
+    } else {
+        return Err(format!("Unsupported URI scheme for '{}'", source_alias));
     }
-
-    // Parse the PostgreSQL URI
-    let (conn_string, table_name) = parse_postgres_uri(&source.uri)?;
-    drop(sources); // Release the read lock before acquiring write lock
-
-    // Get write access to engine to register the table
-    let engine = state.engine.write().await;
-
-    // Double-check table isn't registered (race condition prevention)
-    if engine.context().table_exist(source_alias).map_err(|e| e.to_string())? {
-        return Ok(());
-    }
-
-    // Create connector and register table
-    let connector = PostgresConnector::new(&conn_string)
-        .await
-        .map_err(|e| format!("Failed to connect to database: {}", e))?;
-
-    connector
-        .register_table(engine.context(), source_alias, &table_name, None)
-        .await
-        .map_err(|e| format!("Failed to register table: {}", e))?;
 
     Ok(())
 }
@@ -503,6 +514,12 @@ async fn get_source_preview(
     use arrow::array::{ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray};
 
     let limit = params.limit.unwrap_or(10).min(100); // Max 100 rows
+
+    // Ensure the source is registered with the DataFusion engine (lazy registration)
+    register_source_with_engine(&state, &alias)
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("Source not found: {}", e)))?;
+
     let engine = state.engine.read().await;
 
     // Get schema

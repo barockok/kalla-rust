@@ -273,3 +273,23 @@ async fn test_list_recipes() {
     // Should have at least the seed recipe
     assert!(!recipes.is_empty(), "Should have at least one seed recipe");
 }
+
+#[tokio::test]
+async fn test_csv_source_preview() {
+    let client = reqwest::Client::new();
+    let api_url = std::env::var("API_URL").unwrap_or_else(|_| "http://localhost:3001".to_string());
+
+    // The init.sql seeds invoices_csv and payments_csv.
+    // After a server restart they should still be queryable.
+    let res = client
+        .get(format!("{}/api/sources/invoices_csv/preview?limit=5", api_url))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(res.status(), 200, "CSV source preview should succeed");
+
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert!(body["rows"].as_array().unwrap().len() > 0, "Should return rows");
+    assert!(body["columns"].as_array().unwrap().len() > 0, "Should return columns");
+}
