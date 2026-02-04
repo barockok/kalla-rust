@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSession, getSession, updateSession, addMessage } from '@/lib/session-store';
 import { runAgent } from '@/lib/agent';
-import type { ChatMessage, CardResponse } from '@/lib/chat-types';
+import type { ChatMessage, CardResponse, ChatSession } from '@/lib/chat-types';
 
 export async function POST(request: NextRequest) {
   let session: ReturnType<typeof getSession> | ReturnType<typeof createSession> | undefined;
@@ -56,12 +56,14 @@ export async function POST(request: NextRequest) {
     // Run the agent (ALL phase management happens inside)
     const agentResponse = await runAgent(session, userText);
 
-    // Apply phase transitions
+    // Apply phase transition and session updates in a single write to avoid
+    // a race window where the phase advances but prerequisite data is missing.
+    const updates: Partial<ChatSession> = { ...agentResponse.sessionUpdates };
     if (agentResponse.phaseTransition) {
-      updateSession(session.id, { phase: agentResponse.phaseTransition });
+      updates.phase = agentResponse.phaseTransition;
     }
-    if (agentResponse.sessionUpdates) {
-      updateSession(session.id, agentResponse.sessionUpdates);
+    if (Object.keys(updates).length > 0) {
+      updateSession(session.id, updates);
     }
 
     // Add agent message

@@ -210,7 +210,7 @@ export const PHASES: Record<ChatPhase, PhaseConfig> = {
     name: 'execution',
     tools: ['run_full', 'validate_recipe'],
     instructions: 'The user has approved the recipe. Run it on the full scoped dataset using run_full. Present the results summary.',
-    prerequisites: { sessionFields: ['recipe_draft'] },
+    prerequisites: { sessionFields: ['recipe_draft', 'validation_approved'] },
     contextInjections: ['recipe_draft'],
     advancesWhen: () => false,
     errorPolicy: { maxRetriesPerTool: 2, onExhausted: 'inform_user' },

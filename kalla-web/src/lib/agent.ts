@@ -260,6 +260,16 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
 // a phase. Throws with a descriptive error listing missing fields.
 // ---------------------------------------------------------------------------
 
+/**
+ * Verify that all prerequisite session fields are populated.
+ *
+ * Fields are considered "missing" if they are:
+ * - null or undefined (for object/array fields)
+ * - false (for boolean fields like validation_approved)
+ * - empty arrays (e.g., confirmed_pairs with length 0)
+ *
+ * Throws an error listing all missing fields if any prerequisites are unmet.
+ */
 export function checkPrerequisites(config: PhaseConfig, session: ChatSession): void {
   const missing: string[] = [];
 
@@ -658,6 +668,11 @@ export async function runAgent(
                 phaseTransition = nextPhase;
                 currentPhase = nextPhase;
                 config = PHASES[currentPhase];
+
+                // A new phase gets fresh retry budgets — tools that were
+                // exhausted in the previous phase should be available again.
+                retryTracker.clear();
+                exhaustedTools.clear();
 
                 // Rebuild system prompt and tools for new phase
                 systemPrompt = buildSystemPrompt(workingSession, config);

@@ -61,6 +61,17 @@ describe('orchestrator helpers', () => {
       const session = makeSession({ phase: 'scoping' });
       expect(() => checkPrerequisites(PHASES.scoping, session)).toThrow();
     });
+
+    test('treats empty arrays as missing prerequisites', () => {
+      const session = makeSession({
+        phase: 'demonstration',
+        sample_left: [],
+        sample_right: [],
+      });
+      expect(() => checkPrerequisites(PHASES.demonstration, session)).toThrow(
+        /sample_left/,
+      );
+    });
   });
 
   describe('buildContextInjections', () => {
