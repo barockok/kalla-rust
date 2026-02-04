@@ -63,6 +63,9 @@ services:
       - server
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:3001
+      DATABASE_URL: postgres://${POSTGRES_USER:-kalla}:${POSTGRES_PASSWORD:-kalla_secret}@postgres:5432/${POSTGRES_DB:-kalla}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
 
 volumes:
   postgres_data:
