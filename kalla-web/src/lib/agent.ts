@@ -8,6 +8,7 @@ import type {
   ContextInjection,
   ColumnInfo,
   SourceInfo,
+  FilterCondition,
 } from './chat-types';
 import { PHASES, PHASE_ORDER } from './chat-types';
 import { executeTool } from './agent-tools';
@@ -603,7 +604,7 @@ export async function runAgent(
                 rows: string[][];
               };
               const conditions = (tu.input as Record<string, unknown>)
-                .conditions as Array<{ column: string; op: string; value: unknown }>;
+                .conditions as FilterCondition[];
               const asObjects = preview.rows.map((row) => {
                 const obj: Record<string, unknown> = {};
                 preview.columns.forEach((col, j) => {
