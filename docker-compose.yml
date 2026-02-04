@@ -17,6 +17,20 @@ services:
       timeout: 5s
       retries: 5
 
+  db-init:
+    image: postgres:16-alpine
+    container_name: kalla-db-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./scripts/init.sql:/scripts/init.sql:ro
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-kalla_secret}
+    entrypoint: >
+      sh -c "psql -h postgres -U $${POSTGRES_USER:-kalla} -d $${POSTGRES_DB:-kalla} -f /scripts/init.sql && echo 'DB init complete'"
+    restart: "no"
+
   server:
     build:
       context: .
@@ -27,6 +41,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
     volumes:
       - evidence_data:/app/evidence
       - ./testdata:/app/testdata:ro
