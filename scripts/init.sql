@@ -139,7 +139,8 @@ INSERT INTO invoices (invoice_id, customer_id, customer_name, invoice_date, due_
 ('INV-2024-014', 'CUST-013', 'British Solutions Ltd', '2024-02-22', '2024-03-22', 8500.00, 'GBP', 'pending', 'UK market support'),
 
 -- Already paid (for testing status)
-('INV-2024-015', 'CUST-014', 'QuickPay Corp', '2024-01-05', '2024-02-05', 6000.00, 'USD', 'paid', 'Express service');
+('INV-2024-015', 'CUST-014', 'QuickPay Corp', '2024-01-05', '2024-02-05', 6000.00, 'USD', 'paid', 'Express service')
+ON CONFLICT DO NOTHING;
 
 -- ============================================
 -- SEED DATA: PAYMENTS
@@ -169,7 +170,8 @@ INSERT INTO payments (payment_id, payer_id, payer_name, payment_date, paid_amoun
 
 -- Different name variations (fuzzy matching test)
 ('PAY-2024-013', 'CUST-001', 'ACME Corp.', '2024-03-05', 1500.00, 'USD', 'check', 'MISC-001', 'CHK-001234', 'Miscellaneous payment'),
-('PAY-2024-014', 'CUST-014', 'Quick Pay Corporation', '2024-02-01', 6000.00, 'USD', 'ach', 'INV-2024-015', 'ACH-99887766', 'Early payment');
+('PAY-2024-014', 'CUST-014', 'Quick Pay Corporation', '2024-02-01', 6000.00, 'USD', 'ach', 'INV-2024-015', 'ACH-99887766', 'Early payment')
+ON CONFLICT DO NOTHING;
 
 -- ============================================
 -- SEED DATA: DATA SOURCES
@@ -179,7 +181,8 @@ INSERT INTO sources (alias, uri, source_type, status) VALUES
 ('invoices', 'postgres://kalla:kalla_secret@postgres:5432/kalla?table=invoices', 'postgres', 'connected'),
 ('payments', 'postgres://kalla:kalla_secret@postgres:5432/kalla?table=payments', 'postgres', 'connected'),
 ('invoices_csv', 'file:///app/testdata/invoices.csv', 'csv', 'connected'),
-('payments_csv', 'file:///app/testdata/payments.csv', 'csv', 'connected');
+('payments_csv', 'file:///app/testdata/payments.csv', 'csv', 'connected')
+ON CONFLICT DO NOTHING;
 
 -- ============================================
 -- SEED DATA: SAMPLE RECIPE
@@ -234,7 +237,8 @@ INSERT INTO recipes (recipe_id, name, description, config) VALUES
     "unmatched_left": "evidence/unmatched_invoices.parquet",
     "unmatched_right": "evidence/unmatched_payments.parquet"
   }
-}'::jsonb);
+}'::jsonb)
+ON CONFLICT DO NOTHING;
 
 -- ============================================
 -- VIEWS FOR REPORTING
@@ -328,4 +332,3 @@ CREATE INDEX IF NOT EXISTS idx_chat_sessions_status ON chat_sessions(status);
 -- GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO kalla;
 -- GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO kalla;
 
-COMMIT;
