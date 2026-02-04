@@ -95,6 +95,34 @@ fn extract_string_value(batch: &arrow::array::RecordBatch, column_name: &str, ro
     None
 }
 
+/// Convert an Arrow array value at the given index to a string representation
+fn arrow_value_to_string(array: &arrow::array::ArrayRef, idx: usize) -> String {
+    use arrow::array::{BooleanArray, Float64Array, Int32Array, Int64Array, StringArray};
+
+    if array.is_null(idx) {
+        return "null".to_string();
+    }
+
+    if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
+        return arr.value(idx).to_string();
+    }
+    if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
+        return arr.value(idx).to_string();
+    }
+    if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
+        return arr.value(idx).to_string();
+    }
+    if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
+        return arr.value(idx).to_string();
+    }
+    if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
+        return arr.value(idx).to_string();
+    }
+
+    // Fallback for other types
+    format!("{:?}", array.slice(idx, 1))
+}
+
 /// Register a source with the engine's SessionContext by looking up its URI
 async fn register_source_with_engine(
     state: &Arc<AppState>,
@@ -512,7 +540,7 @@ async fn get_source_preview(
     Path(alias): Path<String>,
     Query(params): Query<PreviewParams>,
 ) -> Result<Json<SourcePreviewResponse>, (StatusCode, String)> {
-    use arrow::array::{ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray};
+    use arrow::array::Int64Array;
 
     let limit = params.limit.unwrap_or(10).min(100); // Max 100 rows
 
@@ -553,32 +581,6 @@ async fn get_source_preview(
         .collect()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Collect failed: {}", e)))?;
-
-    // Helper function to convert arrow values to strings
-    fn arrow_value_to_string(array: &ArrayRef, idx: usize) -> String {
-        if array.is_null(idx) {
-            return "null".to_string();
-        }
-
-        if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
-            return arr.value(idx).to_string();
-        }
-        if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
-            return arr.value(idx).to_string();
-        }
-        if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
-            return arr.value(idx).to_string();
-        }
-        if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
-            return arr.value(idx).to_string();
-        }
-        if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
-            return arr.value(idx).to_string();
-        }
-
-        // Fallback for other types
-        format!("{:?}", array.slice(idx, 1))
-    }
 
     // Convert to JSON-friendly format
     let mut rows: Vec<Vec<String>> = Vec::new();
@@ -656,7 +658,7 @@ async fn load_scoped(
     Path(alias): Path<String>,
     Json(req): Json<LoadScopedRequest>,
 ) -> Result<Json<SourcePreviewResponse>, (StatusCode, String)> {
-    use arrow::array::{ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray};
+    use arrow::array::Int64Array;
 
     // Enforce limit: default 200, max 1000
     let limit = req.limit.unwrap_or(200).min(1000);
@@ -670,29 +672,6 @@ async fn load_scoped(
             .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Source '{}' not found", alias)))?;
         source.uri.clone()
     };
-
-    // Helper function to convert arrow values to strings (same as get_source_preview)
-    fn arrow_value_to_string(array: &ArrayRef, idx: usize) -> String {
-        if array.is_null(idx) {
-            return "null".to_string();
-        }
-        if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
-            return arr.value(idx).to_string();
-        }
-        if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
-            return arr.value(idx).to_string();
-        }
-        if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
-            return arr.value(idx).to_string();
-        }
-        if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
-            return arr.value(idx).to_string();
-        }
-        if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
-            return arr.value(idx).to_string();
-        }
-        format!("{:?}", array.slice(idx, 1))
-    }
 
     if source_uri.starts_with("postgres://") {
         // PostgreSQL path: use register_scoped to push filtered data into DataFusion

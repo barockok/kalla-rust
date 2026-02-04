@@ -142,7 +142,7 @@ pub fn build_scoped_query(
     conditions: &[FilterCondition],
     limit: Option<usize>,
 ) -> String {
-    let mut query = format!("SELECT * FROM {}", table);
+    let mut query = format!("SELECT * FROM \"{}\"", table.replace('"', "\"\""));
     query.push_str(&build_where_clause(conditions));
     if let Some(lim) = limit {
         query.push_str(&format!(" LIMIT {}", lim));
@@ -257,14 +257,14 @@ mod tests {
         let query = build_scoped_query("invoices", &conditions, Some(50));
         assert_eq!(
             query,
-            "SELECT * FROM invoices WHERE \"invoice_date\" BETWEEN '2024-01-01' AND '2024-01-31' AND \"amount\" >= 100 LIMIT 50"
+            "SELECT * FROM \"invoices\" WHERE \"invoice_date\" BETWEEN '2024-01-01' AND '2024-01-31' AND \"amount\" >= 100 LIMIT 50"
         );
     }
 
     #[test]
     fn test_build_scoped_query_no_conditions() {
         let query = build_scoped_query("payments", &[], Some(200));
-        assert_eq!(query, "SELECT * FROM payments LIMIT 200");
+        assert_eq!(query, "SELECT * FROM \"payments\" LIMIT 200");
     }
 
     #[test]
@@ -275,6 +275,6 @@ mod tests {
             value: FilterValue::String("active".to_string()),
         }];
         let query = build_scoped_query("orders", &conditions, None);
-        assert_eq!(query, "SELECT * FROM orders WHERE \"status\" = 'active'");
+        assert_eq!(query, "SELECT * FROM \"orders\" WHERE \"status\" = 'active'");
     }
 }
