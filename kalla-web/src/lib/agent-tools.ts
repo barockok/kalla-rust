@@ -8,7 +8,7 @@ import type { ChatSession, SourceInfo, SourcePreview } from './chat-types';
 // propose_match, infer_rules, build_recipe) run locally in the Next.js process.
 // ---------------------------------------------------------------------------
 
-const RUST_API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+const RUST_API = process.env.SERVER_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 // ---------------------------------------------------------------------------
 // Tool: list_sources
