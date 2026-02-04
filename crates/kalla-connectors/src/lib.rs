@@ -5,6 +5,8 @@
 //! - S3 (future)
 //! - BigQuery (future)
 
+pub mod filter;
 pub mod postgres;
 
+pub use filter::{build_where_clause, FilterCondition, FilterOp, FilterValue};
 pub use postgres::PostgresConnector;
