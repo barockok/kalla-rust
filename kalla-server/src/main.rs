@@ -17,7 +17,7 @@ use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 use uuid::Uuid;
 
-use kalla_connectors::PostgresConnector;
+use kalla_connectors::{build_where_clause, FilterCondition, PostgresConnector};
 use kalla_core::ReconciliationEngine;
 use kalla_evidence::{EvidenceStore, MatchedRecord, RunMetadata, UnmatchedRecord};
 use kalla_recipe::{MatchRecipe, Transpiler};
@@ -432,6 +432,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sources", get(list_sources).post(register_source))
         .route("/api/sources/:alias/primary-key", get(get_source_primary_key))
         .route("/api/sources/:alias/preview", get(get_source_preview))
+        .route("/api/sources/:alias/load-scoped", post(load_scoped))
         .route("/api/recipes", get(list_recipes).post(save_recipe))
         .route("/api/recipes/validate", post(validate_recipe))
         .route("/api/recipes/validate-schema", post(validate_recipe_schema))
@@ -641,6 +642,223 @@ struct ColumnInfo {
     name: String,
     data_type: String,
     nullable: bool,
+}
+
+#[derive(Deserialize)]
+struct LoadScopedRequest {
+    conditions: Vec<FilterCondition>,
+    limit: Option<usize>,
+}
+
+// POST /api/sources/:alias/load-scoped
+async fn load_scoped(
+    State(state): State<Arc<AppState>>,
+    Path(alias): Path<String>,
+    Json(req): Json<LoadScopedRequest>,
+) -> Result<Json<SourcePreviewResponse>, (StatusCode, String)> {
+    use arrow::array::{ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray};
+
+    // Enforce limit: default 200, max 1000
+    let limit = req.limit.unwrap_or(200).min(1000);
+
+    // Look up the source by alias
+    let source_uri = {
+        let sources = state.sources.read().await;
+        let source = sources
+            .iter()
+            .find(|s| s.alias == alias)
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Source '{}' not found", alias)))?;
+        source.uri.clone()
+    };
+
+    // Helper function to convert arrow values to strings (same as get_source_preview)
+    fn arrow_value_to_string(array: &ArrayRef, idx: usize) -> String {
+        if array.is_null(idx) {
+            return "null".to_string();
+        }
+        if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
+            return arr.value(idx).to_string();
+        }
+        if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
+            return arr.value(idx).to_string();
+        }
+        if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
+            return arr.value(idx).to_string();
+        }
+        if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
+            return arr.value(idx).to_string();
+        }
+        if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
+            return arr.value(idx).to_string();
+        }
+        format!("{:?}", array.slice(idx, 1))
+    }
+
+    if source_uri.starts_with("postgres://") {
+        // PostgreSQL path: use register_scoped to push filtered data into DataFusion
+        let (conn_string, table_name) = parse_postgres_uri(&source_uri)
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+        let connector = PostgresConnector::new(&conn_string)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to connect to database: {}", e)))?;
+
+        let engine = state.engine.write().await;
+        connector
+            .register_scoped(engine.context(), &alias, &table_name, &req.conditions, Some(limit))
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to register scoped table: {}", e)))?;
+
+        // Query the now-registered scoped table from DataFusion
+        let table = engine
+            .context()
+            .table(&alias)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Table not found after register_scoped: {}", e)))?;
+        let schema = table.schema();
+
+        let columns: Vec<ColumnInfo> = schema
+            .fields()
+            .iter()
+            .map(|f| ColumnInfo {
+                name: f.name().to_string(),
+                data_type: format!("{:?}", f.data_type()),
+                nullable: f.is_nullable(),
+            })
+            .collect();
+
+        let query = format!("SELECT * FROM \"{}\" LIMIT {}", alias, limit);
+        let df = engine
+            .context()
+            .sql(&query)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Query failed: {}", e)))?;
+
+        let batches = df
+            .collect()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Collect failed: {}", e)))?;
+
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        for batch in &batches {
+            for row_idx in 0..batch.num_rows() {
+                let mut row: Vec<String> = Vec::new();
+                for col_idx in 0..batch.num_columns() {
+                    let col = batch.column(col_idx);
+                    let value = arrow_value_to_string(col, row_idx);
+                    row.push(value);
+                }
+                rows.push(row);
+            }
+        }
+
+        let count_query = format!("SELECT COUNT(*) FROM \"{}\"", alias);
+        let count_df = engine
+            .context()
+            .sql(&count_query)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let count_batches = count_df
+            .collect()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let total_rows = count_batches
+            .first()
+            .and_then(|b| b.column(0).as_any().downcast_ref::<Int64Array>())
+            .map(|a| a.value(0) as u64)
+            .unwrap_or(0);
+
+        let preview_rows = rows.len();
+
+        Ok(Json(SourcePreviewResponse {
+            alias,
+            columns,
+            rows,
+            total_rows,
+            preview_rows,
+        }))
+    } else {
+        // File-based sources (CSV/Parquet): register then query with WHERE clause
+        register_source_with_engine(&state, &alias)
+            .await
+            .map_err(|e| (StatusCode::NOT_FOUND, format!("Source not found: {}", e)))?;
+
+        let engine = state.engine.read().await;
+
+        // Get schema
+        let table = engine
+            .context()
+            .table(&alias)
+            .await
+            .map_err(|e| (StatusCode::NOT_FOUND, format!("Source not found: {}", e)))?;
+        let schema = table.schema();
+
+        let columns: Vec<ColumnInfo> = schema
+            .fields()
+            .iter()
+            .map(|f| ColumnInfo {
+                name: f.name().to_string(),
+                data_type: format!("{:?}", f.data_type()),
+                nullable: f.is_nullable(),
+            })
+            .collect();
+
+        // Build filtered SQL query
+        let where_clause = build_where_clause(&req.conditions);
+        let query = format!("SELECT * FROM \"{}\"{} LIMIT {}", alias, where_clause, limit);
+        let df = engine
+            .context()
+            .sql(&query)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Query failed: {}", e)))?;
+
+        let batches = df
+            .collect()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Collect failed: {}", e)))?;
+
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        for batch in &batches {
+            for row_idx in 0..batch.num_rows() {
+                let mut row: Vec<String> = Vec::new();
+                for col_idx in 0..batch.num_columns() {
+                    let col = batch.column(col_idx);
+                    let value = arrow_value_to_string(col, row_idx);
+                    row.push(value);
+                }
+                rows.push(row);
+            }
+        }
+
+        // Get total count with same filters (without LIMIT)
+        let count_query = format!("SELECT COUNT(*) FROM \"{}\"{}", alias, where_clause);
+        let count_df = engine
+            .context()
+            .sql(&count_query)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let count_batches = count_df
+            .collect()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let total_rows = count_batches
+            .first()
+            .and_then(|b| b.column(0).as_any().downcast_ref::<Int64Array>())
+            .map(|a| a.value(0) as u64)
+            .unwrap_or(0);
+
+        let preview_rows = rows.len();
+
+        Ok(Json(SourcePreviewResponse {
+            alias,
+            columns,
+            rows,
+            total_rows,
+            preview_rows,
+        }))
+    }
 }
 
 async fn register_source(
