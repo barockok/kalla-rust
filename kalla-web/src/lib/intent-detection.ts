@@ -1,6 +1,5 @@
 interface SourceStub {
   alias: string;
-  source_type: string;
 }
 
 function normalise(text: string): string {
@@ -37,7 +36,9 @@ export function detectSourceAliases(
     }
 
     // Try singularised alias: "payments csv" -> "payment csv"
-    const singularAlias = aliasWords.replace(/s\b/g, '');
+    const words = aliasWords.split(' ');
+    if (words.length > 0) words[0] = words[0].replace(/s$/, '');
+    const singularAlias = words.join(' ');
     if (singularAlias !== aliasWords && remaining.includes(singularAlias)) {
       matched.push(source.alias);
       remaining = remaining.replace(singularAlias, '');

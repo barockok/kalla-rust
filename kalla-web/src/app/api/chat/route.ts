@@ -55,7 +55,7 @@ export async function POST(request: NextRequest) {
         const sources = await listSources();
         const detected = detectSourceAliases(
           userText,
-          sources.map((s) => ({ alias: s.alias, source_type: s.source_type })),
+          sources.map((s) => ({ alias: s.alias })),
         );
         if (detected.left) {
           updateSession(session.id, { left_source_alias: detected.left });

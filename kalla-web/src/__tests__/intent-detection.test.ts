@@ -1,12 +1,11 @@
-import { describe, it, expect } from 'vitest';
-import { detectSourceAliases } from '../lib/intent-detection';
+import { detectSourceAliases } from '@/lib/intent-detection';
 
 describe('detectSourceAliases', () => {
   const availableSources = [
-    { alias: 'invoices', source_type: 'postgres' },
-    { alias: 'payments', source_type: 'postgres' },
-    { alias: 'invoices_csv', source_type: 'csv' },
-    { alias: 'payments_csv', source_type: 'csv' },
+    { alias: 'invoices' },
+    { alias: 'payments' },
+    { alias: 'invoices_csv' },
+    { alias: 'payments_csv' },
   ];
 
   it('detects CSV aliases when user says "invoices csv and payments csv"', () => {

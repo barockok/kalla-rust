@@ -277,12 +277,17 @@ async fn test_list_recipes() {
 #[tokio::test]
 async fn test_csv_source_preview() {
     let client = reqwest::Client::new();
-    let api_url = std::env::var("API_URL").unwrap_or_else(|_| "http://localhost:3001".to_string());
+    let health_check = client.get(format!("{}/health", API_URL)).send().await;
+
+    if health_check.is_err() {
+        println!("Skipping test: Server not running at {}", API_URL);
+        return;
+    }
 
     // The init.sql seeds invoices_csv and payments_csv.
     // After a server restart they should still be queryable.
     let res = client
-        .get(format!("{}/api/sources/invoices_csv/preview?limit=5", api_url))
+        .get(format!("{}/api/sources/invoices_csv/preview?limit=5", API_URL))
         .send()
         .await
         .expect("request failed");
