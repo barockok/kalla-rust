@@ -34,22 +34,27 @@ export async function getSourcePreview(
 }
 
 // ---------------------------------------------------------------------------
-// Tool: load_sample
+// Tool: load_scoped
 //
-// Loads a filtered sample of rows from a data source. Currently backed by the
-// preview endpoint with a higher limit. A future Rust endpoint could accept
-// arbitrary SQL WHERE criteria.
+// Loads a filtered subset of rows from a data source by POSTing structured
+// filter conditions to the Rust backend, which translates them to the
+// source's native query language (SQL WHERE, DataFrame filter, etc.).
 // ---------------------------------------------------------------------------
 
-export async function loadSample(
+export async function loadScoped(
   alias: string,
-  _criteria: string,
-  limit: number = 50,
+  conditions: Array<{ column: string; op: string; value: unknown }>,
+  limit: number = 200,
 ): Promise<SourcePreview> {
   const res = await fetch(
-    `${RUST_API}/api/sources/${encodeURIComponent(alias)}/preview?limit=${limit}`,
+    `${RUST_API}/api/sources/${encodeURIComponent(alias)}/load-scoped`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conditions, limit }),
+    },
   );
-  if (!res.ok) throw new Error(`Failed to load sample from ${alias}: ${res.statusText}`);
+  if (!res.ok) throw new Error(`Failed to load scoped data from ${alias}: ${res.statusText}`);
   return res.json();
 }
 
@@ -269,11 +274,11 @@ export async function executeTool(
     case 'get_source_preview':
       return getSourcePreview(args.alias as string, (args.limit as number) || 10);
 
-    case 'load_sample':
-      return loadSample(
+    case 'load_scoped':
+      return loadScoped(
         args.alias as string,
-        (args.criteria as string) || '',
-        (args.limit as number) || 50,
+        args.conditions as Array<{ column: string; op: string; value: unknown }>,
+        (args.limit as number) || 200,
       );
 
     case 'propose_match':
