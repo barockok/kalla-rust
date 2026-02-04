@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { isLiveAgent, sendMessage } from './helpers';
 
 test.describe('Scenario 2: Source Discovery & Data Preview', () => {
   test('agent responds to source discovery questions', async ({ page }) => {
@@ -8,37 +9,61 @@ test.describe('Scenario 2: Source Discovery & Data Preview', () => {
     const firstAgent = page.locator('[data-testid="agent-message"]').first();
     await expect(firstAgent).toBeVisible({ timeout: 60_000 });
 
-    const input = page.getByPlaceholder('Type your message...');
-    await input.fill('What data sources do I have available?');
-    await page.getByRole('button', { name: 'Send' }).click();
+    const firstText = (await firstAgent.textContent()) ?? '';
+    const live = isLiveAgent(firstText);
 
-    const sourceResponse = page.locator('[data-testid="agent-message"]').nth(1);
-    await expect(sourceResponse).toBeVisible({ timeout: 60_000 });
+    // Ask about data sources
+    const sourceText = await sendMessage(page, 'What data sources do I have available?');
+    expect(sourceText.length).toBeGreaterThan(5);
 
-    // Response should be non-empty (either real data or an error message)
-    const text = await sourceResponse.textContent();
-    expect(text!.length).toBeGreaterThan(5);
+    if (live) {
+      const lower = sourceText.toLowerCase();
+      expect(lower.includes('invoice') || lower.includes('payment')).toBe(true);
+    }
 
-    await input.fill('Show me a preview of the invoices source');
-    await page.getByRole('button', { name: 'Send' }).click();
-    const previewResponse = page.locator('[data-testid="agent-message"]').nth(2);
-    await expect(previewResponse).toBeVisible({ timeout: 60_000 });
+    // Ask for invoice preview
+    const previewText = await sendMessage(page, 'Show me a preview of the invoices source');
+
+    if (live) {
+      const lower = previewText.toLowerCase();
+      // Agent should discuss the invoices source — either show columns or explain access status
+      expect(
+        lower.includes('invoice_id') ||
+          lower.includes('customer_name') ||
+          lower.includes('amount') ||
+          lower.includes('column') ||
+          lower.includes('invoice') ||
+          lower.includes('source') ||
+          lower.includes('table'),
+      ).toBe(true);
+    }
   });
 
   test('agent handles unknown requests gracefully', async ({ page }) => {
     await page.goto('/reconcile');
     await page.getByRole('button', { name: 'Start Conversation' }).click();
-    await expect(page.locator('[data-testid="agent-message"]').first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('[data-testid="agent-message"]').first()).toBeVisible({
+      timeout: 60_000,
+    });
 
-    const input = page.getByPlaceholder('Type your message...');
-    await input.fill('Show me the source called "nonexistent_table"');
-    await page.getByRole('button', { name: 'Send' }).click();
+    const firstText = (await page.locator('[data-testid="agent-message"]').first().textContent()) ?? '';
+    const live = isLiveAgent(firstText);
 
-    const response = page.locator('[data-testid="agent-message"]').nth(1);
-    await expect(response).toBeVisible({ timeout: 60_000 });
+    const responseText = await sendMessage(page, 'Show me the source called "nonexistent_table"');
+    expect(responseText.length).toBeGreaterThan(5);
 
-    // Agent should respond (whether with real content or error, it should be non-empty)
-    const text = await response.textContent();
-    expect(text!.length).toBeGreaterThan(5);
+    if (live) {
+      const lower = responseText.toLowerCase();
+      // Should indicate not found or list available sources instead
+      expect(
+        lower.includes('not found') ||
+          lower.includes('not available') ||
+          lower.includes("doesn't exist") ||
+          lower.includes('does not exist') ||
+          lower.includes('available') ||
+          lower.includes('invoice') ||
+          lower.includes('payment'),
+      ).toBe(true);
+    }
   });
 });

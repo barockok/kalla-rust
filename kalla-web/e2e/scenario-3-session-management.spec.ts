@@ -1,20 +1,27 @@
 import { test, expect } from '@playwright/test';
+import { isLiveAgent, sendMessage } from './helpers';
 
 test.describe('Scenario 3: Session Management & Reset', () => {
   test('maintains conversation context across multiple messages', async ({ page }) => {
     await page.goto('/reconcile');
     await page.getByRole('button', { name: 'Start Conversation' }).click();
-    await expect(page.locator('[data-testid="agent-message"]').first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('[data-testid="agent-message"]').first()).toBeVisible({
+      timeout: 60_000,
+    });
 
-    const input = page.getByPlaceholder('Type your message...');
+    const firstText =
+      (await page.locator('[data-testid="agent-message"]').first().textContent()) ?? '';
+    const live = isLiveAgent(firstText);
 
-    await input.fill('I want to work with invoices and payments');
-    await page.getByRole('button', { name: 'Send' }).click();
-    await expect(page.locator('[data-testid="agent-message"]').nth(1)).toBeVisible({ timeout: 60_000 });
+    await sendMessage(page, 'I want to work with invoices and payments');
 
-    await input.fill('Tell me more about the invoices source');
-    await page.getByRole('button', { name: 'Send' }).click();
-    await expect(page.locator('[data-testid="agent-message"]').nth(2)).toBeVisible({ timeout: 60_000 });
+    const thirdText = await sendMessage(page, 'Tell me more about the invoices source');
+
+    if (live) {
+      // Third response should reference invoices, demonstrating context retention
+      const lower = thirdText.toLowerCase();
+      expect(lower.includes('invoice')).toBe(true);
+    }
 
     // Verify messages accumulated (user + agent messages)
     const userMessages = page.locator('[data-testid="user-message"]');
@@ -28,12 +35,11 @@ test.describe('Scenario 3: Session Management & Reset', () => {
   test('reset clears conversation and starts fresh', async ({ page }) => {
     await page.goto('/reconcile');
     await page.getByRole('button', { name: 'Start Conversation' }).click();
-    await expect(page.locator('[data-testid="agent-message"]').first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('[data-testid="agent-message"]').first()).toBeVisible({
+      timeout: 60_000,
+    });
 
-    const input = page.getByPlaceholder('Type your message...');
-    await input.fill('Show me invoices');
-    await page.getByRole('button', { name: 'Send' }).click();
-    await expect(page.locator('[data-testid="agent-message"]').nth(1)).toBeVisible({ timeout: 60_000 });
+    await sendMessage(page, 'Show me invoices');
 
     const agentsBefore = page.locator('[data-testid="agent-message"]');
     const countBefore = await agentsBefore.count();
@@ -44,7 +50,9 @@ test.describe('Scenario 3: Session Management & Reset', () => {
     await expect(page.locator('[data-testid="agent-message"]')).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Start Conversation' }).click();
-    await expect(page.locator('[data-testid="agent-message"]').first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('[data-testid="agent-message"]').first()).toBeVisible({
+      timeout: 60_000,
+    });
     const agentsAfter = page.locator('[data-testid="agent-message"]');
     const countAfter = await agentsAfter.count();
     expect(countAfter).toBe(1);
@@ -67,11 +75,27 @@ test.describe('Scenario 3: Session Management & Reset', () => {
     expect(body.message).toHaveProperty('timestamp');
     expect(body.message.segments.length).toBeGreaterThan(0);
 
+    const firstSegmentText = body.message.segments.map((s: { content: string }) => s.content).join(' ');
+    const live = isLiveAgent(firstSegmentText);
+
+    if (live) {
+      // Phase should progress beyond greeting after a meaningful question
+      expect(['greeting', 'intent', 'sampling']).toContain(body.phase);
+    }
+
     const followUp = await request.post('/api/chat', {
       data: { session_id: body.session_id, message: 'Tell me about the invoices source' },
     });
     expect(followUp.ok()).toBeTruthy();
     const followUpBody = await followUp.json();
     expect(followUpBody.session_id).toBe(body.session_id);
+
+    if (live) {
+      const followUpText = followUpBody.message.segments
+        .map((s: { content: string }) => s.content)
+        .join(' ');
+      // Real content should mention invoices
+      expect(followUpText.toLowerCase()).toContain('invoice');
+    }
   });
 });

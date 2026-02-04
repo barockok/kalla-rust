@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { isLiveAgent, sendMessage } from './helpers';
 
 test.describe('Scenario 1: Full Conversation Flow — Invoice to Payment Reconciliation', () => {
   test('completes full agentic recipe building flow', async ({ page }) => {
@@ -11,26 +12,37 @@ test.describe('Scenario 1: Full Conversation Flow — Invoice to Payment Reconci
     const firstAgent = page.locator('[data-testid="agent-message"]').first();
     await expect(firstAgent).toBeVisible({ timeout: 60_000 });
 
-    // Agent should respond with something
-    const firstText = await firstAgent.textContent();
-    expect(firstText!.length).toBeGreaterThan(10);
+    const firstText = (await firstAgent.textContent()) ?? '';
+    expect(firstText.length).toBeGreaterThan(10);
+
+    const live = isLiveAgent(firstText);
+
+    if (live) {
+      // Greeting should mention data sources
+      const lower = firstText.toLowerCase();
+      expect(
+        lower.includes('invoice') || lower.includes('payment') || lower.includes('source'),
+      ).toBe(true);
+    }
 
     // State intent
-    const input = page.getByPlaceholder('Type your message...');
-    await input.fill('I want to reconcile invoices with payments');
-    await page.getByRole('button', { name: 'Send' }).click();
+    const secondText = await sendMessage(page, 'I want to reconcile invoices with payments');
 
-    // Wait for second agent message
-    const secondAgent = page.locator('[data-testid="agent-message"]').nth(1);
-    await expect(secondAgent).toBeVisible({ timeout: 60_000 });
+    if (live) {
+      // Phase should advance beyond greeting
+      const phaseIndicator = page.locator(
+        'text=/intent|sampling|demonstration|inference|validation|execution/i',
+      );
+      await expect(phaseIndicator).toBeVisible({ timeout: 10_000 });
+    }
 
-    // Send another message
-    await input.fill('Show me what data sources are available');
-    await page.getByRole('button', { name: 'Send' }).click();
+    // Ask about sources
+    const thirdText = await sendMessage(page, 'Show me what data sources are available');
 
-    // Wait for third agent message
-    const thirdAgent = page.locator('[data-testid="agent-message"]').nth(2);
-    await expect(thirdAgent).toBeVisible({ timeout: 60_000 });
+    if (live) {
+      const lower = thirdText.toLowerCase();
+      expect(lower.includes('invoice') || lower.includes('payment')).toBe(true);
+    }
 
     // Verify conversation has built up
     const agentMessages = page.locator('[data-testid="agent-message"]');
@@ -38,7 +50,9 @@ test.describe('Scenario 1: Full Conversation Flow — Invoice to Payment Reconci
     expect(count).toBeGreaterThanOrEqual(3);
 
     // Verify phase indicator visible
-    const phaseIndicator = page.locator('text=/greeting|intent|sampling|demonstration|inference|validation|execution/i');
+    const phaseIndicator = page.locator(
+      'text=/greeting|intent|sampling|demonstration|inference|validation|execution/i',
+    );
     await expect(phaseIndicator).toBeVisible();
   });
 });
