@@ -32,3 +32,6 @@ dist/
 # Logs
 *.log
 
+# Worktrees
+.worktrees/
+
