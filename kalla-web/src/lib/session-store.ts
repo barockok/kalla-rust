@@ -30,16 +30,18 @@ async function persistSession(session: ChatSession): Promise<void> {
          left_source_alias, right_source_alias,
          recipe_draft,
          sample_left, sample_right,
-         sample_criteria_left, sample_criteria_right,
+         sources_list, schema_left, schema_right,
+         scope_left, scope_right, validation_approved,
          confirmed_pairs, messages, updated_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, NOW())
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16, NOW())
        ON CONFLICT (id) DO UPDATE SET
          status = $2, phase = $3,
          left_source_alias = $4, right_source_alias = $5,
          recipe_draft = $6,
          sample_left = $7, sample_right = $8,
-         sample_criteria_left = $9, sample_criteria_right = $10,
-         confirmed_pairs = $11, messages = $12,
+         sources_list = $9, schema_left = $10, schema_right = $11,
+         scope_left = $12, scope_right = $13, validation_approved = $14,
+         confirmed_pairs = $15, messages = $16,
          updated_at = NOW()`,
       [
         session.id,
@@ -50,8 +52,12 @@ async function persistSession(session: ChatSession): Promise<void> {
         session.recipe_draft ? JSON.stringify(session.recipe_draft) : null,
         session.sample_left ? JSON.stringify(session.sample_left) : null,
         session.sample_right ? JSON.stringify(session.sample_right) : null,
-        session.sample_criteria_left,
-        session.sample_criteria_right,
+        session.sources_list ? JSON.stringify(session.sources_list) : null,
+        session.schema_left ? JSON.stringify(session.schema_left) : null,
+        session.schema_right ? JSON.stringify(session.schema_right) : null,
+        session.scope_left ? JSON.stringify(session.scope_left) : null,
+        session.scope_right ? JSON.stringify(session.scope_right) : null,
+        session.validation_approved,
         JSON.stringify(session.confirmed_pairs),
         JSON.stringify(session.messages),
       ],
@@ -80,9 +86,13 @@ export function createSession(): ChatSession {
     recipe_draft: null,
     sample_left: null,
     sample_right: null,
-    sample_criteria_left: null,
-    sample_criteria_right: null,
     confirmed_pairs: [],
+    sources_list: null,
+    schema_left: null,
+    schema_right: null,
+    scope_left: null,
+    scope_right: null,
+    validation_approved: false,
     messages: [],
     created_at: now,
     updated_at: now,
@@ -112,9 +122,13 @@ export function updateSession(
       | 'recipe_draft'
       | 'sample_left'
       | 'sample_right'
-      | 'sample_criteria_left'
-      | 'sample_criteria_right'
       | 'confirmed_pairs'
+      | 'sources_list'
+      | 'schema_left'
+      | 'schema_right'
+      | 'scope_left'
+      | 'scope_right'
+      | 'validation_approved'
     >
   >,
 ): ChatSession | undefined {
