@@ -1,6 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { ChatSession, ChatPhase, ChatSegment, AgentTool } from './chat-types';
-import { PHASE_TOOLS } from './chat-types';
+import type {
+  ChatSession,
+  ChatPhase,
+  ChatSegment,
+  AgentTool,
+  PhaseConfig,
+  ContextInjection,
+  ColumnInfo,
+  SourceInfo,
+} from './chat-types';
+import { PHASES, PHASE_ORDER } from './chat-types';
 import { executeTool } from './agent-tools';
 
 // ---------------------------------------------------------------------------
@@ -47,20 +56,36 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
-    name: 'load_sample',
+    name: 'load_scoped',
     description:
-      'Load a filtered sample of rows from a data source for match demonstration. Use this to get a workable subset of data.',
+      "Load a filtered subset of rows from a data source. Pass structured filter conditions that will be translated to the source's native query language.",
     input_schema: {
       type: 'object' as const,
       properties: {
         alias: { type: 'string', description: 'The alias of the data source' },
-        criteria: {
-          type: 'string',
-          description: 'Filter criteria description (e.g., date range, customer ID)',
+        conditions: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              column: { type: 'string', description: 'Column name to filter on' },
+              op: {
+                type: 'string',
+                enum: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between', 'in', 'like'],
+                description: 'Filter operator',
+              },
+              value: {
+                description:
+                  'Filter value - string, number, array of strings, or [from, to] for between',
+              },
+            },
+            required: ['column', 'op', 'value'],
+          },
+          description: 'Filter conditions to scope the data',
         },
-        limit: { type: 'number', description: 'Max rows to load (default 50)' },
+        limit: { type: 'number', description: 'Max rows to load (default 200, max 1000)' },
       },
-      required: ['alias'],
+      required: ['alias', 'conditions'],
     },
   },
   {
@@ -228,10 +253,169 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Prerequisite Checker
+//
+// Validates that all required session fields are populated before entering
+// a phase. Throws with a descriptive error listing missing fields.
+// ---------------------------------------------------------------------------
+
+export function checkPrerequisites(config: PhaseConfig, session: ChatSession): void {
+  const missing: string[] = [];
+
+  for (const field of config.prerequisites.sessionFields) {
+    const value = session[field];
+
+    // Boolean fields: check for `=== true` (specifically for validation_approved)
+    if (typeof value === 'boolean') {
+      if (value !== true) {
+        missing.push(field);
+      }
+      continue;
+    }
+
+    // Array fields: check for null or empty
+    if (Array.isArray(value)) {
+      if (value.length === 0) {
+        missing.push(field);
+      }
+      continue;
+    }
+
+    // All other fields: check for null/undefined
+    if (value === null || value === undefined) {
+      missing.push(field);
+    }
+  }
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Phase "${config.name}" prerequisites not met. Missing: ${missing.join(', ')}`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Context Injection Builder
+//
+// Produces a formatted string of contextual data to append to the system
+// prompt. Each injection type maps to a labeled section.
+// ---------------------------------------------------------------------------
+
+const SAMPLE_ROW_LIMIT = 20;
+
+function formatSourcesList(sources: SourceInfo[]): string {
+  const lines = sources.map(
+    (s) => `  - ${s.alias} (${s.source_type}) [${s.status}] ${s.uri}`,
+  );
+  return `\n\nAVAILABLE SOURCES:\n${lines.join('\n')}`;
+}
+
+function formatSchema(label: string, columns: ColumnInfo[]): string {
+  const lines = columns.map(
+    (c) => `  - ${c.name}: ${c.data_type}${c.nullable ? ' (nullable)' : ''}`,
+  );
+  return `\n\n${label}:\n${lines.join('\n')}`;
+}
+
+function formatSampleData(
+  label: string,
+  rows: Record<string, unknown>[],
+): string {
+  const total = rows.length;
+  const truncated = rows.slice(0, SAMPLE_ROW_LIMIT);
+  const header =
+    total > SAMPLE_ROW_LIMIT
+      ? `${label} (Showing ${SAMPLE_ROW_LIMIT} of ${total} rows):`
+      : `${label} (${total} rows):`;
+  return `\n\n${header}\n${JSON.stringify(truncated, null, 2)}`;
+}
+
+export function buildContextInjections(
+  config: PhaseConfig,
+  session: ChatSession,
+): string {
+  const parts: string[] = [];
+
+  for (const injection of config.contextInjections) {
+    switch (injection) {
+      case 'sources_list': {
+        if (session.sources_list && session.sources_list.length > 0) {
+          parts.push(formatSourcesList(session.sources_list));
+        }
+        break;
+      }
+      case 'schema_left': {
+        if (session.schema_left && session.schema_left.length > 0) {
+          parts.push(formatSchema('LEFT SOURCE SCHEMA', session.schema_left));
+        }
+        break;
+      }
+      case 'schema_right': {
+        if (session.schema_right && session.schema_right.length > 0) {
+          parts.push(formatSchema('RIGHT SOURCE SCHEMA', session.schema_right));
+        }
+        break;
+      }
+      case 'sample_left': {
+        if (session.sample_left && session.sample_left.length > 0) {
+          parts.push(formatSampleData('LEFT SOURCE DATA', session.sample_left));
+        }
+        break;
+      }
+      case 'sample_right': {
+        if (session.sample_right && session.sample_right.length > 0) {
+          parts.push(
+            formatSampleData('RIGHT SOURCE DATA', session.sample_right),
+          );
+        }
+        break;
+      }
+      case 'confirmed_pairs': {
+        if (session.confirmed_pairs && session.confirmed_pairs.length > 0) {
+          parts.push(
+            `\n\nCONFIRMED MATCH PAIRS: ${session.confirmed_pairs.length} pairs\n${JSON.stringify(session.confirmed_pairs, null, 2)}`,
+          );
+        }
+        break;
+      }
+      case 'recipe_draft': {
+        if (session.recipe_draft) {
+          parts.push(
+            `\n\nCURRENT RECIPE DRAFT:\n${JSON.stringify(session.recipe_draft, null, 2)}`,
+          );
+        }
+        break;
+      }
+    }
+  }
+
+  return parts.join('');
+}
+
+// ---------------------------------------------------------------------------
+// Phase-aware Tool Filtering
+//
+// Returns the full Anthropic.Tool definitions for tools allowed in the given
+// phase, optionally excluding tools that have exhausted their retry budget.
+// ---------------------------------------------------------------------------
+
+export function getPhaseTools(
+  phase: ChatPhase,
+  exhaustedTools?: Set<string>,
+): Anthropic.Tool[] {
+  const allowed: AgentTool[] = PHASES[phase].tools;
+  return TOOL_DEFINITIONS.filter((t) => {
+    if (!(allowed as string[]).includes(t.name)) return false;
+    if (exhaustedTools && exhaustedTools.has(t.name)) return false;
+    return true;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // System Prompt Builder
 // ---------------------------------------------------------------------------
 
-function buildSystemPrompt(session: ChatSession): string {
+function buildSystemPrompt(session: ChatSession, config: PhaseConfig): string {
   const lines: string[] = [
     'You are a reconciliation assistant for Kalla, a data reconciliation engine.',
     'Your job is to help users build reconciliation recipes by demonstrating matches with examples.',
@@ -245,60 +429,26 @@ function buildSystemPrompt(session: ChatSession): string {
     '- After confirming matches, analyze the patterns and propose rules.',
     '- Stop asking for more examples once patterns are unambiguous.',
     '',
-    `CURRENT PHASE: ${session.phase}`,
-    `Available tools in this phase: ${PHASE_TOOLS[session.phase].join(', ')}`,
+    `CURRENT PHASE: ${config.name}`,
+    `Available tools in this phase: ${config.tools.join(', ')}`,
     '',
+    `PHASE INSTRUCTIONS: ${config.instructions}`,
   ];
 
-  // Phase-specific instructions
-  const phaseInstructions: Record<ChatPhase, string> = {
-    greeting:
-      'PHASE INSTRUCTIONS: Greet the user. Use list_sources to see what data sources are available. Tell the user what sources they have and ask what they want to reconcile.',
-    intent:
-      'PHASE INSTRUCTIONS: The user has stated what they want to reconcile. Confirm the left and right sources. Use get_source_preview to understand the data structure if needed.',
-    sampling:
-      'PHASE INSTRUCTIONS: Ask the user for filter criteria to narrow down each source to a workable sample. Load samples using load_sample.',
-    demonstration:
-      'PHASE INSTRUCTIONS: Examine the loaded sample data. Propose candidate matches using propose_match. The user will confirm or reject. Build up a set of confirmed pairs.',
-    inference:
-      'PHASE INSTRUCTIONS: Analyze confirmed match pairs using infer_rules. Propose the matching rules to the user. Build the recipe using build_recipe once rules are agreed upon.',
-    validation:
-      'PHASE INSTRUCTIONS: Validate the recipe using validate_recipe. Run it on sample data using run_sample. Show results and let the user iterate if needed.',
-    execution:
-      'PHASE INSTRUCTIONS: The user has approved the recipe. Run it on the full dataset using run_full. Show the results summary.',
-  };
+  // Context injections from declarative config
+  const injections = buildContextInjections(config, session);
+  if (injections) {
+    lines.push(injections);
+  }
 
-  lines.push(phaseInstructions[session.phase]);
-
-  // Context injection — selected sources
+  // Selected sources info
   if (session.left_source_alias || session.right_source_alias) {
     lines.push('', 'SELECTED SOURCES:');
     if (session.left_source_alias) lines.push(`- Left: ${session.left_source_alias}`);
     if (session.right_source_alias) lines.push(`- Right: ${session.right_source_alias}`);
   }
 
-  // Context injection — confirmed pairs count
-  if (session.confirmed_pairs.length > 0) {
-    lines.push('', `CONFIRMED MATCH PAIRS: ${session.confirmed_pairs.length} pairs confirmed so far.`);
-  }
-
-  // Context injection — recipe draft
-  if (session.recipe_draft) {
-    lines.push('', 'CURRENT RECIPE DRAFT:', JSON.stringify(session.recipe_draft, null, 2));
-  }
-
   return lines.join('\n');
-}
-
-// ---------------------------------------------------------------------------
-// Phase-aware tool filtering
-// ---------------------------------------------------------------------------
-
-function getPhaseTools(phase: ChatPhase): Anthropic.Tool[] {
-  const allowed: AgentTool[] = PHASE_TOOLS[phase];
-  return TOOL_DEFINITIONS.filter((t) =>
-    (allowed as string[]).includes(t.name),
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -312,13 +462,29 @@ export interface AgentResponse {
 }
 
 // ---------------------------------------------------------------------------
-// runAgent — the main orchestrator loop
+// Phase Advancement
 //
-// 1. Build conversation history from session.messages
-// 2. Call Claude with system prompt + phase tools
-// 3. Handle tool_use blocks: execute tool, feed result back, call Claude again
-// 4. Repeat until Claude returns a final text response
-// 5. Detect phase transitions based on which tools were used
+// Finds the next phase in PHASE_ORDER after the current one.
+// Returns undefined if already at the last phase.
+// ---------------------------------------------------------------------------
+
+function getNextPhase(current: ChatPhase): ChatPhase | undefined {
+  const idx = PHASE_ORDER.indexOf(current);
+  if (idx < 0 || idx >= PHASE_ORDER.length - 1) return undefined;
+  return PHASE_ORDER[idx + 1];
+}
+
+// ---------------------------------------------------------------------------
+// runAgent -- the main orchestrator loop
+//
+// 1. Get phase config from PHASES declarative map
+// 2. Check prerequisites
+// 3. Build conversation history from session.messages
+// 4. Call Claude with system prompt + phase tools
+// 5. Handle tool_use blocks: execute tool, feed result back, call Claude again
+// 6. After each tool success: check advancesWhen — if true, advance phase
+// 7. Track retries per tool — remove exhausted tools from available set
+// 8. Repeat until Claude returns a final text response
 // ---------------------------------------------------------------------------
 
 export async function runAgent(
@@ -327,8 +493,20 @@ export async function runAgent(
   onTextChunk?: (text: string) => void,
 ): Promise<AgentResponse> {
   const client = getClient();
-  const systemPrompt = buildSystemPrompt(session);
-  const tools = getPhaseTools(session.phase);
+
+  let currentPhase = session.phase;
+  let config = PHASES[currentPhase];
+
+  // Check prerequisites for the current phase
+  checkPrerequisites(config, session);
+
+  // Retry tracking: tool name -> number of failures
+  const retryTracker = new Map<string, number>();
+  const exhaustedTools = new Set<string>();
+
+  // Build initial system prompt and tools
+  let systemPrompt = buildSystemPrompt(session, config);
+  let tools = getPhaseTools(currentPhase, exhaustedTools);
 
   // Build conversation history for Claude from session messages
   const conversationMessages: Anthropic.MessageParam[] = [];
@@ -352,8 +530,10 @@ export async function runAgent(
   const sessionUpdates: Partial<ChatSession> = {};
   let phaseTransition: ChatPhase | undefined;
 
+  // Working copy of session for advancesWhen checks
+  const workingSession = { ...session };
+
   // Tool-use loop: keep calling Claude until we get a final text response
-  // (i.e., no more tool_use blocks in the response).
   let currentMessages = conversationMessages;
   let continueLoop = true;
 
@@ -370,7 +550,7 @@ export async function runAgent(
       // Assume this is the final turn unless we encounter a tool_use block.
       continueLoop = false;
 
-      // Collect all tool_use blocks from this response (there may be several).
+      // Collect all tool_use blocks from this response.
       const toolUseBlocks: Array<{ id: string; name: string; input: unknown }> = [];
 
       for (const block of response.content) {
@@ -394,31 +574,36 @@ export async function runAgent(
               session,
             );
 
-            // --- Phase transition detection ---
-            if (tu.name === 'list_sources' && session.phase === 'greeting') {
-              phaseTransition = 'intent';
-            } else if (tu.name === 'load_sample' && session.phase === 'sampling') {
-              phaseTransition = 'demonstration';
-            } else if (tu.name === 'infer_rules') {
-              phaseTransition = 'inference';
-            } else if (tu.name === 'build_recipe') {
-              phaseTransition = 'validation';
-              sessionUpdates.recipe_draft = result as Record<string, unknown>;
-            } else if (tu.name === 'validate_recipe') {
-              // Stay in validation phase
-              if (!phaseTransition) phaseTransition = 'validation';
-            } else if (tu.name === 'run_full') {
-              phaseTransition = 'execution';
-              sessionUpdates.status = 'running';
-            }
-
-            // --- Store sample data on session ---
-            if (tu.name === 'load_sample' || tu.name === 'get_source_preview') {
+            // --- Store tool results on sessionUpdates ---
+            if (tu.name === 'list_sources') {
+              sessionUpdates.sources_list = result as SourceInfo[];
+              workingSession.sources_list = result as SourceInfo[];
+            } else if (tu.name === 'get_source_preview') {
               const preview = result as {
                 alias: string;
+                columns: ColumnInfo[];
                 rows: string[][];
-                columns: Array<{ name: string }>;
               };
+              // First preview populates left, second populates right
+              if (
+                !workingSession.schema_left ||
+                (session.left_source_alias &&
+                  preview.alias === session.left_source_alias)
+              ) {
+                sessionUpdates.schema_left = preview.columns;
+                workingSession.schema_left = preview.columns;
+              } else {
+                sessionUpdates.schema_right = preview.columns;
+                workingSession.schema_right = preview.columns;
+              }
+            } else if (tu.name === 'load_scoped') {
+              const preview = result as {
+                alias: string;
+                columns: ColumnInfo[];
+                rows: string[][];
+              };
+              const conditions = (tu.input as Record<string, unknown>)
+                .conditions as Array<{ column: string; op: string; value: unknown }>;
               const asObjects = preview.rows.map((row) => {
                 const obj: Record<string, unknown> = {};
                 preview.columns.forEach((col, j) => {
@@ -427,14 +612,36 @@ export async function runAgent(
                 return obj;
               });
 
-              if (session.left_source_alias && preview.alias === session.left_source_alias) {
-                sessionUpdates.sample_left = asObjects;
-              } else if (
-                session.right_source_alias &&
-                preview.alias === session.right_source_alias
+              // First load populates left, second populates right
+              if (
+                !workingSession.sample_left ||
+                (session.left_source_alias &&
+                  preview.alias === session.left_source_alias)
               ) {
+                sessionUpdates.sample_left = asObjects;
+                sessionUpdates.scope_left = conditions;
+                workingSession.sample_left = asObjects;
+                workingSession.scope_left = conditions;
+              } else {
                 sessionUpdates.sample_right = asObjects;
+                sessionUpdates.scope_right = conditions;
+                workingSession.sample_right = asObjects;
+                workingSession.scope_right = conditions;
               }
+            } else if (tu.name === 'build_recipe') {
+              sessionUpdates.recipe_draft = result as Record<string, unknown>;
+              workingSession.recipe_draft = result as Record<string, unknown>;
+            } else if (tu.name === 'propose_match') {
+              // Emit as match_proposal card segment
+              segments.push({
+                type: 'card',
+                card_type: 'match_proposal',
+                card_id: `match-${Date.now()}`,
+                data: result as Record<string, unknown>,
+              });
+            } else if (tu.name === 'run_full') {
+              sessionUpdates.status = 'running';
+              workingSession.status = 'running';
             }
 
             toolResults.push({
@@ -442,6 +649,20 @@ export async function runAgent(
               tool_use_id: tu.id,
               content: JSON.stringify(result),
             });
+
+            // --- Check for phase advancement after tool success ---
+            if (config.advancesWhen(workingSession)) {
+              const nextPhase = getNextPhase(currentPhase);
+              if (nextPhase) {
+                phaseTransition = nextPhase;
+                currentPhase = nextPhase;
+                config = PHASES[currentPhase];
+
+                // Rebuild system prompt and tools for new phase
+                systemPrompt = buildSystemPrompt(workingSession, config);
+                tools = getPhaseTools(currentPhase, exhaustedTools);
+              }
+            }
           } catch (err) {
             const errorMsg = err instanceof Error ? err.message : 'Tool execution failed';
             toolResults.push({
@@ -450,6 +671,17 @@ export async function runAgent(
               content: JSON.stringify({ error: errorMsg }),
               is_error: true,
             });
+
+            // --- Retry tracking ---
+            const currentRetries = retryTracker.get(tu.name) ?? 0;
+            const newRetries = currentRetries + 1;
+            retryTracker.set(tu.name, newRetries);
+
+            if (newRetries >= config.errorPolicy.maxRetriesPerTool) {
+              exhaustedTools.add(tu.name);
+              // Rebuild tools without exhausted ones
+              tools = getPhaseTools(currentPhase, exhaustedTools);
+            }
           }
         }
 
