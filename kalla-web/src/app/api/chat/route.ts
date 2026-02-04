@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSession, getSession, updateSession, addMessage } from '@/lib/session-store';
 import { runAgent } from '@/lib/agent';
+import { detectSourceAliases } from '@/lib/intent-detection';
+import { listSources } from '@/lib/agent-tools';
 import type { ChatMessage, CardResponse } from '@/lib/chat-types';
 
 export async function POST(request: NextRequest) {
@@ -49,17 +51,25 @@ export async function POST(request: NextRequest) {
 
     // Detect intent from user message for phase transitions
     if (session.phase === 'intent' && !session.left_source_alias) {
-      const words = userText.toLowerCase().split(/\s+/);
-      if (words.includes('invoices') || words.includes('invoice')) {
-        updateSession(session.id, { left_source_alias: 'invoices' });
-      }
-      if (words.includes('payments') || words.includes('payment')) {
-        updateSession(session.id, { right_source_alias: 'payments' });
-      }
-      session = getSession(session.id)!;
-      if (session.left_source_alias && session.right_source_alias) {
-        updateSession(session.id, { phase: 'sampling' });
+      try {
+        const sources = await listSources();
+        const detected = detectSourceAliases(
+          userText,
+          sources.map((s) => ({ alias: s.alias, source_type: s.source_type })),
+        );
+        if (detected.left) {
+          updateSession(session.id, { left_source_alias: detected.left });
+        }
+        if (detected.right) {
+          updateSession(session.id, { right_source_alias: detected.right });
+        }
         session = getSession(session.id)!;
+        if (session.left_source_alias && session.right_source_alias) {
+          updateSession(session.id, { phase: 'sampling' });
+          session = getSession(session.id)!;
+        }
+      } catch {
+        // If source listing fails, let the agent handle it via tool calls
       }
     }
 
