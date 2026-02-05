@@ -2,6 +2,7 @@
 
 import type { ChatMessage as ChatMessageType, ChatSegment } from '@/lib/chat-types';
 import { MatchProposalCard } from './MatchProposalCard';
+import { MarkdownRenderer } from './MarkdownRenderer';
 import { cn } from '@/lib/utils';
 
 interface ChatMessageProps {
@@ -40,10 +41,18 @@ function SegmentRenderer({ segment, isAgent, onCardAction }: {
   onCardAction?: (cardId: string, action: string, value?: unknown) => void;
 }) {
   if (segment.type === 'text' && segment.content) {
+    // Only render markdown for agent messages; keep user messages as plain text
+    if (isAgent) {
+      return (
+        <div className="rounded-lg px-4 py-2 bg-muted text-foreground">
+          <MarkdownRenderer content={segment.content} />
+        </div>
+      );
+    }
     return (
       <div className={cn(
         'rounded-lg px-4 py-2 text-sm whitespace-pre-wrap',
-        isAgent ? 'bg-muted text-foreground' : 'bg-primary text-primary-foreground'
+        'bg-primary text-primary-foreground'
       )}>
         {segment.content}
       </div>
