@@ -35,7 +35,7 @@ function ReactMarkdown({ children, components }: ReactMarkdownProps): ReactNode 
 
     while (remaining.length > 0) {
       // Check for bold **text**
-      const boldMatch = remaining.match(/^(.*?)\*\*(.+?)\*\*(.*)/s);
+      const boldMatch = remaining.match(/^(.*?)\*\*(.+?)\*\*([\s\S]*)/);
       if (boldMatch) {
         if (boldMatch[1]) {
           parts.push(<React.Fragment key={keyIndex++}>{boldMatch[1]}</React.Fragment>);
@@ -46,7 +46,7 @@ function ReactMarkdown({ children, components }: ReactMarkdownProps): ReactNode 
       }
 
       // Check for italic *text*
-      const italicMatch = remaining.match(/^(.*?)\*(.+?)\*(.*)/s);
+      const italicMatch = remaining.match(/^(.*?)\*(.+?)\*([\s\S]*)/);
       if (italicMatch) {
         if (italicMatch[1]) {
           parts.push(<React.Fragment key={keyIndex++}>{italicMatch[1]}</React.Fragment>);
@@ -57,7 +57,7 @@ function ReactMarkdown({ children, components }: ReactMarkdownProps): ReactNode 
       }
 
       // Check for inline code `text`
-      const codeMatch = remaining.match(/^(.*?)`(.+?)`(.*)/s);
+      const codeMatch = remaining.match(/^(.*?)`(.+?)`([\s\S]*)/);
       if (codeMatch) {
         if (codeMatch[1]) {
           parts.push(<React.Fragment key={keyIndex++}>{codeMatch[1]}</React.Fragment>);
@@ -72,7 +72,7 @@ function ReactMarkdown({ children, components }: ReactMarkdownProps): ReactNode 
       }
 
       // Check for links [text](url)
-      const linkMatch = remaining.match(/^(.*?)\[(.+?)\]\((.+?)\)(.*)/s);
+      const linkMatch = remaining.match(/^(.*?)\[(.+?)\]\((.+?)\)([\s\S]*)/);
       if (linkMatch) {
         if (linkMatch[1]) {
           parts.push(<React.Fragment key={keyIndex++}>{linkMatch[1]}</React.Fragment>);
