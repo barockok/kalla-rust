@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ballista-executor
+  labels:
+    app: kalla
+    component: ballista-executor
+spec:
+  serviceName: ballista-executor
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kalla
+      component: ballista-executor
+  template:
+    metadata:
+      labels:
+        app: kalla
+        component: ballista-executor
+    spec:
+      containers:
+        - name: ballista-executor
+          image: apache/arrow-ballista-executor:latest
+          ports:
+            - containerPort: 50051
+              name: grpc
+          env:
+            - name: SCHEDULER_HOST
+              value: ballista-scheduler
+            - name: SCHEDULER_PORT
+              value: "50050"
+            - name: AWS_ENDPOINT_URL
+              value: http://minio:9000
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: kalla-secrets
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: kalla-secrets
+                  key: aws-secret-access-key
+            - name: AWS_REGION
+              value: us-east-1
+            - name: RUST_LOG
+              value: info
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ballista-executor
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: ballista-executor
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

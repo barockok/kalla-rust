@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nats
+  labels:
+    app: kalla
+    component: nats
+spec:
+  serviceName: nats
+  replicas: 3
+  selector:
+    matchLabels:
+      app: kalla
+      component: nats
+  template:
+    metadata:
+      labels:
+        app: kalla
+        component: nats
+    spec:
+      containers:
+        - name: nats
+          image: nats:2-alpine
+          ports:
+            - containerPort: 4222
+              name: client
+            - containerPort: 6222
+              name: cluster
+            - containerPort: 8222
+              name: monitor
+          args:
+            - "--jetstream"
+            - "--store_dir=/data"
+            - "-m"
+            - "8222"
+            - "--cluster_name=kalla-nats"
+            - "--cluster=nats://0.0.0.0:6222"
+            - "--routes=nats://nats-0.nats:6222,nats://nats-1.nats:6222,nats://nats-2.nats:6222"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: nats-data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: nats-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  labels:
+    app: kalla
+    component: nats
+spec:
+  clusterIP: None
+  selector:
+    app: kalla
+    component: nats
+  ports:
+    - port: 4222
+      targetPort: client
+      name: client
+    - port: 6222
+      targetPort: cluster
+      name: cluster
+    - port: 8222
+      targetPort: monitor
+      name: monitor

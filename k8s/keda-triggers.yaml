@@ -1,0 +1,30 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker
+  labels:
+    app: kalla
+    component: worker
+spec:
+  scaleTargetRef:
+    name: worker
+  minReplicaCount: 1
+  maxReplicaCount: 50
+  cooldownPeriod: 300
+  triggers:
+    - type: nats-jetstream
+      metadata:
+        account: "$G"
+        stream: kalla-jobs
+        consumer: workers
+        lagThreshold: "2"
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus:9090
+        query: max(kalla_queue_oldest_wait_seconds)
+        threshold: "30"
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus:9090
+        query: avg(kalla_worker_active_jobs)
+        threshold: "0.8"

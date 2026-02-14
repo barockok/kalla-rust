@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels:
+    app: kalla
+    component: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kalla
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: kalla
+        component: worker
+    spec:
+      containers:
+        - name: worker
+          image: kalla-worker:latest
+          ports:
+            - containerPort: 9090
+              name: metrics
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: kalla-secrets
+                  key: database-url
+            - name: NATS_URL
+              value: nats://nats:4222
+            - name: AWS_ENDPOINT_URL
+              value: http://minio:9000
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: kalla-secrets
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: kalla-secrets
+                  key: aws-secret-access-key
+            - name: AWS_REGION
+              value: us-east-1
+            - name: RUST_LOG
+              value: info
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: worker
+  labels:
+    app: kalla
+    component: worker
+spec:
+  selector:
+    matchLabels:
+      app: kalla
+      component: worker
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s

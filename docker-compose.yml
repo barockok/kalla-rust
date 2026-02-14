@@ -49,6 +49,7 @@ services:
       - ./testdata:/app/testdata:ro
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-kalla}:${POSTGRES_PASSWORD:-kalla_secret}@postgres:5432/${POSTGRES_DB:-kalla}
+      NATS_URL: nats://nats:4222
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
       RUST_LOG: ${RUST_LOG:-info}
@@ -84,6 +85,70 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  nats:
+    image: nats:2-alpine
+    container_name: kalla-nats
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--jetstream", "--store_dir=/data", "-m", "8222"]
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: kalla-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: crates/kalla-worker/Dockerfile
+    container_name: kalla-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-kalla}:${POSTGRES_PASSWORD:-kalla_secret}@postgres:5432/${POSTGRES_DB:-kalla}
+      NATS_URL: nats://nats:4222
+      AWS_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      AWS_REGION: us-east-1
+      AWS_ALLOW_HTTP: "true"
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   evidence_data:
+  nats_data:
+  minio_data:

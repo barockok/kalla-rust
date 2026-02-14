@@ -325,6 +325,39 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_status ON chat_sessions(status);
 
 -- ============================================
+-- JOB QUEUE TRACKING
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS run_staging_tracker (
+    run_id          UUID PRIMARY KEY,
+    status          TEXT NOT NULL DEFAULT 'staging',
+    total_chunks    INTEGER NOT NULL,
+    completed_chunks INTEGER NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    job_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_id          UUID NOT NULL,
+    job_type        TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    claimed_by      TEXT,
+    claimed_at      TIMESTAMPTZ,
+    last_heartbeat  TIMESTAMPTZ,
+    timeout_seconds INTEGER NOT NULL DEFAULT 300,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    max_attempts    INTEGER NOT NULL DEFAULT 3,
+    payload         JSONB NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_run_id ON jobs(run_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_heartbeat ON jobs(status, last_heartbeat)
+    WHERE status = 'claimed';
+
+-- ============================================
 -- GRANT PERMISSIONS
 -- ============================================
 

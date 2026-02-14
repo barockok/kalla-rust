@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ballista-scheduler
+  labels:
+    app: kalla
+    component: ballista-scheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kalla
+      component: ballista-scheduler
+  template:
+    metadata:
+      labels:
+        app: kalla
+        component: ballista-scheduler
+    spec:
+      containers:
+        - name: ballista-scheduler
+          image: apache/arrow-ballista-scheduler:latest
+          ports:
+            - containerPort: 50050
+              name: grpc
+          env:
+            - name: RUST_LOG
+              value: info
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ballista-scheduler
+  labels:
+    app: kalla
+    component: ballista-scheduler
+spec:
+  selector:
+    app: kalla
+    component: ballista-scheduler
+  ports:
+    - port: 50050
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+  type: ClusterIP
