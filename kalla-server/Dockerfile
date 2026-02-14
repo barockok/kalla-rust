@@ -13,6 +13,7 @@ COPY crates/kalla-recipe/Cargo.toml crates/kalla-recipe/Cargo.toml
 COPY crates/kalla-evidence/Cargo.toml crates/kalla-evidence/Cargo.toml
 COPY crates/kalla-ai/Cargo.toml crates/kalla-ai/Cargo.toml
 COPY crates/kalla-cli/Cargo.toml crates/kalla-cli/Cargo.toml
+COPY crates/kalla-worker/Cargo.toml crates/kalla-worker/Cargo.toml
 COPY kalla-server/Cargo.toml kalla-server/Cargo.toml
 
 # Create dummy source files so cargo can resolve the workspace
@@ -22,6 +23,7 @@ RUN mkdir -p crates/kalla-core/src && echo "pub fn _dummy() {}" > crates/kalla-c
     mkdir -p crates/kalla-evidence/src && echo "pub fn _dummy() {}" > crates/kalla-evidence/src/lib.rs && \
     mkdir -p crates/kalla-ai/src && echo "pub fn _dummy() {}" > crates/kalla-ai/src/lib.rs && \
     mkdir -p crates/kalla-cli/src && echo "fn main() {}" > crates/kalla-cli/src/main.rs && \
+    mkdir -p crates/kalla-worker/src && echo "fn main() {}" > crates/kalla-worker/src/main.rs && \
     mkdir -p kalla-server/src && echo "fn main() {}" > kalla-server/src/main.rs
 
 # Pin crates to versions compatible with Rust 1.85 (cached with dependencies)
