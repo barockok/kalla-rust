@@ -17,13 +17,16 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/your-org/kalla"
 
 [workspace.dependencies]
+# NATS JetStream
+async-nats = "0.38"
+
 # DataFusion ecosystem
 datafusion = "44"
 arrow = "53"
 parquet = { version = "53", features = ["async"] }
 
 # Database connectivity
-sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "tls-rustls"] }
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "tls-rustls", "uuid"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
