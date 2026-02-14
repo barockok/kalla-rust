@@ -1,6 +1,5 @@
 # Generated files
 /target/
-Cargo.lock
 
 # Evidence store
 /evidence/
