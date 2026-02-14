@@ -28,7 +28,9 @@ RUN mkdir -p crates/kalla-core/src && echo "pub fn _dummy() {}" > crates/kalla-c
 
 # Pin crates to versions compatible with Rust 1.85 (cached with dependencies)
 RUN cargo update home --precise 0.5.9 && \
-    cargo update comfy-table --precise 7.1.4
+    cargo update comfy-table --precise 7.1.4 && \
+    cargo update time --precise 0.3.36 && \
+    cargo update time-core --precise 0.1.2
 
 # Build dependencies only — cached between builds via BuildKit cache mounts
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
