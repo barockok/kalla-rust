@@ -42,26 +42,43 @@ impl FilterCondition {
     pub fn to_sql_where(&self) -> String {
         let col = format!("\"{}\"", sanitize_sql_identifier(&self.column));
         match (&self.op, &self.value) {
-            (FilterOp::Eq, FilterValue::String(v)) => format!("{} = '{}'", col, sanitize_sql_string(v)),
+            (FilterOp::Eq, FilterValue::String(v)) => {
+                format!("{} = '{}'", col, sanitize_sql_string(v))
+            }
             (FilterOp::Eq, FilterValue::Number(v)) => format!("{} = {}", col, format_number(*v)),
-            (FilterOp::Neq, FilterValue::String(v)) => format!("{} != '{}'", col, sanitize_sql_string(v)),
+            (FilterOp::Neq, FilterValue::String(v)) => {
+                format!("{} != '{}'", col, sanitize_sql_string(v))
+            }
             (FilterOp::Neq, FilterValue::Number(v)) => {
                 format!("{} != {}", col, format_number(*v))
             }
             (FilterOp::Gt, FilterValue::Number(v)) => format!("{} > {}", col, format_number(*v)),
-            (FilterOp::Gt, FilterValue::String(v)) => format!("{} > '{}'", col, sanitize_sql_string(v)),
+            (FilterOp::Gt, FilterValue::String(v)) => {
+                format!("{} > '{}'", col, sanitize_sql_string(v))
+            }
             (FilterOp::Gte, FilterValue::Number(v)) => {
                 format!("{} >= {}", col, format_number(*v))
             }
-            (FilterOp::Gte, FilterValue::String(v)) => format!("{} >= '{}'", col, sanitize_sql_string(v)),
+            (FilterOp::Gte, FilterValue::String(v)) => {
+                format!("{} >= '{}'", col, sanitize_sql_string(v))
+            }
             (FilterOp::Lt, FilterValue::Number(v)) => format!("{} < {}", col, format_number(*v)),
-            (FilterOp::Lt, FilterValue::String(v)) => format!("{} < '{}'", col, sanitize_sql_string(v)),
+            (FilterOp::Lt, FilterValue::String(v)) => {
+                format!("{} < '{}'", col, sanitize_sql_string(v))
+            }
             (FilterOp::Lte, FilterValue::Number(v)) => {
                 format!("{} <= {}", col, format_number(*v))
             }
-            (FilterOp::Lte, FilterValue::String(v)) => format!("{} <= '{}'", col, sanitize_sql_string(v)),
+            (FilterOp::Lte, FilterValue::String(v)) => {
+                format!("{} <= '{}'", col, sanitize_sql_string(v))
+            }
             (FilterOp::Between, FilterValue::Range([from, to])) => {
-                format!("{} BETWEEN '{}' AND '{}'", col, sanitize_sql_string(from), sanitize_sql_string(to))
+                format!(
+                    "{} BETWEEN '{}' AND '{}'",
+                    col,
+                    sanitize_sql_string(from),
+                    sanitize_sql_string(to)
+                )
             }
             (FilterOp::In, FilterValue::StringArray(vals)) => {
                 let list = vals
@@ -71,7 +88,9 @@ impl FilterCondition {
                     .join(", ");
                 format!("{} IN ({})", col, list)
             }
-            (FilterOp::Like, FilterValue::String(v)) => format!("{} LIKE '{}'", col, sanitize_sql_string(v)),
+            (FilterOp::Like, FilterValue::String(v)) => {
+                format!("{} LIKE '{}'", col, sanitize_sql_string(v))
+            }
             _ => format!("{} IS NOT NULL", col), // fallback for mismatched op/value
         }
     }
@@ -108,7 +127,12 @@ mod tests {
     // --- Eq tests ---
     #[test]
     fn test_eq_string_to_sql() {
-        let sql = fc("status", FilterOp::Eq, FilterValue::String("active".to_string())).to_sql_where();
+        let sql = fc(
+            "status",
+            FilterOp::Eq,
+            FilterValue::String("active".to_string()),
+        )
+        .to_sql_where();
         assert_eq!(sql, "\"status\" = 'active'");
     }
 
@@ -127,7 +151,12 @@ mod tests {
     // --- Neq tests ---
     #[test]
     fn test_neq_string_to_sql() {
-        let sql = fc("status", FilterOp::Neq, FilterValue::String("closed".to_string())).to_sql_where();
+        let sql = fc(
+            "status",
+            FilterOp::Neq,
+            FilterValue::String("closed".to_string()),
+        )
+        .to_sql_where();
         assert_eq!(sql, "\"status\" != 'closed'");
     }
 
@@ -146,7 +175,12 @@ mod tests {
 
     #[test]
     fn test_gt_string_to_sql() {
-        let sql = fc("date", FilterOp::Gt, FilterValue::String("2024-01-01".to_string())).to_sql_where();
+        let sql = fc(
+            "date",
+            FilterOp::Gt,
+            FilterValue::String("2024-01-01".to_string()),
+        )
+        .to_sql_where();
         assert_eq!(sql, "\"date\" > '2024-01-01'");
     }
 
@@ -159,7 +193,12 @@ mod tests {
 
     #[test]
     fn test_gte_string_to_sql() {
-        let sql = fc("date", FilterOp::Gte, FilterValue::String("2024-06-01".to_string())).to_sql_where();
+        let sql = fc(
+            "date",
+            FilterOp::Gte,
+            FilterValue::String("2024-06-01".to_string()),
+        )
+        .to_sql_where();
         assert_eq!(sql, "\"date\" >= '2024-06-01'");
     }
 
@@ -172,7 +211,12 @@ mod tests {
 
     #[test]
     fn test_lt_string_to_sql() {
-        let sql = fc("date", FilterOp::Lt, FilterValue::String("2024-12-31".to_string())).to_sql_where();
+        let sql = fc(
+            "date",
+            FilterOp::Lt,
+            FilterValue::String("2024-12-31".to_string()),
+        )
+        .to_sql_where();
         assert_eq!(sql, "\"date\" < '2024-12-31'");
     }
 
@@ -196,8 +240,12 @@ mod tests {
             "invoice_date",
             FilterOp::Between,
             FilterValue::Range(["2024-01-01".to_string(), "2024-01-31".to_string()]),
-        ).to_sql_where();
-        assert_eq!(sql, "\"invoice_date\" BETWEEN '2024-01-01' AND '2024-01-31'");
+        )
+        .to_sql_where();
+        assert_eq!(
+            sql,
+            "\"invoice_date\" BETWEEN '2024-01-01' AND '2024-01-31'"
+        );
     }
 
     // --- In tests ---
@@ -207,7 +255,8 @@ mod tests {
             "category",
             FilterOp::In,
             FilterValue::StringArray(vec!["food".to_string(), "drink".to_string()]),
-        ).to_sql_where();
+        )
+        .to_sql_where();
         assert_eq!(sql, "\"category\" IN ('food', 'drink')");
     }
 
@@ -217,14 +266,20 @@ mod tests {
             "type",
             FilterOp::In,
             FilterValue::StringArray(vec!["a".to_string()]),
-        ).to_sql_where();
+        )
+        .to_sql_where();
         assert_eq!(sql, "\"type\" IN ('a')");
     }
 
     // --- Like tests ---
     #[test]
     fn test_like_to_sql() {
-        let sql = fc("name", FilterOp::Like, FilterValue::String("%acme%".to_string())).to_sql_where();
+        let sql = fc(
+            "name",
+            FilterOp::Like,
+            FilterValue::String("%acme%".to_string()),
+        )
+        .to_sql_where();
         assert_eq!(sql, "\"name\" LIKE '%acme%'");
     }
 
@@ -232,7 +287,12 @@ mod tests {
     #[test]
     fn test_mismatched_op_value_fallback() {
         // Between with a String value (not Range) => fallback
-        let sql = fc("col", FilterOp::Between, FilterValue::String("bad".to_string())).to_sql_where();
+        let sql = fc(
+            "col",
+            FilterOp::Between,
+            FilterValue::String("bad".to_string()),
+        )
+        .to_sql_where();
         assert_eq!(sql, "\"col\" IS NOT NULL");
     }
 
@@ -257,16 +317,22 @@ mod tests {
 
     #[test]
     fn test_build_where_clause_single() {
-        let clause = build_where_clause(&[
-            fc("status", FilterOp::Eq, FilterValue::String("active".to_string())),
-        ]);
+        let clause = build_where_clause(&[fc(
+            "status",
+            FilterOp::Eq,
+            FilterValue::String("active".to_string()),
+        )]);
         assert_eq!(clause, " WHERE \"status\" = 'active'");
     }
 
     #[test]
     fn test_build_where_clause_multiple() {
         let clause = build_where_clause(&[
-            fc("status", FilterOp::Eq, FilterValue::String("active".to_string())),
+            fc(
+                "status",
+                FilterOp::Eq,
+                FilterValue::String("active".to_string()),
+            ),
             fc("amount", FilterOp::Gte, FilterValue::Number(50.0)),
         ]);
         assert_eq!(clause, " WHERE \"status\" = 'active' AND \"amount\" >= 50");
@@ -337,7 +403,12 @@ mod tests {
     // --- SQL injection tests ---
     #[test]
     fn test_sql_injection_string_value() {
-        let sql = fc("status", FilterOp::Eq, FilterValue::String("'; DROP TABLE users; --".to_string())).to_sql_where();
+        let sql = fc(
+            "status",
+            FilterOp::Eq,
+            FilterValue::String("'; DROP TABLE users; --".to_string()),
+        )
+        .to_sql_where();
         assert_eq!(sql, "\"status\" = '''; DROP TABLE users; --'");
         // The single quote is escaped (doubled), so the injection becomes a string literal
         assert!(sql.contains("'''"));
@@ -345,7 +416,12 @@ mod tests {
 
     #[test]
     fn test_sql_injection_column_name() {
-        let sql = fc("col\"; DROP TABLE users; --", FilterOp::Eq, FilterValue::String("test".to_string())).to_sql_where();
+        let sql = fc(
+            "col\"; DROP TABLE users; --",
+            FilterOp::Eq,
+            FilterValue::String("test".to_string()),
+        )
+        .to_sql_where();
         assert!(sql.starts_with("\"col\"\"; DROP TABLE users; --\""));
     }
 
@@ -354,8 +430,12 @@ mod tests {
         let sql = fc(
             "date",
             FilterOp::Between,
-            FilterValue::Range(["2024'; DROP TABLE x; --".to_string(), "2024-12-31".to_string()]),
-        ).to_sql_where();
+            FilterValue::Range([
+                "2024'; DROP TABLE x; --".to_string(),
+                "2024-12-31".to_string(),
+            ]),
+        )
+        .to_sql_where();
         // Quotes should be escaped
         assert!(sql.contains("''"));
     }
@@ -366,7 +446,8 @@ mod tests {
             "cat",
             FilterOp::In,
             FilterValue::StringArray(vec!["val'; DROP TABLE x; --".to_string()]),
-        ).to_sql_where();
+        )
+        .to_sql_where();
         assert!(sql.contains("''"));
     }
 

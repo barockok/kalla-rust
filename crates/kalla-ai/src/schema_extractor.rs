@@ -40,9 +40,7 @@ pub async fn extract_schema(
     table_name: &str,
 ) -> anyhow::Result<SanitizedSchema> {
     // Get the table provider
-    let table = ctx
-        .table(table_name)
-        .await?;
+    let table = ctx.table(table_name).await?;
 
     let schema = table.schema();
 
@@ -154,9 +152,13 @@ mod tests {
     #[tokio::test]
     async fn test_extract_schema_invoices() {
         let ctx = SessionContext::new();
-        ctx.register_csv("invoices", &testdata_path("invoices.csv"), CsvReadOptions::new())
-            .await
-            .unwrap();
+        ctx.register_csv(
+            "invoices",
+            &testdata_path("invoices.csv"),
+            CsvReadOptions::new(),
+        )
+        .await
+        .unwrap();
 
         let schema = extract_schema(&ctx, "invoices").await.unwrap();
         assert_eq!(schema.table_name, "invoices");
@@ -171,9 +173,13 @@ mod tests {
     #[tokio::test]
     async fn test_extract_schema_payments() {
         let ctx = SessionContext::new();
-        ctx.register_csv("payments", &testdata_path("payments.csv"), CsvReadOptions::new())
-            .await
-            .unwrap();
+        ctx.register_csv(
+            "payments",
+            &testdata_path("payments.csv"),
+            CsvReadOptions::new(),
+        )
+        .await
+        .unwrap();
 
         let schema = extract_schema(&ctx, "payments").await.unwrap();
         assert_eq!(schema.table_name, "payments");
@@ -192,9 +198,13 @@ mod tests {
     #[tokio::test]
     async fn test_extract_schema_no_data_values() {
         let ctx = SessionContext::new();
-        ctx.register_csv("invoices", &testdata_path("invoices.csv"), CsvReadOptions::new())
-            .await
-            .unwrap();
+        ctx.register_csv(
+            "invoices",
+            &testdata_path("invoices.csv"),
+            CsvReadOptions::new(),
+        )
+        .await
+        .unwrap();
 
         let schema = extract_schema(&ctx, "invoices").await.unwrap();
         let json = serde_json::to_string(&schema).unwrap();
@@ -208,9 +218,13 @@ mod tests {
     #[tokio::test]
     async fn test_detect_primary_key_single_column() {
         let ctx = SessionContext::new();
-        ctx.register_csv("test_table", &testdata_path("invoices.csv"), CsvReadOptions::new())
-            .await
-            .unwrap();
+        ctx.register_csv(
+            "test_table",
+            &testdata_path("invoices.csv"),
+            CsvReadOptions::new(),
+        )
+        .await
+        .unwrap();
 
         let detected = detect_primary_key(&ctx, "test_table").await.unwrap();
         assert!(detected.contains(&"invoice_id".to_string()));
@@ -219,9 +233,13 @@ mod tests {
     #[tokio::test]
     async fn test_detect_primary_key_heuristics() {
         let ctx = SessionContext::new();
-        ctx.register_csv("test_table", &testdata_path("payments.csv"), CsvReadOptions::new())
-            .await
-            .unwrap();
+        ctx.register_csv(
+            "test_table",
+            &testdata_path("payments.csv"),
+            CsvReadOptions::new(),
+        )
+        .await
+        .unwrap();
 
         let detected = detect_primary_key(&ctx, "test_table").await.unwrap();
         assert!(detected.contains(&"payment_id".to_string()));
@@ -313,8 +331,16 @@ mod tests {
         let schema = SanitizedSchema {
             table_name: "invoices".to_string(),
             columns: vec![
-                ColumnMeta { name: "id".to_string(), data_type: "Int64".to_string(), nullable: false },
-                ColumnMeta { name: "amount".to_string(), data_type: "Float64".to_string(), nullable: false },
+                ColumnMeta {
+                    name: "id".to_string(),
+                    data_type: "Int64".to_string(),
+                    nullable: false,
+                },
+                ColumnMeta {
+                    name: "amount".to_string(),
+                    data_type: "Float64".to_string(),
+                    nullable: false,
+                },
             ],
             row_count: 1000,
         };

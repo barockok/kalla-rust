@@ -6,9 +6,9 @@
 //! - LLM API client (OpenAI/Anthropic)
 //! - Recipe validation against schemas
 
-pub mod schema_extractor;
-pub mod prompt;
 pub mod client;
+pub mod prompt;
+pub mod schema_extractor;
 
-pub use schema_extractor::{SanitizedSchema, ColumnMeta, extract_schema};
 pub use client::LlmClient;
+pub use schema_extractor::{extract_schema, ColumnMeta, SanitizedSchema};

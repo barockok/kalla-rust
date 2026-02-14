@@ -145,19 +145,26 @@ mod tests {
 
     #[test]
     fn test_build_user_prompt_contains_all_fields() {
-        let left = make_schema("invoices", vec![
-            ("invoice_id", "Utf8", false),
-            ("amount", "Float64", false),
-        ], 1000);
-        let right = make_schema("payments", vec![
-            ("payment_ref", "Utf8", false),
-            ("paid_amount", "Float64", false),
-        ], 950);
+        let left = make_schema(
+            "invoices",
+            vec![("invoice_id", "Utf8", false), ("amount", "Float64", false)],
+            1000,
+        );
+        let right = make_schema(
+            "payments",
+            vec![
+                ("payment_ref", "Utf8", false),
+                ("paid_amount", "Float64", false),
+            ],
+            950,
+        );
 
         let prompt = build_user_prompt(
-            &left, &right,
+            &left,
+            &right,
             "Match invoices to payments by ID with 1 cent tolerance",
-            "file://invoices.csv", "file://payments.csv",
+            "file://invoices.csv",
+            "file://payments.csv",
         );
 
         assert!(prompt.contains("invoices"));
@@ -308,8 +315,16 @@ Hope this helps!"#;
     #[test]
     fn test_format_columns() {
         let cols = vec![
-            ColumnMeta { name: "id".to_string(), data_type: "Int64".to_string(), nullable: false },
-            ColumnMeta { name: "name".to_string(), data_type: "Utf8".to_string(), nullable: true },
+            ColumnMeta {
+                name: "id".to_string(),
+                data_type: "Int64".to_string(),
+                nullable: false,
+            },
+            ColumnMeta {
+                name: "name".to_string(),
+                data_type: "Utf8".to_string(),
+                nullable: true,
+            },
         ];
         let result = format_columns(&cols);
         assert!(result.contains("- id: Int64"));

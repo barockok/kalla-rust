@@ -95,7 +95,9 @@ async fn ensure_server() -> Option<reqwest::Client> {
 
 #[tokio::test]
 async fn test_create_run_invalid_recipe_empty_rules() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let pg_host = postgres_host();
     let recipe = RecipeConfig {
@@ -104,12 +106,18 @@ async fn test_create_run_invalid_recipe_empty_rules() {
         sources: Sources {
             left: DataSource {
                 alias: "invoices".to_string(),
-                uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices", pg_host),
+                uri: format!(
+                    "postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices",
+                    pg_host
+                ),
                 primary_key: vec!["invoice_id".to_string()],
             },
             right: DataSource {
                 alias: "payments".to_string(),
-                uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=payments", pg_host),
+                uri: format!(
+                    "postgres://kalla:kalla_secret@{}:5432/kalla?table=payments",
+                    pg_host
+                ),
                 primary_key: vec!["payment_id".to_string()],
             },
         },
@@ -128,12 +136,18 @@ async fn test_create_run_invalid_recipe_empty_rules() {
         .await
         .expect("Request failed");
 
-    assert_eq!(response.status(), 400, "Empty match rules should return 400");
+    assert_eq!(
+        response.status(),
+        400,
+        "Empty match rules should return 400"
+    );
 }
 
 #[tokio::test]
 async fn test_create_run_invalid_version() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let pg_host = postgres_host();
     let recipe = RecipeConfig {
@@ -142,12 +156,18 @@ async fn test_create_run_invalid_version() {
         sources: Sources {
             left: DataSource {
                 alias: "invoices".to_string(),
-                uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices", pg_host),
+                uri: format!(
+                    "postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices",
+                    pg_host
+                ),
                 primary_key: vec!["invoice_id".to_string()],
             },
             right: DataSource {
                 alias: "payments".to_string(),
-                uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=payments", pg_host),
+                uri: format!(
+                    "postgres://kalla:kalla_secret@{}:5432/kalla?table=payments",
+                    pg_host
+                ),
                 primary_key: vec!["payment_id".to_string()],
             },
         },
@@ -181,7 +201,9 @@ async fn test_create_run_invalid_version() {
 
 #[tokio::test]
 async fn test_create_run_tolerance_without_threshold() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let pg_host = postgres_host();
     let recipe = RecipeConfig {
@@ -190,12 +212,18 @@ async fn test_create_run_tolerance_without_threshold() {
         sources: Sources {
             left: DataSource {
                 alias: "invoices".to_string(),
-                uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices", pg_host),
+                uri: format!(
+                    "postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices",
+                    pg_host
+                ),
                 primary_key: vec!["invoice_id".to_string()],
             },
             right: DataSource {
                 alias: "payments".to_string(),
-                uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=payments", pg_host),
+                uri: format!(
+                    "postgres://kalla:kalla_secret@{}:5432/kalla?table=payments",
+                    pg_host
+                ),
                 primary_key: vec!["payment_id".to_string()],
             },
         },
@@ -224,7 +252,11 @@ async fn test_create_run_tolerance_without_threshold() {
         .await
         .expect("Request failed");
 
-    assert_eq!(response.status(), 400, "Tolerance without threshold should return 400");
+    assert_eq!(
+        response.status(),
+        400,
+        "Tolerance without threshold should return 400"
+    );
 }
 
 // ===========================================================================
@@ -233,7 +265,9 @@ async fn test_create_run_tolerance_without_threshold() {
 
 #[tokio::test]
 async fn test_get_nonexistent_run() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let fake_id = "00000000-0000-0000-0000-000000000000";
     let response = client
@@ -247,20 +281,31 @@ async fn test_get_nonexistent_run() {
 
 #[tokio::test]
 async fn test_preview_nonexistent_source() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let response = client
-        .get(format!("{}/api/sources/nonexistent_source_xyz/preview?limit=5", API_URL))
+        .get(format!(
+            "{}/api/sources/nonexistent_source_xyz/preview?limit=5",
+            API_URL
+        ))
         .send()
         .await
         .expect("Request failed");
 
-    assert_eq!(response.status(), 404, "Nonexistent source preview should return 404");
+    assert_eq!(
+        response.status(),
+        404,
+        "Nonexistent source preview should return 404"
+    );
 }
 
 #[tokio::test]
 async fn test_register_unsupported_uri_scheme() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let response = client
         .post(format!("{}/api/sources", API_URL))
@@ -272,7 +317,11 @@ async fn test_register_unsupported_uri_scheme() {
         .await
         .expect("Request failed");
 
-    assert_eq!(response.status(), 400, "Unsupported URI scheme should return 400");
+    assert_eq!(
+        response.status(),
+        400,
+        "Unsupported URI scheme should return 400"
+    );
 }
 
 // ===========================================================================
@@ -281,7 +330,9 @@ async fn test_register_unsupported_uri_scheme() {
 
 #[tokio::test]
 async fn test_validate_recipe_endpoint_valid() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let pg_host = postgres_host();
     let recipe = RecipeConfig {
@@ -290,12 +341,18 @@ async fn test_validate_recipe_endpoint_valid() {
         sources: Sources {
             left: DataSource {
                 alias: "invoices".to_string(),
-                uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices", pg_host),
+                uri: format!(
+                    "postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices",
+                    pg_host
+                ),
                 primary_key: vec!["invoice_id".to_string()],
             },
             right: DataSource {
                 alias: "payments".to_string(),
-                uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=payments", pg_host),
+                uri: format!(
+                    "postgres://kalla:kalla_secret@{}:5432/kalla?table=payments",
+                    pg_host
+                ),
                 primary_key: vec!["payment_id".to_string()],
             },
         },
@@ -332,7 +389,9 @@ async fn test_validate_recipe_endpoint_valid() {
 
 #[tokio::test]
 async fn test_validate_recipe_endpoint_invalid() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let recipe = RecipeConfig {
         version: "1.0".to_string(),
@@ -376,7 +435,9 @@ async fn test_validate_recipe_endpoint_invalid() {
 
 #[tokio::test]
 async fn test_health_check() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let response = client
         .get(format!("{}/health", API_URL))
@@ -395,7 +456,9 @@ async fn test_health_check() {
 
 #[tokio::test]
 async fn test_reconciliation_exact_matches_only() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let pg_host = postgres_host();
     let recipe = RecipeConfig {
@@ -404,12 +467,18 @@ async fn test_reconciliation_exact_matches_only() {
         sources: Sources {
             left: DataSource {
                 alias: "invoices".to_string(),
-                uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices", pg_host),
+                uri: format!(
+                    "postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices",
+                    pg_host
+                ),
                 primary_key: vec!["invoice_id".to_string()],
             },
             right: DataSource {
                 alias: "payments".to_string(),
-                uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=payments", pg_host),
+                uri: format!(
+                    "postgres://kalla:kalla_secret@{}:5432/kalla?table=payments",
+                    pg_host
+                ),
                 primary_key: vec!["payment_id".to_string()],
             },
         },
@@ -486,7 +555,9 @@ async fn test_reconciliation_exact_matches_only() {
 
 #[tokio::test]
 async fn test_multiple_concurrent_runs() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let pg_host = postgres_host();
 
@@ -498,12 +569,18 @@ async fn test_multiple_concurrent_runs() {
             sources: Sources {
                 left: DataSource {
                     alias: "invoices".to_string(),
-                    uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices", pg_host),
+                    uri: format!(
+                        "postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices",
+                        pg_host
+                    ),
                     primary_key: vec!["invoice_id".to_string()],
                 },
                 right: DataSource {
                     alias: "payments".to_string(),
-                    uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=payments", pg_host),
+                    uri: format!(
+                        "postgres://kalla:kalla_secret@{}:5432/kalla?table=payments",
+                        pg_host
+                    ),
                     primary_key: vec!["payment_id".to_string()],
                 },
             },
@@ -570,7 +647,9 @@ async fn test_multiple_concurrent_runs() {
 
 #[tokio::test]
 async fn test_list_sources_returns_seed_data() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let response = client
         .get(format!("{}/api/sources", API_URL))
@@ -582,10 +661,7 @@ async fn test_list_sources_returns_seed_data() {
     let sources: Vec<serde_json::Value> = response.json().await.unwrap();
 
     // Seed data should include at least invoices and payments
-    let aliases: Vec<&str> = sources
-        .iter()
-        .filter_map(|s| s["alias"].as_str())
-        .collect();
+    let aliases: Vec<&str> = sources.iter().filter_map(|s| s["alias"].as_str()).collect();
 
     assert!(aliases.contains(&"invoices"), "Should have invoices source");
     assert!(aliases.contains(&"payments"), "Should have payments source");
@@ -593,10 +669,15 @@ async fn test_list_sources_returns_seed_data() {
 
 #[tokio::test]
 async fn test_source_preview_limit() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let response = client
-        .get(format!("{}/api/sources/invoices_csv/preview?limit=3", API_URL))
+        .get(format!(
+            "{}/api/sources/invoices_csv/preview?limit=3",
+            API_URL
+        ))
         .send()
         .await
         .expect("Request failed");
@@ -613,7 +694,9 @@ async fn test_source_preview_limit() {
 
 #[tokio::test]
 async fn test_get_recipe_by_id() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let response = client
         .get(format!("{}/api/recipes/invoice-payment-match", API_URL))
@@ -628,7 +711,9 @@ async fn test_get_recipe_by_id() {
 
 #[tokio::test]
 async fn test_get_nonexistent_recipe() {
-    let Some(client) = ensure_server().await else { return };
+    let Some(client) = ensure_server().await else {
+        return;
+    };
 
     let response = client
         .get(format!("{}/api/recipes/does-not-exist-xyz", API_URL))

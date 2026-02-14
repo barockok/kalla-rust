@@ -1,0 +1,9 @@
+{
+  "total_invoices": 50,
+  "total_payments": 46,
+  "exact_matches": 30,
+  "tolerance_matches": 7,
+  "duplicates": 2,
+  "orphan_left": 11,
+  "orphan_right": 5
+}

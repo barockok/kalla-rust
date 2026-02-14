@@ -134,7 +134,9 @@ mod tests {
         let mut recipe = valid_recipe();
         recipe.version = "2.0".to_string();
         let errors = validate_recipe(&recipe).unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e, ValidationError::InvalidVersion(_))));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::InvalidVersion(_))));
     }
 
     #[test]
@@ -142,7 +144,9 @@ mod tests {
         let mut recipe = valid_recipe();
         recipe.match_rules[0].conditions[0].op = ComparisonOp::Tolerance;
         let errors = validate_recipe(&recipe).unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e, ValidationError::MissingThreshold(_, _))));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::MissingThreshold(_, _))));
     }
 
     #[test]
@@ -158,7 +162,9 @@ mod tests {
         let mut recipe = valid_recipe();
         recipe.recipe_id = "".to_string();
         let errors = validate_recipe(&recipe).unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e, ValidationError::EmptyRecipeId)));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::EmptyRecipeId)));
     }
 
     #[test]
@@ -166,7 +172,9 @@ mod tests {
         let mut recipe = valid_recipe();
         recipe.recipe_id = "   ".to_string();
         let errors = validate_recipe(&recipe).unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e, ValidationError::EmptyRecipeId)));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::EmptyRecipeId)));
     }
 
     #[test]
@@ -174,7 +182,9 @@ mod tests {
         let mut recipe = valid_recipe();
         recipe.sources.left.uri = "".to_string();
         let errors = validate_recipe(&recipe).unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e, ValidationError::EmptySourceUri(_))));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::EmptySourceUri(_))));
     }
 
     #[test]
@@ -182,7 +192,9 @@ mod tests {
         let mut recipe = valid_recipe();
         recipe.sources.right.uri = "".to_string();
         let errors = validate_recipe(&recipe).unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e, ValidationError::EmptySourceUri(_))));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::EmptySourceUri(_))));
     }
 
     #[test]
@@ -190,7 +202,9 @@ mod tests {
         let mut recipe = valid_recipe();
         recipe.match_rules = vec![];
         let errors = validate_recipe(&recipe).unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e, ValidationError::NoMatchRules)));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::NoMatchRules)));
     }
 
     #[test]
@@ -198,7 +212,9 @@ mod tests {
         let mut recipe = valid_recipe();
         recipe.match_rules[0].conditions = vec![];
         let errors = validate_recipe(&recipe).unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e, ValidationError::NoConditions(_))));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::NoConditions(_))));
     }
 
     #[test]
@@ -206,7 +222,9 @@ mod tests {
         let mut recipe = valid_recipe();
         recipe.match_rules[0].conditions[0].left = "".to_string();
         let errors = validate_recipe(&recipe).unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e, ValidationError::EmptyColumnName(_))));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::EmptyColumnName(_))));
     }
 
     #[test]
@@ -214,7 +232,9 @@ mod tests {
         let mut recipe = valid_recipe();
         recipe.match_rules[0].conditions[0].right = "  ".to_string();
         let errors = validate_recipe(&recipe).unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e, ValidationError::EmptyColumnName(_))));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::EmptyColumnName(_))));
     }
 
     #[test]

@@ -9,6 +9,6 @@ pub mod schema_validation;
 pub mod transpiler;
 pub mod validation;
 
-pub use schema::{MatchRecipe, MatchRule, MatchCondition, MatchPattern, DataSource, OutputConfig};
+pub use schema::{DataSource, MatchCondition, MatchPattern, MatchRecipe, MatchRule, OutputConfig};
 pub use transpiler::Transpiler;
 pub use validation::validate_recipe;

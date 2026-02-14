@@ -91,12 +91,18 @@ fn create_test_recipe() -> RecipeConfig {
         sources: Sources {
             left: DataSource {
                 alias: "invoices".to_string(),
-                uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices", pg_host),
+                uri: format!(
+                    "postgres://kalla:kalla_secret@{}:5432/kalla?table=invoices",
+                    pg_host
+                ),
                 primary_key: vec!["invoice_id".to_string()],
             },
             right: DataSource {
                 alias: "payments".to_string(),
-                uri: format!("postgres://kalla:kalla_secret@{}:5432/kalla?table=payments", pg_host),
+                uri: format!(
+                    "postgres://kalla:kalla_secret@{}:5432/kalla?table=payments",
+                    pg_host
+                ),
                 primary_key: vec!["payment_id".to_string()],
             },
         },
@@ -164,9 +170,14 @@ async fn test_reconciliation_completes() {
         .await
         .expect("Failed to create run");
 
-    assert!(response.status().is_success(), "Create run failed: {:?}", response.status());
+    assert!(
+        response.status().is_success(),
+        "Create run failed: {:?}",
+        response.status()
+    );
 
-    let create_response: CreateRunResponse = response.json().await.expect("Failed to parse response");
+    let create_response: CreateRunResponse =
+        response.json().await.expect("Failed to parse response");
     let run_id = &create_response.run_id;
     println!("Created run: {}", run_id);
 
@@ -197,8 +208,15 @@ async fn test_reconciliation_completes() {
     }
 
     // Verify the run completed successfully (case-insensitive)
-    assert!(!final_status.eq_ignore_ascii_case("Running"), "Run did not complete within timeout");
-    assert!(final_status.eq_ignore_ascii_case("Completed"), "Run did not complete successfully: {}", final_status);
+    assert!(
+        !final_status.eq_ignore_ascii_case("Running"),
+        "Run did not complete within timeout"
+    );
+    assert!(
+        final_status.eq_ignore_ascii_case("Completed"),
+        "Run did not complete successfully: {}",
+        final_status
+    );
 
     // Get final run details
     let run_response = client
@@ -224,7 +242,10 @@ async fn test_reconciliation_completes() {
     assert!(left_count > 0, "Left record count should be > 0");
     assert!(right_count > 0, "Right record count should be > 0");
     // Some records should match based on our seed data
-    assert!(matched_count > 0, "Matched count should be > 0 (seed data has matching records)");
+    assert!(
+        matched_count > 0,
+        "Matched count should be > 0 (seed data has matching records)"
+    );
 }
 
 #[tokio::test]
@@ -287,7 +308,10 @@ async fn test_csv_source_preview() {
     // The init.sql seeds invoices_csv and payments_csv.
     // After a server restart they should still be queryable.
     let res = client
-        .get(format!("{}/api/sources/invoices_csv/preview?limit=5", API_URL))
+        .get(format!(
+            "{}/api/sources/invoices_csv/preview?limit=5",
+            API_URL
+        ))
         .send()
         .await
         .expect("request failed");
@@ -295,6 +319,12 @@ async fn test_csv_source_preview() {
     assert_eq!(res.status(), 200, "CSV source preview should succeed");
 
     let body: serde_json::Value = res.json().await.unwrap();
-    assert!(body["rows"].as_array().unwrap().len() > 0, "Should return rows");
-    assert!(body["columns"].as_array().unwrap().len() > 0, "Should return columns");
+    assert!(
+        body["rows"].as_array().unwrap().len() > 0,
+        "Should return rows"
+    );
+    assert!(
+        body["columns"].as_array().unwrap().len() > 0,
+        "Should return columns"
+    );
 }

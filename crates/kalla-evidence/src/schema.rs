@@ -175,7 +175,11 @@ mod tests {
 
     #[test]
     fn test_run_metadata_serialization() {
-        let meta = RunMetadata::new("recipe".to_string(), "left".to_string(), "right".to_string());
+        let meta = RunMetadata::new(
+            "recipe".to_string(),
+            "left".to_string(),
+            "right".to_string(),
+        );
         let json = serde_json::to_string(&meta).unwrap();
         let parsed: RunMetadata = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.recipe_id, meta.recipe_id);

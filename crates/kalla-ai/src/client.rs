@@ -7,8 +7,15 @@ use tracing::{debug, info};
 /// LLM provider configuration
 #[derive(Debug, Clone)]
 pub enum LlmProvider {
-    OpenAI { api_key: String, model: String, base_url: String },
-    Anthropic { api_key: String, model: String },
+    OpenAI {
+        api_key: String,
+        model: String,
+        base_url: String,
+    },
+    Anthropic {
+        api_key: String,
+        model: String,
+    },
 }
 
 /// LLM client for generating recipes
@@ -33,7 +40,11 @@ impl LlmClient {
             let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
             let base_url = std::env::var("OPENAI_API_BASE")
                 .unwrap_or_else(|_| "https://api.openai.com".to_string());
-            Ok(Self::new(LlmProvider::OpenAI { api_key, model, base_url }))
+            Ok(Self::new(LlmProvider::OpenAI {
+                api_key,
+                model,
+                base_url,
+            }))
         } else if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
             let model = std::env::var("ANTHROPIC_MODEL")
                 .unwrap_or_else(|_| "claude-sonnet-4-20250514".to_string());
@@ -46,7 +57,11 @@ impl LlmClient {
     /// Generate a response from the LLM
     pub async fn generate(&self, system_prompt: &str, user_prompt: &str) -> Result<String> {
         match &self.provider {
-            LlmProvider::OpenAI { api_key, model, base_url } => {
+            LlmProvider::OpenAI {
+                api_key,
+                model,
+                base_url,
+            } => {
                 self.call_openai(api_key, model, base_url, system_prompt, user_prompt)
                     .await
             }
@@ -108,7 +123,10 @@ impl LlmClient {
             temperature: 0.1,
         };
 
-        debug!("Calling OpenAI-compatible API at {} with model: {}", base_url, model);
+        debug!(
+            "Calling OpenAI-compatible API at {} with model: {}",
+            base_url, model
+        );
 
         let response = self
             .client
@@ -262,6 +280,8 @@ mod tests {
             model: "model".to_string(),
         };
         let cloned = provider.clone();
-        assert!(matches!(cloned, LlmProvider::Anthropic { api_key, model } if api_key == "key" && model == "model"));
+        assert!(
+            matches!(cloned, LlmProvider::Anthropic { api_key, model } if api_key == "key" && model == "model")
+        );
     }
 }

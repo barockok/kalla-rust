@@ -20,7 +20,11 @@ pub struct Transpiler;
 
 impl Transpiler {
     /// Transpile a match rule into a SQL join condition
-    pub fn transpile_condition(condition: &MatchCondition, left_alias: &str, right_alias: &str) -> Result<String, TranspileError> {
+    pub fn transpile_condition(
+        condition: &MatchCondition,
+        left_alias: &str,
+        right_alias: &str,
+    ) -> Result<String, TranspileError> {
         let left_col = format!("{}.{}", left_alias, condition.left);
         let right_col = format!("{}.{}", right_alias, condition.right);
 
@@ -42,18 +46,9 @@ impl Transpiler {
             ComparisonOp::Gte => Ok(format!("{} >= {}", left_col, right_col)),
             ComparisonOp::Lte => Ok(format!("{} <= {}", left_col, right_col)),
 
-            ComparisonOp::Contains => Ok(format!(
-                "{} LIKE '%' || {} || '%'",
-                left_col, right_col
-            )),
-            ComparisonOp::StartsWith => Ok(format!(
-                "{} LIKE {} || '%'",
-                left_col, right_col
-            )),
-            ComparisonOp::EndsWith => Ok(format!(
-                "{} LIKE '%' || {}",
-                left_col, right_col
-            )),
+            ComparisonOp::Contains => Ok(format!("{} LIKE '%' || {} || '%'", left_col, right_col)),
+            ComparisonOp::StartsWith => Ok(format!("{} LIKE {} || '%'", left_col, right_col)),
+            ComparisonOp::EndsWith => Ok(format!("{} LIKE '%' || {}", left_col, right_col)),
         }
     }
 
@@ -208,7 +203,12 @@ mod tests {
     use super::*;
     use crate::schema::*;
 
-    fn make_condition(left: &str, op: ComparisonOp, right: &str, threshold: Option<f64>) -> MatchCondition {
+    fn make_condition(
+        left: &str,
+        op: ComparisonOp,
+        right: &str,
+        threshold: Option<f64>,
+    ) -> MatchCondition {
         MatchCondition {
             left: left.to_string(),
             op,
@@ -262,7 +262,8 @@ mod tests {
 
     #[test]
     fn test_transpile_tolerance_condition() {
-        let condition = make_condition("amount", ComparisonOp::Tolerance, "paid_amount", Some(0.01));
+        let condition =
+            make_condition("amount", ComparisonOp::Tolerance, "paid_amount", Some(0.01));
         let result = Transpiler::transpile_condition(&condition, "inv", "pay").unwrap();
         assert_eq!(result, "tolerance_match(inv.amount, pay.paid_amount, 0.01)");
     }
@@ -389,7 +390,12 @@ mod tests {
         let recipe = make_recipe(vec![make_rule(
             "id_match",
             MatchPattern::OneToOne,
-            vec![make_condition("invoice_id", ComparisonOp::Eq, "payment_ref", None)],
+            vec![make_condition(
+                "invoice_id",
+                ComparisonOp::Eq,
+                "payment_ref",
+                None,
+            )],
         )]);
 
         let result = Transpiler::transpile(&recipe).unwrap();
@@ -427,7 +433,12 @@ mod tests {
         let recipe = make_recipe(vec![make_rule(
             "tolerance_only",
             MatchPattern::OneToOne,
-            vec![make_condition("amount", ComparisonOp::Tolerance, "paid", Some(0.01))],
+            vec![make_condition(
+                "amount",
+                ComparisonOp::Tolerance,
+                "paid",
+                Some(0.01),
+            )],
         )]);
 
         let result = Transpiler::transpile(&recipe).unwrap();
@@ -475,9 +486,21 @@ mod tests {
     #[test]
     fn test_transpile_recipe_pattern_preserved() {
         let recipe = make_recipe(vec![
-            make_rule("1to1", MatchPattern::OneToOne, vec![make_condition("id", ComparisonOp::Eq, "ref", None)]),
-            make_rule("1toN", MatchPattern::OneToMany, vec![make_condition("id", ComparisonOp::Eq, "ref", None)]),
-            make_rule("Mto1", MatchPattern::ManyToOne, vec![make_condition("id", ComparisonOp::Eq, "ref", None)]),
+            make_rule(
+                "1to1",
+                MatchPattern::OneToOne,
+                vec![make_condition("id", ComparisonOp::Eq, "ref", None)],
+            ),
+            make_rule(
+                "1toN",
+                MatchPattern::OneToMany,
+                vec![make_condition("id", ComparisonOp::Eq, "ref", None)],
+            ),
+            make_rule(
+                "Mto1",
+                MatchPattern::ManyToOne,
+                vec![make_condition("id", ComparisonOp::Eq, "ref", None)],
+            ),
         ]);
         let result = Transpiler::transpile(&recipe).unwrap();
         assert_eq!(result.match_queries[0].pattern, MatchPattern::OneToOne);

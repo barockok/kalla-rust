@@ -79,7 +79,10 @@ mod tests {
         let ctx = SessionContext::new();
         let result = bq.register_table(&ctx, "t", "src", None).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("not yet implemented"));
     }
 
     #[tokio::test]
@@ -88,7 +91,10 @@ mod tests {
         let ctx = SessionContext::new();
         let result = bq.register_scoped(&ctx, "t", "src", &[], None).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not yet implemented"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("not yet implemented"));
     }
 
     #[tokio::test]

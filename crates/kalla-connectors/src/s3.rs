@@ -7,10 +7,10 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
 };
-use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::SessionContext;
 use object_store::aws::AmazonS3Builder;
@@ -123,12 +123,11 @@ impl S3Connector {
         // Make sure the object store is registered for this bucket
         self.register_store(ctx, &bucket)?;
 
-        let table_url = ListingTableUrl::parse(s3_uri)
-            .context("failed to parse S3 URI as ListingTableUrl")?;
+        let table_url =
+            ListingTableUrl::parse(s3_uri).context("failed to parse S3 URI as ListingTableUrl")?;
 
         let format = ParquetFormat::default();
-        let options = ListingOptions::new(Arc::new(format))
-            .with_file_extension(".parquet");
+        let options = ListingOptions::new(Arc::new(format)).with_file_extension(".parquet");
 
         let config = ListingTableConfig::new(table_url)
             .with_listing_options(options)
@@ -136,8 +135,7 @@ impl S3Connector {
             .await
             .context("failed to infer schema from S3 Parquet file")?;
 
-        let table = ListingTable::try_new(config)
-            .context("failed to create ListingTable")?;
+        let table = ListingTable::try_new(config).context("failed to create ListingTable")?;
 
         ctx.register_table(table_name, Arc::new(table))
             .context("failed to register table with SessionContext")?;
@@ -166,8 +164,13 @@ impl SourceConnector for S3Connector {
                 "CREATE VIEW \"{}\" AS SELECT * FROM \"{}\" WHERE {}",
                 view_name, table_name, clause,
             );
-            ctx.sql(&sql).await.context("failed to create filtered view")?;
-            debug!("Created filtered view '{}' with WHERE {}", view_name, clause);
+            ctx.sql(&sql)
+                .await
+                .context("failed to create filtered view")?;
+            debug!(
+                "Created filtered view '{}' with WHERE {}",
+                view_name, clause
+            );
         }
 
         Ok(())
@@ -191,7 +194,8 @@ impl SourceConnector for S3Connector {
 
         // Build a scoped query with filter conditions
         let where_clause = build_where_clause(conditions);
-        let mut sql = format!("SELECT * FROM \"{}\"{}",
+        let mut sql = format!(
+            "SELECT * FROM \"{}\"{}",
             raw_name.replace('"', "\"\""),
             where_clause,
         );
@@ -202,8 +206,14 @@ impl SourceConnector for S3Connector {
         debug!("S3 scoped query: {}", sql);
 
         // Execute and materialize into a MemTable for accurate row count
-        let df = ctx.sql(&sql).await.context("failed scoped query on S3 table")?;
-        let batches = df.collect().await.context("failed to collect S3 scoped data")?;
+        let df = ctx
+            .sql(&sql)
+            .await
+            .context("failed scoped query on S3 table")?;
+        let batches = df
+            .collect()
+            .await
+            .context("failed to collect S3 scoped data")?;
         let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
 
         if row_count > 0 {
@@ -213,7 +223,10 @@ impl SourceConnector for S3Connector {
                 .context("failed to register scoped S3 table")?;
         }
 
-        info!("Registered scoped S3 table '{}' with {} rows", table_name, row_count);
+        info!(
+            "Registered scoped S3 table '{}' with {} rows",
+            table_name, row_count
+        );
         // Clean up temporary raw table
         let _ = ctx.deregister_table(&raw_name);
         Ok(row_count)
@@ -235,10 +248,10 @@ impl SourceConnector for S3Connector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filter::{FilterOp, FilterValue};
     use arrow::array::{Float64Array, Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
-    use crate::filter::{FilterOp, FilterValue};
     use std::fs;
 
     fn test_config() -> S3Config {
@@ -257,13 +270,17 @@ mod tests {
         let connector = S3Connector::new(config.clone());
         assert_eq!(connector.config.region, "us-east-1");
         assert_eq!(connector.config.access_key_id, "test-key");
-        assert_eq!(connector.config.endpoint_url, Some("http://localhost:9000".to_string()));
+        assert_eq!(
+            connector.config.endpoint_url,
+            Some("http://localhost:9000".to_string())
+        );
         assert!(connector.config.allow_http);
     }
 
     #[test]
     fn test_parse_s3_uri_valid() {
-        let (bucket, key) = S3Connector::parse_s3_uri("s3://my-bucket/path/to/file.parquet").unwrap();
+        let (bucket, key) =
+            S3Connector::parse_s3_uri("s3://my-bucket/path/to/file.parquet").unwrap();
         assert_eq!(bucket, "my-bucket");
         assert_eq!(key, "path/to/file.parquet");
     }
@@ -277,7 +294,8 @@ mod tests {
 
     #[test]
     fn test_parse_s3_uri_nested() {
-        let (bucket, key) = S3Connector::parse_s3_uri("s3://data/year=2024/month=01/data.parquet").unwrap();
+        let (bucket, key) =
+            S3Connector::parse_s3_uri("s3://data/year=2024/month=01/data.parquet").unwrap();
         assert_eq!(bucket, "data");
         assert_eq!(key, "year=2024/month=01/data.parquet");
     }
@@ -333,8 +351,7 @@ mod tests {
 
         let path = dir.join("test.parquet");
         let file = fs::File::create(&path).unwrap();
-        let mut writer =
-            parquet::arrow::ArrowWriter::try_new(file, schema, None).unwrap();
+        let mut writer = parquet::arrow::ArrowWriter::try_new(file, schema, None).unwrap();
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
@@ -376,13 +393,11 @@ mod tests {
             .await
             .unwrap();
 
-        let conditions = vec![
-            FilterCondition {
-                column: "amount".to_string(),
-                op: FilterOp::Gte,
-                value: FilterValue::Number(200.0),
-            },
-        ];
+        let conditions = vec![FilterCondition {
+            column: "amount".to_string(),
+            op: FilterOp::Gte,
+            value: FilterValue::Number(200.0),
+        }];
         let where_clause = build_where_clause(&conditions);
         let sql = format!("SELECT * FROM raw{}", where_clause);
 
@@ -403,13 +418,11 @@ mod tests {
             .await
             .unwrap();
 
-        let conditions = vec![
-            FilterCondition {
-                column: "amount".to_string(),
-                op: FilterOp::Gt,
-                value: FilterValue::Number(0.0),
-            },
-        ];
+        let conditions = vec![FilterCondition {
+            column: "amount".to_string(),
+            op: FilterOp::Gt,
+            value: FilterValue::Number(0.0),
+        }];
         let where_clause = build_where_clause(&conditions);
         let sql = format!("SELECT * FROM raw2{} LIMIT 1", where_clause);
 

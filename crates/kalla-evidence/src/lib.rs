@@ -2,8 +2,8 @@
 //!
 //! This crate provides storage and retrieval for reconciliation results.
 
-pub mod store;
 pub mod schema;
+pub mod store;
 
+pub use schema::{MatchedRecord, RunMetadata, RunStatus, UnmatchedRecord};
 pub use store::EvidenceStore;
-pub use schema::{MatchedRecord, UnmatchedRecord, RunMetadata, RunStatus};

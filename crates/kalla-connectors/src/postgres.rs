@@ -129,7 +129,10 @@ impl PostgresConnector {
         let mem_table = MemTable::try_new(schema, vec![vec![batch]])?;
         ctx.register_table(table_name, Arc::new(mem_table))?;
 
-        info!("Registered scoped table '{}' with {} rows", table_name, row_count);
+        info!(
+            "Registered scoped table '{}' with {} rows",
+            table_name, row_count
+        );
         Ok(row_count)
     }
 
@@ -291,7 +294,11 @@ mod tests {
     #[test]
     fn test_build_scoped_query_with_conditions_and_limit() {
         let conditions = vec![
-            fc("invoice_date", FilterOp::Between, FilterValue::Range(["2024-01-01".to_string(), "2024-01-31".to_string()])),
+            fc(
+                "invoice_date",
+                FilterOp::Between,
+                FilterValue::Range(["2024-01-01".to_string(), "2024-01-31".to_string()]),
+            ),
             fc("amount", FilterOp::Gte, FilterValue::Number(100.0)),
         ];
         let query = build_scoped_query("invoices", &conditions, Some(50));
@@ -309,9 +316,16 @@ mod tests {
 
     #[test]
     fn test_build_scoped_query_no_limit() {
-        let conditions = vec![fc("status", FilterOp::Eq, FilterValue::String("active".to_string()))];
+        let conditions = vec![fc(
+            "status",
+            FilterOp::Eq,
+            FilterValue::String("active".to_string()),
+        )];
         let query = build_scoped_query("orders", &conditions, None);
-        assert_eq!(query, "SELECT * FROM \"orders\" WHERE \"status\" = 'active'");
+        assert_eq!(
+            query,
+            "SELECT * FROM \"orders\" WHERE \"status\" = 'active'"
+        );
     }
 
     #[test]
@@ -325,7 +339,11 @@ mod tests {
         let conditions = vec![
             fc("a", FilterOp::Eq, FilterValue::Number(1.0)),
             fc("b", FilterOp::Gt, FilterValue::Number(2.0)),
-            fc("c", FilterOp::Like, FilterValue::String("%test%".to_string())),
+            fc(
+                "c",
+                FilterOp::Like,
+                FilterValue::String("%test%".to_string()),
+            ),
         ];
         let query = build_scoped_query("t", &conditions, Some(10));
         assert!(query.contains("\"a\" = 1"));

@@ -288,7 +288,8 @@ mod tests {
         let ds: DataSource = serde_json::from_str(json).unwrap();
         assert!(ds.primary_key.is_none());
 
-        let json_with_pk = r#"{"alias":"test","uri":"file://test.csv","primary_key":["id","sub_id"]}"#;
+        let json_with_pk =
+            r#"{"alias":"test","uri":"file://test.csv","primary_key":["id","sub_id"]}"#;
         let ds: DataSource = serde_json::from_str(json_with_pk).unwrap();
         assert_eq!(ds.primary_key.unwrap().len(), 2);
     }

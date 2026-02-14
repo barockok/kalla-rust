@@ -36,22 +36,14 @@ impl ReconciliationEngine {
     }
 
     /// Register a CSV file as a table
-    pub async fn register_csv(
-        &self,
-        table_name: &str,
-        path: &str,
-    ) -> DFResult<()> {
+    pub async fn register_csv(&self, table_name: &str, path: &str) -> DFResult<()> {
         self.ctx
             .register_csv(table_name, path, CsvReadOptions::default())
             .await
     }
 
     /// Register a Parquet file as a table
-    pub async fn register_parquet(
-        &self,
-        table_name: &str,
-        path: &str,
-    ) -> DFResult<()> {
+    pub async fn register_parquet(&self, table_name: &str, path: &str) -> DFResult<()> {
         self.ctx
             .register_parquet(table_name, path, ParquetReadOptions::default())
             .await
@@ -181,10 +173,7 @@ mod tests {
 
     /// Helper: write a CSV string to a temp file with .csv extension and return the path
     fn write_temp_csv(content: &str) -> (tempfile::NamedTempFile, String) {
-        let mut f = tempfile::Builder::new()
-            .suffix(".csv")
-            .tempfile()
-            .unwrap();
+        let mut f = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
         f.write_all(content.as_bytes()).unwrap();
         f.flush().unwrap();
         f.as_file().sync_all().unwrap();
@@ -221,7 +210,10 @@ mod tests {
         let engine = ReconciliationEngine::new();
         engine.register_csv("test_table", &path).await.unwrap();
 
-        let df = engine.sql("SELECT COUNT(*) AS cnt FROM test_table").await.unwrap();
+        let df = engine
+            .sql("SELECT COUNT(*) AS cnt FROM test_table")
+            .await
+            .unwrap();
         let batches = df.collect().await.unwrap();
         let cnt = batches[0]
             .column(0)

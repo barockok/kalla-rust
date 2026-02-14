@@ -68,7 +68,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Set up logging
-    let level = if cli.verbose { Level::DEBUG } else { Level::INFO };
+    let level = if cli.verbose {
+        Level::DEBUG
+    } else {
+        Level::INFO
+    };
     let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
@@ -124,8 +128,18 @@ async fn run_reconciliation(recipe_path: &PathBuf, output_dir: &PathBuf) -> Resu
     info!("Run ID: {}", metadata.run_id);
 
     // Register data sources
-    register_source(&engine, &recipe.sources.left.alias, &recipe.sources.left.uri).await?;
-    register_source(&engine, &recipe.sources.right.alias, &recipe.sources.right.uri).await?;
+    register_source(
+        &engine,
+        &recipe.sources.left.alias,
+        &recipe.sources.left.uri,
+    )
+    .await?;
+    register_source(
+        &engine,
+        &recipe.sources.right.alias,
+        &recipe.sources.right.uri,
+    )
+    .await?;
 
     // Transpile recipe to queries
     let transpiled = Transpiler::transpile(&recipe)?;
@@ -243,7 +257,9 @@ async fn register_source(engine: &ReconciliationEngine, alias: &str, uri: &str) 
     } else if uri.starts_with("postgres://") {
         // For Postgres, we'd use the connector
         // This is a simplified placeholder
-        anyhow::bail!("Postgres support requires connection string parsing - not yet implemented in CLI");
+        anyhow::bail!(
+            "Postgres support requires connection string parsing - not yet implemented in CLI"
+        );
     } else {
         anyhow::bail!("Unsupported URI scheme: {}", uri);
     }
@@ -264,8 +280,12 @@ fn validate_recipe_file(path: &PathBuf) -> Result<()> {
             println!("  Version: {}", recipe.version);
             println!("  Rules: {}", recipe.match_rules.len());
             for rule in &recipe.match_rules {
-                println!("    - {}: {:?} pattern, {} conditions",
-                    rule.name, rule.pattern, rule.conditions.len());
+                println!(
+                    "    - {}: {:?} pattern, {} conditions",
+                    rule.name,
+                    rule.pattern,
+                    rule.conditions.len()
+                );
             }
             Ok(())
         }
@@ -280,15 +300,18 @@ fn validate_recipe_file(path: &PathBuf) -> Result<()> {
 }
 
 async fn generate_recipe(sources: &str, prompt: &str, output: &PathBuf) -> Result<()> {
-    use kalla_ai::{extract_schema, LlmClient};
     use kalla_ai::prompt::{build_user_prompt, parse_recipe_response, SYSTEM_PROMPT};
+    use kalla_ai::{extract_schema, LlmClient};
 
     info!("Generating recipe from natural language...");
 
     // Parse source paths
     let source_paths: Vec<&str> = sources.split(',').map(|s| s.trim()).collect();
     if source_paths.len() != 2 {
-        anyhow::bail!("Expected exactly 2 sources (comma-separated), got {}", source_paths.len());
+        anyhow::bail!(
+            "Expected exactly 2 sources (comma-separated), got {}",
+            source_paths.len()
+        );
     }
 
     let left_path = source_paths[0];
@@ -305,8 +328,11 @@ async fn generate_recipe(sources: &str, prompt: &str, output: &PathBuf) -> Resul
     let left_schema = extract_schema(engine.context(), "left").await?;
     let right_schema = extract_schema(engine.context(), "right").await?;
 
-    info!("Extracted schemas: {} columns left, {} columns right",
-        left_schema.columns.len(), right_schema.columns.len());
+    info!(
+        "Extracted schemas: {} columns left, {} columns right",
+        left_schema.columns.len(),
+        right_schema.columns.len()
+    );
 
     // Build prompt
     let left_uri = format!("file://{}", left_path);
@@ -371,8 +397,14 @@ fn show_report(path: &PathBuf) -> Result<()> {
     }
     println!();
     println!("Sources:");
-    println!("  Left:  {} ({} records)", metadata.left_source, metadata.left_record_count);
-    println!("  Right: {} ({} records)", metadata.right_source, metadata.right_record_count);
+    println!(
+        "  Left:  {} ({} records)",
+        metadata.left_source, metadata.left_record_count
+    );
+    println!(
+        "  Right: {} ({} records)",
+        metadata.right_source, metadata.right_record_count
+    );
     println!();
     println!("Results:");
     println!("  Matched:         {}", metadata.matched_count);

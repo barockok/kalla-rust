@@ -55,11 +55,7 @@ impl EvidenceStore {
     }
 
     /// Write matched records to parquet
-    pub fn write_matched(
-        &self,
-        run_id: &Uuid,
-        records: &[MatchedRecord],
-    ) -> Result<PathBuf> {
+    pub fn write_matched(&self, run_id: &Uuid, records: &[MatchedRecord]) -> Result<PathBuf> {
         let run_path = self.run_path(run_id);
         let output_path = run_path.join("matched.parquet");
 
@@ -76,7 +72,8 @@ impl EvidenceStore {
             ),
         ]));
 
-        let match_id_strings: Vec<String> = records.iter().map(|r| r.match_id.to_string()).collect();
+        let match_id_strings: Vec<String> =
+            records.iter().map(|r| r.match_id.to_string()).collect();
         let left_keys: Vec<&str> = records.iter().map(|r| r.left_key.as_str()).collect();
         let right_keys: Vec<&str> = records.iter().map(|r| r.right_key.as_str()).collect();
         let rule_names: Vec<&str> = records.iter().map(|r| r.rule_name.as_str()).collect();
@@ -89,12 +86,18 @@ impl EvidenceStore {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(StringArray::from(match_id_strings.iter().map(|s| s.as_str()).collect::<Vec<_>>())) as ArrayRef,
+                Arc::new(StringArray::from(
+                    match_id_strings
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>(),
+                )) as ArrayRef,
                 Arc::new(StringArray::from(left_keys)) as ArrayRef,
                 Arc::new(StringArray::from(right_keys)) as ArrayRef,
                 Arc::new(StringArray::from(rule_names)) as ArrayRef,
                 Arc::new(Float64Array::from(confidences)) as ArrayRef,
-                Arc::new(TimestampMicrosecondArray::from(timestamps).with_timezone("UTC")) as ArrayRef,
+                Arc::new(TimestampMicrosecondArray::from(timestamps).with_timezone("UTC"))
+                    as ArrayRef,
             ],
         )?;
 
@@ -150,7 +153,12 @@ impl EvidenceStore {
             schema.clone(),
             vec![
                 Arc::new(StringArray::from(record_keys)) as ArrayRef,
-                Arc::new(StringArray::from(attempted_rules.iter().map(|s| s.as_str()).collect::<Vec<_>>())) as ArrayRef,
+                Arc::new(StringArray::from(
+                    attempted_rules
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>(),
+                )) as ArrayRef,
                 Arc::new(StringArray::from(closest_candidates)) as ArrayRef,
                 Arc::new(StringArray::from(rejection_reasons)) as ArrayRef,
             ],
@@ -204,8 +212,8 @@ impl EvidenceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Array;
     use crate::schema::RunStatus;
+    use arrow::array::Array;
     use tempfile::tempdir;
 
     fn test_metadata() -> RunMetadata {
@@ -234,7 +242,11 @@ mod tests {
             .map(|i| UnmatchedRecord {
                 record_key: format!("ORPHAN-{}", i),
                 attempted_rules: vec!["rule1".to_string(), "rule2".to_string()],
-                closest_candidate: if i % 2 == 0 { Some(format!("NEAR-{}", i)) } else { None },
+                closest_candidate: if i % 2 == 0 {
+                    Some(format!("NEAR-{}", i))
+                } else {
+                    None
+                },
                 rejection_reason: format!("No match within tolerance for record {}", i),
             })
             .collect()
@@ -293,7 +305,8 @@ mod tests {
         metadata.complete();
         store.update_metadata(&metadata).unwrap();
 
-        let json = std::fs::read_to_string(store.run_path(&metadata.run_id).join("metadata.json")).unwrap();
+        let json = std::fs::read_to_string(store.run_path(&metadata.run_id).join("metadata.json"))
+            .unwrap();
         let parsed: RunMetadata = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.matched_count, 42);
         assert_eq!(parsed.status, RunStatus::Completed);
@@ -364,7 +377,9 @@ mod tests {
         store.init_run(&metadata).unwrap();
 
         let records = test_unmatched_records(4);
-        let path = store.write_unmatched(&metadata.run_id, &records, "left").unwrap();
+        let path = store
+            .write_unmatched(&metadata.run_id, &records, "left")
+            .unwrap();
 
         assert!(path.exists());
         assert!(path.to_str().unwrap().ends_with("unmatched_left.parquet"));
@@ -378,7 +393,9 @@ mod tests {
         store.init_run(&metadata).unwrap();
 
         let records = test_unmatched_records(2);
-        let path = store.write_unmatched(&metadata.run_id, &records, "right").unwrap();
+        let path = store
+            .write_unmatched(&metadata.run_id, &records, "right")
+            .unwrap();
 
         assert!(path.exists());
         assert!(path.to_str().unwrap().ends_with("unmatched_right.parquet"));
@@ -394,7 +411,9 @@ mod tests {
         store.init_run(&metadata).unwrap();
 
         let records = test_unmatched_records(3);
-        let path = store.write_unmatched(&metadata.run_id, &records, "left").unwrap();
+        let path = store
+            .write_unmatched(&metadata.run_id, &records, "left")
+            .unwrap();
 
         let file = File::open(&path).unwrap();
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
@@ -431,7 +450,9 @@ mod tests {
         let metadata = test_metadata();
         store.init_run(&metadata).unwrap();
 
-        let path = store.write_unmatched(&metadata.run_id, &[], "left").unwrap();
+        let path = store
+            .write_unmatched(&metadata.run_id, &[], "left")
+            .unwrap();
         assert!(path.exists());
     }
 
@@ -486,8 +507,18 @@ mod tests {
         store.init_run(&metadata).unwrap();
 
         let records = vec![
-            MatchedRecord::new("INV-001".to_string(), "PAY-001".to_string(), "exact_match".to_string(), 1.0),
-            MatchedRecord::new("INV-002".to_string(), "PAY-002".to_string(), "fuzzy_match".to_string(), 0.85),
+            MatchedRecord::new(
+                "INV-001".to_string(),
+                "PAY-001".to_string(),
+                "exact_match".to_string(),
+                1.0,
+            ),
+            MatchedRecord::new(
+                "INV-002".to_string(),
+                "PAY-002".to_string(),
+                "fuzzy_match".to_string(),
+                0.85,
+            ),
         ];
         let path = store.write_matched(&metadata.run_id, &records).unwrap();
 
@@ -498,15 +529,27 @@ mod tests {
         let batches: Vec<_> = reader.map(|b| b.unwrap()).collect();
 
         let batch = &batches[0];
-        let left_keys = batch.column(1).as_any().downcast_ref::<StringArray>().unwrap();
+        let left_keys = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(left_keys.value(0), "INV-001");
         assert_eq!(left_keys.value(1), "INV-002");
 
-        let rule_names = batch.column(3).as_any().downcast_ref::<StringArray>().unwrap();
+        let rule_names = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(rule_names.value(0), "exact_match");
         assert_eq!(rule_names.value(1), "fuzzy_match");
 
-        let confidences = batch.column(4).as_any().downcast_ref::<Float64Array>().unwrap();
+        let confidences = batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
         assert!((confidences.value(0) - 1.0).abs() < f64::EPSILON);
         assert!((confidences.value(1) - 0.85).abs() < f64::EPSILON);
     }
@@ -534,7 +577,9 @@ mod tests {
                 rejection_reason: "no candidates".to_string(),
             },
         ];
-        let path = store.write_unmatched(&metadata.run_id, &records, "left").unwrap();
+        let path = store
+            .write_unmatched(&metadata.run_id, &records, "left")
+            .unwrap();
 
         let file = File::open(&path).unwrap();
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
@@ -542,7 +587,11 @@ mod tests {
         let batches: Vec<_> = reader.map(|b| b.unwrap()).collect();
 
         let batch = &batches[0];
-        let candidates = batch.column(2).as_any().downcast_ref::<StringArray>().unwrap();
+        let candidates = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(candidates.value(0), "NEAR-1");
         assert!(arrow::array::Array::is_null(candidates, 1));
     }

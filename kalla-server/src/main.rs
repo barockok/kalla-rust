@@ -207,11 +207,7 @@ async fn main() -> anyhow::Result<()> {
     // Connect to database and load sources/recipes
     let database_url = std::env::var("DATABASE_URL").ok();
     let (db_pool, initial_sources, initial_recipes) = if let Some(url) = database_url {
-        match PgPoolOptions::new()
-            .max_connections(5)
-            .connect(&url)
-            .await
-        {
+        match PgPoolOptions::new().max_connections(5).connect(&url).await {
             Ok(pool) => {
                 info!("Connected to database");
                 let sources: Vec<RegisteredSource> =
@@ -278,10 +274,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sources/:alias/load-scoped", post(load_scoped))
         .route("/api/recipes", get(list_recipes).post(save_recipe))
         .route("/api/recipes/validate", post(validate_recipe))
-        .route(
-            "/api/recipes/validate-schema",
-            post(validate_recipe_schema),
-        )
+        .route("/api/recipes/validate-schema", post(validate_recipe_schema))
         .route("/api/recipes/generate", post(generate_recipe))
         .route("/api/recipes/:id", get(get_recipe))
         .route("/api/runs", post(create_run))
@@ -344,12 +337,7 @@ async fn get_source_primary_key(
             )
         })?;
 
-    let confidence = if detected.is_empty() {
-        "low"
-    } else {
-        "high"
-    }
-    .to_string();
+    let confidence = if detected.is_empty() { "low" } else { "high" }.to_string();
 
     Ok(Json(PrimaryKeyResponse {
         alias: alias.clone(),
@@ -399,16 +387,19 @@ async fn get_source_preview(
         .collect();
 
     let query = format!("SELECT * FROM \"{}\" LIMIT {}", alias, limit);
-    let df = engine
-        .context()
-        .sql(&query)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Query failed: {}", e)))?;
+    let df = engine.context().sql(&query).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Query failed: {}", e),
+        )
+    })?;
 
-    let batches = df
-        .collect()
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Collect failed: {}", e)))?;
+    let batches = df.collect().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Collect failed: {}", e),
+        )
+    })?;
 
     let mut rows: Vec<Vec<String>> = Vec::new();
     for batch in &batches {
@@ -490,10 +481,12 @@ async fn load_scoped(
 
     let source_uri = {
         let sources = state.sources.read().await;
-        let source = sources
-            .iter()
-            .find(|s| s.alias == alias)
-            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Source '{}' not found", alias)))?;
+        let source = sources.iter().find(|s| s.alias == alias).ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("Source '{}' not found", alias),
+            )
+        })?;
         source.uri.clone()
     };
 
@@ -501,14 +494,12 @@ async fn load_scoped(
         let (conn_string, table_name) =
             parse_postgres_uri(&source_uri).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
-        let connector = PostgresConnector::new(&conn_string)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed to connect to database: {}", e),
-                )
-            })?;
+        let connector = PostgresConnector::new(&conn_string).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to connect to database: {}", e),
+            )
+        })?;
 
         let engine = state.engine.write().await;
         connector
@@ -527,16 +518,12 @@ async fn load_scoped(
                 )
             })?;
 
-        let table = engine
-            .context()
-            .table(&alias)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Table not found after register_scoped: {}", e),
-                )
-            })?;
+        let table = engine.context().table(&alias).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Table not found after register_scoped: {}", e),
+            )
+        })?;
         let schema = table.schema();
 
         let columns: Vec<ColumnInfo> = schema
@@ -550,11 +537,12 @@ async fn load_scoped(
             .collect();
 
         let query = format!("SELECT * FROM \"{}\" LIMIT {}", alias, limit);
-        let df = engine
-            .context()
-            .sql(&query)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Query failed: {}", e)))?;
+        let df = engine.context().sql(&query).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Query failed: {}", e),
+            )
+        })?;
 
         let batches = df.collect().await.map_err(|e| {
             (
@@ -631,11 +619,12 @@ async fn load_scoped(
             "SELECT * FROM \"{}\"{} LIMIT {}",
             alias, where_clause, limit
         );
-        let df = engine
-            .context()
-            .sql(&query)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Query failed: {}", e)))?;
+        let df = engine.context().sql(&query).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Query failed: {}", e),
+            )
+        })?;
 
         let batches = df.collect().await.map_err(|e| {
             (
@@ -1006,8 +995,8 @@ async fn generate_recipe(
         &format!("registered://{}", req.right_source),
     );
 
-    let client = LlmClient::from_env()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let client =
+        LlmClient::from_env().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let response = client
         .generate(SYSTEM_PROMPT, &user_prompt)

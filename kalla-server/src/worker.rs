@@ -238,7 +238,10 @@ impl Worker {
 
                         total_matched += count;
                     }
-                    info!("Rule '{}' matched {} records total", rule.name, total_matched);
+                    info!(
+                        "Rule '{}' matched {} records total",
+                        rule.name, total_matched
+                    );
                 }
                 Err(e) => {
                     warn!("Failed to execute match rule '{}': {}", rule.name, e);
@@ -256,7 +259,11 @@ impl Worker {
             Self::stream_orphans(
                 &engine,
                 query,
-                &transpiled.match_queries.iter().map(|r| r.name.clone()).collect::<Vec<_>>(),
+                &transpiled
+                    .match_queries
+                    .iter()
+                    .map(|r| r.name.clone())
+                    .collect::<Vec<_>>(),
                 "left",
                 &mut unmatched_left,
                 &mut left_orphan_records,
@@ -268,7 +275,11 @@ impl Worker {
             Self::stream_orphans(
                 &engine,
                 query,
-                &transpiled.match_queries.iter().map(|r| r.name.clone()).collect::<Vec<_>>(),
+                &transpiled
+                    .match_queries
+                    .iter()
+                    .map(|r| r.name.clone())
+                    .collect::<Vec<_>>(),
                 "right",
                 &mut unmatched_right,
                 &mut right_orphan_records,
@@ -315,7 +326,8 @@ impl Worker {
 
         let mut count: u64 = 0;
         while let Some(batch_result) = stream.next().await {
-            let batch = batch_result.map_err(|e| format!("Stream error counting {}: {}", alias, e))?;
+            let batch =
+                batch_result.map_err(|e| format!("Stream error counting {}: {}", alias, e))?;
             if let Some(arr) = batch.column(0).as_any().downcast_ref::<Int64Array>() {
                 if arr.len() > 0 {
                     count = arr.value(0) as u64;
@@ -339,9 +351,8 @@ impl Worker {
             Ok(mut stream) => {
                 let mut idx = 0u64;
                 while let Some(batch_result) = stream.next().await {
-                    let batch = batch_result.map_err(|e| {
-                        format!("Stream error in {} orphan query: {}", side, e)
-                    })?;
+                    let batch = batch_result
+                        .map_err(|e| format!("Stream error in {} orphan query: {}", side, e))?;
                     let rows = batch.num_rows() as u64;
                     for _ in 0..batch.num_rows() {
                         records.push(UnmatchedRecord {

@@ -1,11 +1,13 @@
 //! Integration tests for Priority 2 adoption features
 
-use kalla_recipe::field_resolver::{normalize_field_name, resolve_field_name, resolve_recipe_fields};
-use kalla_recipe::schema_validation::validate_recipe_against_schema;
-use kalla_recipe::schema::{
-    ComparisonOp, DataSource, MatchCondition, MatchPattern, MatchRecipe, MatchRule,
-    OutputConfig, Sources,
+use kalla_recipe::field_resolver::{
+    normalize_field_name, resolve_field_name, resolve_recipe_fields,
 };
+use kalla_recipe::schema::{
+    ComparisonOp, DataSource, MatchCondition, MatchPattern, MatchRecipe, MatchRule, OutputConfig,
+    Sources,
+};
+use kalla_recipe::schema_validation::validate_recipe_against_schema;
 
 #[test]
 fn test_field_resolution_end_to_end() {
@@ -103,15 +105,30 @@ fn test_resolve_with_mixed_conventions() {
     ];
 
     // All these should resolve to CustomerID
-    assert_eq!(resolve_field_name("customerid", &fields), Some("CustomerID".to_string()));
-    assert_eq!(resolve_field_name("CUSTOMERID", &fields), Some("CustomerID".to_string()));
+    assert_eq!(
+        resolve_field_name("customerid", &fields),
+        Some("CustomerID".to_string())
+    );
+    assert_eq!(
+        resolve_field_name("CUSTOMERID", &fields),
+        Some("CustomerID".to_string())
+    );
 
     // These should resolve to order_total
-    assert_eq!(resolve_field_name("order-total", &fields), Some("order_total".to_string()));
-    assert_eq!(resolve_field_name("ORDER_TOTAL", &fields), Some("order_total".to_string()));
+    assert_eq!(
+        resolve_field_name("order-total", &fields),
+        Some("order_total".to_string())
+    );
+    assert_eq!(
+        resolve_field_name("ORDER_TOTAL", &fields),
+        Some("order_total".to_string())
+    );
 
     // This should resolve to ship-date
-    assert_eq!(resolve_field_name("ship_date", &fields), Some("ship-date".to_string()));
+    assert_eq!(
+        resolve_field_name("ship_date", &fields),
+        Some("ship-date".to_string())
+    );
 }
 
 #[test]
@@ -135,7 +152,7 @@ fn test_validation_with_warnings_for_resolved_fields() {
             name: "order_match".to_string(),
             pattern: MatchPattern::OneToOne,
             conditions: vec![MatchCondition {
-                left: "Order-ID".to_string(),  // Will be resolved to order_id
+                left: "Order-ID".to_string(), // Will be resolved to order_id
                 op: ComparisonOp::Eq,
                 right: "order_ref".to_string(),
                 threshold: None,

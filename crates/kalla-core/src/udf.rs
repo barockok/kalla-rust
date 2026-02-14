@@ -77,20 +77,23 @@ impl datafusion::logical_expr::ScalarUDFImpl for ToleranceMatch {
         let b_arr = b.as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
             datafusion::error::DataFusionError::Internal("Expected Float64Array for arg 1".into())
         })?;
-        let threshold_arr = threshold.as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
-            datafusion::error::DataFusionError::Internal("Expected Float64Array for arg 2".into())
-        })?;
+        let threshold_arr = threshold
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .ok_or_else(|| {
+                datafusion::error::DataFusionError::Internal(
+                    "Expected Float64Array for arg 2".into(),
+                )
+            })?;
 
         // Compute tolerance match: abs(a - b) <= threshold
         let result: BooleanArray = a_arr
             .iter()
             .zip(b_arr.iter())
             .zip(threshold_arr.iter())
-            .map(|((a_opt, b_opt), t_opt)| {
-                match (a_opt, b_opt, t_opt) {
-                    (Some(a), Some(b), Some(t)) => Some((a - b).abs() <= t),
-                    _ => None,
-                }
+            .map(|((a_opt, b_opt), t_opt)| match (a_opt, b_opt, t_opt) {
+                (Some(a), Some(b), Some(t)) => Some((a - b).abs() <= t),
+                _ => None,
             })
             .collect();
 
@@ -200,8 +203,14 @@ mod tests {
     async fn test_tolerance_match_currency_precision_mil() {
         let ctx = setup_ctx();
         // 0.001 tolerance (sub-cent precision)
-        assert_eq!(eval_tolerance(&ctx, 100.0, 100.0005, 0.001).await, Some(true));
-        assert_eq!(eval_tolerance(&ctx, 100.0, 100.002, 0.001).await, Some(false));
+        assert_eq!(
+            eval_tolerance(&ctx, 100.0, 100.0005, 0.001).await,
+            Some(true)
+        );
+        assert_eq!(
+            eval_tolerance(&ctx, 100.0, 100.002, 0.001).await,
+            Some(false)
+        );
     }
 
     #[tokio::test]
@@ -221,7 +230,8 @@ mod tests {
     #[tokio::test]
     async fn test_tolerance_match_infinity() {
         let ctx = setup_ctx();
-        let query = "SELECT tolerance_match(CAST('Infinity' AS DOUBLE), CAST('Infinity' AS DOUBLE), 0.01)";
+        let query =
+            "SELECT tolerance_match(CAST('Infinity' AS DOUBLE), CAST('Infinity' AS DOUBLE), 0.01)";
         let result = ctx.sql(query).await.unwrap().collect().await.unwrap();
         let col = result[0]
             .column(0)
@@ -251,10 +261,7 @@ mod tests {
         let ctx = setup_ctx();
         use std::io::Write;
         let csv = "a,b,threshold\n100.0,100.005,0.01\n100.0,100.02,0.01\n200.0,200.0,0.001\n";
-        let mut f = tempfile::Builder::new()
-            .suffix(".csv")
-            .tempfile()
-            .unwrap();
+        let mut f = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
         f.write_all(csv.as_bytes()).unwrap();
         f.flush().unwrap();
         f.as_file().sync_all().unwrap();
@@ -277,9 +284,9 @@ mod tests {
             .as_any()
             .downcast_ref::<BooleanArray>()
             .unwrap();
-        assert!(col.value(0));  // 100.0 vs 100.005 within 0.01
+        assert!(col.value(0)); // 100.0 vs 100.005 within 0.01
         assert!(!col.value(1)); // 100.0 vs 100.02 outside 0.01
-        assert!(col.value(2));  // 200.0 vs 200.0 within 0.001
+        assert!(col.value(2)); // 200.0 vs 200.0 within 0.001
     }
 
     #[test]
