@@ -7,6 +7,7 @@ members = [
     "crates/kalla-evidence",
     "crates/kalla-ai",
     "crates/kalla-cli",
+    "crates/kalla-worker",
     "kalla-server",
 ]
 
@@ -23,7 +24,7 @@ arrow = "53"
 parquet = { version = "53", features = ["async"] }
 
 # Database connectivity
-sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "tls-rustls"] }
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "tls-rustls", "uuid", "json", "chrono"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -53,6 +54,12 @@ url = "2"
 # Logging/tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Message queue
+async-nats = "0.38"
+
+# Metrics
+prometheus-client = "0.23"
 
 # Internal crates
 kalla-core = { path = "crates/kalla-core" }
