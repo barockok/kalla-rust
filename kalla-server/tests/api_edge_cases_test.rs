@@ -526,8 +526,8 @@ async fn test_reconciliation_exact_matches_only() {
     let status = data["status"].as_str().unwrap_or("unknown");
     // Run should be in Running state (submitted to NATS for async processing)
     assert_eq!(
-        status, "Running",
-        "Run should be in Running state after submission"
+        status, "running",
+        "Run should be in running state after submission"
     );
 }
 
@@ -608,7 +608,7 @@ async fn test_multiple_concurrent_runs() {
         let data: serde_json::Value = run.json().await.unwrap();
         let status = data["status"].as_str().unwrap_or("unknown");
         assert_eq!(
-            status, "Running",
+            status, "running",
             "Run {} should be in Running state after submission",
             run_id
         );

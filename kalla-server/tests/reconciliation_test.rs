@@ -197,8 +197,8 @@ async fn test_reconciliation_completes() {
 
     // Run should be in Running state (submitted to NATS for async processing)
     assert_eq!(
-        status, "Running",
-        "Run should be in Running state after submission"
+        status, "running",
+        "Run should be in running state after submission"
     );
 }
 
