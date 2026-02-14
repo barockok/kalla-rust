@@ -676,10 +676,7 @@ async fn test_source_preview_limit() {
     // Try invoices (always available as a PostgreSQL source in CI),
     // fall back to invoices_csv for local dev where CSV files are loaded.
     let mut response = client
-        .get(format!(
-            "{}/api/sources/invoices/preview?limit=3",
-            API_URL
-        ))
+        .get(format!("{}/api/sources/invoices/preview?limit=3", API_URL))
         .send()
         .await
         .expect("Request failed");
