@@ -1,6 +1,6 @@
 //! Kalla Server - REST API for the reconciliation engine
 
-pub mod worker;
+pub mod nats_publisher;
 
 use axum::{
     extract::{Path, Query, State},
@@ -24,7 +24,7 @@ use kalla_core::ReconciliationEngine;
 use kalla_evidence::{EvidenceStore, RunMetadata};
 use kalla_recipe::MatchRecipe;
 
-use worker::{Worker, WorkerHandle};
+use nats_publisher::{JobMessage, NatsPublisher, StagedSource};
 
 /// Registered data source info
 #[derive(Clone, Serialize, FromRow)]
@@ -52,7 +52,7 @@ struct AppState {
     sources: RwLock<Vec<RegisteredSource>>,
     recipes: RwLock<Vec<SavedRecipe>>,
     db_pool: Option<PgPool>,
-    worker: WorkerHandle,
+    nats: Option<NatsPublisher>,
 }
 
 /// Parse a PostgreSQL URI to extract connection string and table name
@@ -71,31 +71,6 @@ pub(crate) fn parse_postgres_uri(uri: &str) -> Result<(String, String), String> 
     connection_url.set_query(None);
 
     Ok((connection_url.to_string(), table_name))
-}
-
-/// Extract a string value from a record batch column at the given row index
-pub(crate) fn extract_string_value(
-    batch: &arrow::array::RecordBatch,
-    column_name: &str,
-    row_idx: usize,
-) -> Option<String> {
-    let col_idx = batch.schema().index_of(column_name).ok()?;
-    let col = batch.column(col_idx);
-
-    if let Some(arr) = col.as_any().downcast_ref::<arrow::array::StringArray>() {
-        return Some(arr.value(row_idx).to_string());
-    }
-    if let Some(arr) = col.as_any().downcast_ref::<arrow::array::Int32Array>() {
-        return Some(arr.value(row_idx).to_string());
-    }
-    if let Some(arr) = col.as_any().downcast_ref::<arrow::array::Int64Array>() {
-        return Some(arr.value(row_idx).to_string());
-    }
-    if let Some(arr) = col.as_any().downcast_ref::<arrow::array::Float64Array>() {
-        return Some(arr.value(row_idx).to_string());
-    }
-
-    None
 }
 
 /// Convert an Arrow array value at the given index to a string representation
@@ -249,8 +224,26 @@ async fn main() -> anyhow::Result<()> {
     let evidence_store = Arc::new(EvidenceStore::new("./evidence")?);
     let runs = Arc::new(RwLock::new(Vec::new()));
 
-    // Spawn the worker — bounded channel provides backpressure (16 pending jobs max)
-    let worker_handle = Worker::spawn(evidence_store.clone(), runs.clone(), 16);
+    // Connect to NATS if NATS_URL is set
+    let nats = match std::env::var("NATS_URL") {
+        Ok(nats_url) => match NatsPublisher::connect(&nats_url).await {
+            Ok(publisher) => {
+                info!("Connected to NATS at {}", nats_url);
+                Some(publisher)
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to connect to NATS at {}: {}. Runs will fail.",
+                    nats_url, e
+                );
+                None
+            }
+        },
+        Err(_) => {
+            warn!("NATS_URL not set. Reconciliation runs will fail until NATS is configured.");
+            None
+        }
+    };
 
     let state = Arc::new(AppState {
         engine: RwLock::new(ReconciliationEngine::new()),
@@ -259,7 +252,7 @@ async fn main() -> anyhow::Result<()> {
         sources: RwLock::new(initial_sources),
         recipes: RwLock::new(initial_recipes),
         db_pool,
-        worker: worker_handle,
+        nats,
     });
 
     // Build router
@@ -1033,6 +1026,20 @@ struct CreateRunResponse {
     status: String,
 }
 
+/// Classify whether a source URI is native (can be read directly by DataFusion)
+/// or non-native (needs staging to Parquet on S3).
+fn is_native_source(uri: &str) -> bool {
+    if uri.starts_with("file://") {
+        let path = uri.strip_prefix("file://").unwrap_or(uri);
+        path.ends_with(".parquet") || path.ends_with(".csv")
+    } else if uri.starts_with("s3://") {
+        true
+    } else {
+        // postgres://, bigquery://, mysql://, etc. need staging
+        false
+    }
+}
+
 async fn create_run(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateRunRequest>,
@@ -1048,6 +1055,13 @@ async fn create_run(
             format!("Invalid recipe: {}", error_msg),
         ));
     }
+
+    let nats = state.nats.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "NATS not configured — cannot dispatch reconciliation jobs".to_string(),
+        )
+    })?;
 
     let metadata = RunMetadata::new(
         req.recipe.recipe_id.clone(),
@@ -1066,38 +1080,163 @@ async fn create_run(
 
     info!("Created run {}", run_id);
 
-    // Dispatch to worker instead of spawning a raw task
-    let reply_rx = state
-        .worker
-        .submit_run(run_id, req.recipe.clone())
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    // Classify sources
+    let left_uri = &req.recipe.sources.left.uri;
+    let right_uri = &req.recipe.sources.right.uri;
+    let left_alias = &req.recipe.sources.left.alias;
+    let right_alias = &req.recipe.sources.right.alias;
+    let left_native = is_native_source(left_uri);
+    let right_native = is_native_source(right_uri);
 
-    // Fire-and-forget: update run metadata when worker finishes
-    let runs = state.runs.clone();
-    let evidence = state.evidence_store.clone();
-    tokio::spawn(async move {
-        match reply_rx.await {
-            Ok(Err(e)) => {
-                warn!("Reconciliation failed for run {}: {}", run_id, e);
-                let mut runs = runs.write().await;
-                if let Some(run) = runs.iter_mut().find(|r| r.run_id == run_id) {
-                    run.fail();
-                    let _ = evidence.update_metadata(run);
-                }
-            }
-            Err(_) => {
-                warn!("Worker dropped the reply channel for run {}", run_id);
-            }
-            Ok(Ok(_)) => {
-                // Worker already updated metadata
-            }
+    let recipe_json = serde_json::to_string(&req.recipe)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let needs_staging = !left_native || !right_native;
+
+    if needs_staging {
+        // Count non-native sources that need staging
+        let mut staging_sources = Vec::new();
+        if !left_native {
+            staging_sources.push((left_uri.clone(), left_alias.clone()));
         }
-    });
+        if !right_native {
+            staging_sources.push((right_uri.clone(), right_alias.clone()));
+        }
+
+        let total_chunks = staging_sources.len() as i32;
+
+        // Create run_staging_tracker in Postgres
+        if let Some(pool) = &state.db_pool {
+            sqlx::query("INSERT INTO run_staging_tracker (run_id, total_chunks) VALUES ($1, $2)")
+                .bind(run_id)
+                .bind(total_chunks)
+                .execute(pool)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        }
+
+        // Build staged_sources list for the eventual exec job
+        let staged_sources: Vec<StagedSource> = vec![
+            StagedSource {
+                alias: left_alias.clone(),
+                s3_path: left_uri.clone(),
+                is_native: left_native,
+            },
+            StagedSource {
+                alias: right_alias.clone(),
+                s3_path: right_uri.clone(),
+                is_native: right_native,
+            },
+        ];
+
+        // Create a pending exec job in Postgres (workers will publish it after staging)
+        let exec_job_id = Uuid::new_v4();
+        let exec_msg = JobMessage::Exec {
+            job_id: exec_job_id,
+            run_id,
+            recipe_json: recipe_json.clone(),
+            staged_sources,
+        };
+        let exec_payload = serde_json::to_value(&exec_msg)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        if let Some(pool) = &state.db_pool {
+            sqlx::query(
+                "INSERT INTO jobs (job_id, run_id, job_type, status, payload) VALUES ($1, $2, 'exec', 'pending', $3)",
+            )
+            .bind(exec_job_id)
+            .bind(run_id)
+            .bind(&exec_payload)
+            .execute(pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        }
+
+        // Publish StagePlan jobs for non-native sources
+        for (source_uri, source_alias) in &staging_sources {
+            let stage_job_id = Uuid::new_v4();
+            let stage_msg = JobMessage::StagePlan {
+                job_id: stage_job_id,
+                run_id,
+                source_uri: source_uri.clone(),
+                source_alias: source_alias.clone(),
+                partition_key: None,
+            };
+
+            // Insert job row in Postgres
+            if let Some(pool) = &state.db_pool {
+                let stage_payload = serde_json::to_value(&stage_msg)
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                sqlx::query(
+                    "INSERT INTO jobs (job_id, run_id, job_type, status, payload) VALUES ($1, $2, 'stage_plan', 'pending', $3)",
+                )
+                .bind(stage_job_id)
+                .bind(run_id)
+                .bind(&stage_payload)
+                .execute(pool)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            }
+
+            nats.publish_stage(&stage_msg)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+            info!(
+                "Published StagePlan job {} for source '{}' (run {})",
+                stage_job_id, source_alias, run_id
+            );
+        }
+    } else {
+        // All sources are native — push Exec job directly
+        let exec_job_id = Uuid::new_v4();
+        let staged_sources = vec![
+            StagedSource {
+                alias: left_alias.clone(),
+                s3_path: left_uri.clone(),
+                is_native: true,
+            },
+            StagedSource {
+                alias: right_alias.clone(),
+                s3_path: right_uri.clone(),
+                is_native: true,
+            },
+        ];
+
+        let exec_msg = JobMessage::Exec {
+            job_id: exec_job_id,
+            run_id,
+            recipe_json,
+            staged_sources,
+        };
+
+        if let Some(pool) = &state.db_pool {
+            let exec_payload = serde_json::to_value(&exec_msg)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            sqlx::query(
+                "INSERT INTO jobs (job_id, run_id, job_type, status, payload) VALUES ($1, $2, 'exec', 'pending', $3)",
+            )
+            .bind(exec_job_id)
+            .bind(run_id)
+            .bind(&exec_payload)
+            .execute(pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        }
+
+        nats.publish_exec(&exec_msg)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        info!(
+            "Published Exec job {} directly (all native sources, run {})",
+            exec_job_id, run_id
+        );
+    }
 
     Ok(Json(CreateRunResponse {
         run_id,
-        status: "running".to_string(),
+        status: "submitted".to_string(),
     }))
 }
 
