@@ -320,11 +320,11 @@ async fn test_csv_source_preview() {
 
     let body: serde_json::Value = res.json().await.unwrap();
     assert!(
-        body["rows"].as_array().unwrap().len() > 0,
+        !body["rows"].as_array().unwrap().is_empty(),
         "Should return rows"
     );
     assert!(
-        body["columns"].as_array().unwrap().len() > 0,
+        !body["columns"].as_array().unwrap().is_empty(),
         "Should return columns"
     );
 }
