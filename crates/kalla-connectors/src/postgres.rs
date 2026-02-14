@@ -264,7 +264,7 @@ fn rows_to_record_batch(rows: &[PgRow], schema: Arc<Schema>) -> Result<RecordBat
                     .collect();
                 Arc::new(BooleanArray::from(values))
             }
-            DataType::Utf8 | _ => {
+            _ => {
                 let values: Vec<Option<String>> = rows
                     .iter()
                     .map(|row| row.try_get::<String, _>(i).ok())

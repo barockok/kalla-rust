@@ -1,5 +1,8 @@
 //! Smart field name resolution - auto-resolves common variations
 
+/// (orig_left, resolved_left, orig_right, resolved_right)
+pub type ResolvedFieldPair = (String, String, String, String);
+
 /// Normalizes a field name by:
 /// - Converting to lowercase
 /// - Replacing dashes with underscores
@@ -7,8 +10,7 @@
 pub fn normalize_field_name(name: &str) -> String {
     name.trim()
         .to_lowercase()
-        .replace('-', "_")
-        .replace(' ', "_")
+        .replace(['-', ' '], "_")
 }
 
 /// Attempts to find a matching field in the schema using fuzzy matching
@@ -31,7 +33,7 @@ pub fn resolve_recipe_fields(
     conditions: &[(String, String)], // (left_field, right_field)
     left_fields: &[String],
     right_fields: &[String],
-) -> Result<Vec<(String, String, String, String)>, Vec<String>> {
+) -> Result<Vec<ResolvedFieldPair>, Vec<String>> {
     // Returns: (orig_left, resolved_left, orig_right, resolved_right)
     let mut resolved = Vec::new();
     let mut errors = Vec::new();

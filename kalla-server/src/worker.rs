@@ -329,7 +329,7 @@ impl Worker {
             let batch =
                 batch_result.map_err(|e| format!("Stream error counting {}: {}", alias, e))?;
             if let Some(arr) = batch.column(0).as_any().downcast_ref::<Int64Array>() {
-                if arr.len() > 0 {
+                if !arr.is_empty() {
                     count = arr.value(0) as u64;
                 }
             }
