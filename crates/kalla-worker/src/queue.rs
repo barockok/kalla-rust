@@ -155,3 +155,209 @@ impl QueueClient {
         Ok(info.state.messages)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stage_plan_roundtrip() {
+        let msg = JobMessage::StagePlan {
+            job_id: Uuid::nil(),
+            run_id: Uuid::nil(),
+            source_uri: "postgres://localhost/db?table=accounts".to_string(),
+            source_alias: "accounts".to_string(),
+            partition_key: Some("region".to_string()),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: JobMessage = serde_json::from_str(&json).unwrap();
+
+        match deserialized {
+            JobMessage::StagePlan {
+                job_id,
+                run_id,
+                source_uri,
+                source_alias,
+                partition_key,
+            } => {
+                assert_eq!(job_id, Uuid::nil());
+                assert_eq!(run_id, Uuid::nil());
+                assert_eq!(source_uri, "postgres://localhost/db?table=accounts");
+                assert_eq!(source_alias, "accounts");
+                assert_eq!(partition_key, Some("region".to_string()));
+            }
+            other => panic!("Expected StagePlan, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn stage_plan_without_partition_key() {
+        let msg = JobMessage::StagePlan {
+            job_id: Uuid::nil(),
+            run_id: Uuid::nil(),
+            source_uri: "postgres://localhost/db?table=t".to_string(),
+            source_alias: "t".to_string(),
+            partition_key: None,
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"partition_key\":null"));
+
+        let deserialized: JobMessage = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            JobMessage::StagePlan { partition_key, .. } => {
+                assert_eq!(partition_key, None);
+            }
+            other => panic!("Expected StagePlan, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn stage_chunk_roundtrip() {
+        let msg = JobMessage::StageChunk {
+            job_id: Uuid::nil(),
+            run_id: Uuid::nil(),
+            source_uri: "postgres://localhost/db?table=txns".to_string(),
+            source_alias: "txns".to_string(),
+            chunk_index: 2,
+            total_chunks: 5,
+            offset: 2_000_000,
+            limit: 1_000_000,
+            output_path: "s3://kalla-staging/run-1/txns/part-02.parquet".to_string(),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: JobMessage = serde_json::from_str(&json).unwrap();
+
+        match deserialized {
+            JobMessage::StageChunk {
+                chunk_index,
+                total_chunks,
+                offset,
+                limit,
+                output_path,
+                ..
+            } => {
+                assert_eq!(chunk_index, 2);
+                assert_eq!(total_chunks, 5);
+                assert_eq!(offset, 2_000_000);
+                assert_eq!(limit, 1_000_000);
+                assert_eq!(output_path, "s3://kalla-staging/run-1/txns/part-02.parquet");
+            }
+            other => panic!("Expected StageChunk, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn exec_roundtrip() {
+        let msg = JobMessage::Exec {
+            job_id: Uuid::nil(),
+            run_id: Uuid::nil(),
+            recipe_json: r#"{"match_rules":[]}"#.to_string(),
+            staged_sources: vec![
+                StagedSource {
+                    alias: "left".to_string(),
+                    s3_path: "s3://bucket/left.parquet".to_string(),
+                    is_native: false,
+                },
+                StagedSource {
+                    alias: "right".to_string(),
+                    s3_path: "s3://bucket/right.parquet".to_string(),
+                    is_native: true,
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: JobMessage = serde_json::from_str(&json).unwrap();
+
+        match deserialized {
+            JobMessage::Exec {
+                staged_sources,
+                recipe_json,
+                ..
+            } => {
+                assert_eq!(staged_sources.len(), 2);
+                assert_eq!(staged_sources[0].alias, "left");
+                assert!(!staged_sources[0].is_native);
+                assert_eq!(staged_sources[1].alias, "right");
+                assert!(staged_sources[1].is_native);
+                assert_eq!(recipe_json, r#"{"match_rules":[]}"#);
+            }
+            other => panic!("Expected Exec, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn serde_tag_discriminator() {
+        let plan = JobMessage::StagePlan {
+            job_id: Uuid::nil(),
+            run_id: Uuid::nil(),
+            source_uri: "s".to_string(),
+            source_alias: "a".to_string(),
+            partition_key: None,
+        };
+        let chunk = JobMessage::StageChunk {
+            job_id: Uuid::nil(),
+            run_id: Uuid::nil(),
+            source_uri: "s".to_string(),
+            source_alias: "a".to_string(),
+            chunk_index: 0,
+            total_chunks: 1,
+            offset: 0,
+            limit: 100,
+            output_path: "out".to_string(),
+        };
+        let exec = JobMessage::Exec {
+            job_id: Uuid::nil(),
+            run_id: Uuid::nil(),
+            recipe_json: "{}".to_string(),
+            staged_sources: vec![],
+        };
+
+        let plan_json = serde_json::to_string(&plan).unwrap();
+        let chunk_json = serde_json::to_string(&chunk).unwrap();
+        let exec_json = serde_json::to_string(&exec).unwrap();
+
+        assert!(
+            plan_json.contains(r#""type":"StagePlan""#),
+            "Plan JSON: {plan_json}"
+        );
+        assert!(
+            chunk_json.contains(r#""type":"StageChunk""#),
+            "Chunk JSON: {chunk_json}"
+        );
+        assert!(
+            exec_json.contains(r#""type":"Exec""#),
+            "Exec JSON: {exec_json}"
+        );
+    }
+
+    #[test]
+    fn staged_source_roundtrip() {
+        let source = StagedSource {
+            alias: "transactions".to_string(),
+            s3_path: "s3://bucket/staging/run-1/transactions/part-00.parquet".to_string(),
+            is_native: false,
+        };
+
+        let json = serde_json::to_string(&source).unwrap();
+        let deserialized: StagedSource = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.alias, "transactions");
+        assert_eq!(
+            deserialized.s3_path,
+            "s3://bucket/staging/run-1/transactions/part-00.parquet"
+        );
+        assert!(!deserialized.is_native);
+    }
+
+    #[test]
+    fn constants_are_correct() {
+        assert_eq!(STAGE_STREAM, "KALLA_STAGE");
+        assert_eq!(EXEC_STREAM, "KALLA_EXEC");
+        assert_eq!(STAGE_SUBJECT, "kalla.stage");
+        assert_eq!(EXEC_SUBJECT, "kalla.exec");
+    }
+}
