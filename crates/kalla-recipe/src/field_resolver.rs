@@ -8,9 +8,7 @@ pub type ResolvedFieldPair = (String, String, String, String);
 /// - Replacing dashes with underscores
 /// - Removing leading/trailing whitespace
 pub fn normalize_field_name(name: &str) -> String {
-    name.trim()
-        .to_lowercase()
-        .replace(['-', ' '], "_")
+    name.trim().to_lowercase().replace(['-', ' '], "_")
 }
 
 /// Attempts to find a matching field in the schema using fuzzy matching
