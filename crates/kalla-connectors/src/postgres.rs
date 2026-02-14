@@ -3,7 +3,9 @@
 use anyhow::Result;
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Field, Schema};
+use async_trait::async_trait;
 use datafusion::datasource::MemTable;
+use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::SessionContext;
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::{Column, Row};
@@ -11,6 +13,7 @@ use std::sync::Arc;
 use tracing::{debug, info};
 
 use crate::filter::{build_where_clause, FilterCondition};
+use crate::SourceConnector;
 
 /// PostgreSQL connector that can register tables with DataFusion
 pub struct PostgresConnector {
@@ -136,6 +139,43 @@ impl PostgresConnector {
     }
 }
 
+#[async_trait]
+impl SourceConnector for PostgresConnector {
+    async fn register_table(
+        &self,
+        ctx: &SessionContext,
+        table_name: &str,
+        source_table: &str,
+        where_clause: Option<&str>,
+    ) -> Result<()> {
+        // Delegate to the existing inherent method
+        PostgresConnector::register_table(self, ctx, table_name, source_table, where_clause).await
+    }
+
+    async fn register_scoped(
+        &self,
+        ctx: &SessionContext,
+        table_name: &str,
+        source_table: &str,
+        conditions: &[FilterCondition],
+        limit: Option<usize>,
+    ) -> Result<usize> {
+        PostgresConnector::register_scoped(self, ctx, table_name, source_table, conditions, limit)
+            .await
+    }
+
+    async fn stream_table(
+        &self,
+        ctx: &SessionContext,
+        table_name: &str,
+    ) -> Result<SendableRecordBatchStream> {
+        let df = ctx
+            .sql(&format!("SELECT * FROM \"{}\"", table_name))
+            .await?;
+        Ok(df.execute_stream().await?)
+    }
+}
+
 /// Build a scoped SELECT query from table, conditions, and optional limit.
 pub fn build_scoped_query(
     table: &str,
@@ -240,19 +280,19 @@ mod tests {
     use super::*;
     use crate::filter::{FilterCondition, FilterOp, FilterValue};
 
+    fn fc(column: &str, op: FilterOp, value: FilterValue) -> FilterCondition {
+        FilterCondition {
+            column: column.to_string(),
+            op,
+            value,
+        }
+    }
+
     #[test]
-    fn test_build_scoped_query() {
+    fn test_build_scoped_query_with_conditions_and_limit() {
         let conditions = vec![
-            FilterCondition {
-                column: "invoice_date".to_string(),
-                op: FilterOp::Between,
-                value: FilterValue::Range(["2024-01-01".to_string(), "2024-01-31".to_string()]),
-            },
-            FilterCondition {
-                column: "amount".to_string(),
-                op: FilterOp::Gte,
-                value: FilterValue::Number(100.0),
-            },
+            fc("invoice_date", FilterOp::Between, FilterValue::Range(["2024-01-01".to_string(), "2024-01-31".to_string()])),
+            fc("amount", FilterOp::Gte, FilterValue::Number(100.0)),
         ];
         let query = build_scoped_query("invoices", &conditions, Some(50));
         assert_eq!(
@@ -269,12 +309,101 @@ mod tests {
 
     #[test]
     fn test_build_scoped_query_no_limit() {
-        let conditions = vec![FilterCondition {
-            column: "status".to_string(),
-            op: FilterOp::Eq,
-            value: FilterValue::String("active".to_string()),
-        }];
+        let conditions = vec![fc("status", FilterOp::Eq, FilterValue::String("active".to_string()))];
         let query = build_scoped_query("orders", &conditions, None);
         assert_eq!(query, "SELECT * FROM \"orders\" WHERE \"status\" = 'active'");
+    }
+
+    #[test]
+    fn test_build_scoped_query_no_conditions_no_limit() {
+        let query = build_scoped_query("my_table", &[], None);
+        assert_eq!(query, "SELECT * FROM \"my_table\"");
+    }
+
+    #[test]
+    fn test_build_scoped_query_multiple_conditions() {
+        let conditions = vec![
+            fc("a", FilterOp::Eq, FilterValue::Number(1.0)),
+            fc("b", FilterOp::Gt, FilterValue::Number(2.0)),
+            fc("c", FilterOp::Like, FilterValue::String("%test%".to_string())),
+        ];
+        let query = build_scoped_query("t", &conditions, Some(10));
+        assert!(query.contains("\"a\" = 1"));
+        assert!(query.contains("\"b\" > 2"));
+        assert!(query.contains("\"c\" LIKE '%test%'"));
+        assert!(query.contains("LIMIT 10"));
+    }
+
+    #[test]
+    fn test_build_scoped_query_table_name_with_quotes() {
+        let query = build_scoped_query("my\"table", &[], None);
+        assert_eq!(query, "SELECT * FROM \"my\"\"table\"");
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_int_types() {
+        assert_eq!(pg_type_to_arrow("INT2"), DataType::Int16);
+        assert_eq!(pg_type_to_arrow("SMALLINT"), DataType::Int16);
+        assert_eq!(pg_type_to_arrow("INT4"), DataType::Int32);
+        assert_eq!(pg_type_to_arrow("INTEGER"), DataType::Int32);
+        assert_eq!(pg_type_to_arrow("INT"), DataType::Int32);
+        assert_eq!(pg_type_to_arrow("INT8"), DataType::Int64);
+        assert_eq!(pg_type_to_arrow("BIGINT"), DataType::Int64);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_float_types() {
+        assert_eq!(pg_type_to_arrow("FLOAT4"), DataType::Float32);
+        assert_eq!(pg_type_to_arrow("REAL"), DataType::Float32);
+        assert_eq!(pg_type_to_arrow("FLOAT8"), DataType::Float64);
+        assert_eq!(pg_type_to_arrow("DOUBLE PRECISION"), DataType::Float64);
+        assert_eq!(pg_type_to_arrow("NUMERIC"), DataType::Float64);
+        assert_eq!(pg_type_to_arrow("DECIMAL"), DataType::Float64);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_bool() {
+        assert_eq!(pg_type_to_arrow("BOOL"), DataType::Boolean);
+        assert_eq!(pg_type_to_arrow("BOOLEAN"), DataType::Boolean);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_text_types() {
+        assert_eq!(pg_type_to_arrow("TEXT"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("VARCHAR"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("CHAR"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("BPCHAR"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("NAME"), DataType::Utf8);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_binary() {
+        assert_eq!(pg_type_to_arrow("BYTEA"), DataType::Binary);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_temporal() {
+        assert_eq!(pg_type_to_arrow("DATE"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("TIMESTAMP"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("TIMESTAMPTZ"), DataType::Utf8);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_uuid() {
+        assert_eq!(pg_type_to_arrow("UUID"), DataType::Utf8);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_unknown_defaults_to_utf8() {
+        assert_eq!(pg_type_to_arrow("JSONB"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("CIDR"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("UNKNOWN_TYPE"), DataType::Utf8);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_case_insensitive() {
+        assert_eq!(pg_type_to_arrow("int4"), DataType::Int32);
+        assert_eq!(pg_type_to_arrow("Bool"), DataType::Boolean);
+        assert_eq!(pg_type_to_arrow("text"), DataType::Utf8);
     }
 }

@@ -128,59 +128,76 @@ mod tests {
     use super::*;
     use crate::schema_extractor::ColumnMeta;
 
-    #[test]
-    fn test_build_user_prompt() {
-        let left = SanitizedSchema {
-            table_name: "invoices".to_string(),
-            columns: vec![
-                ColumnMeta {
-                    name: "invoice_id".to_string(),
-                    data_type: "Utf8".to_string(),
-                    nullable: false,
-                },
-                ColumnMeta {
-                    name: "amount".to_string(),
-                    data_type: "Float64".to_string(),
-                    nullable: false,
-                },
-            ],
-            row_count: 1000,
-        };
+    fn make_schema(name: &str, columns: Vec<(&str, &str, bool)>, rows: usize) -> SanitizedSchema {
+        SanitizedSchema {
+            table_name: name.to_string(),
+            columns: columns
+                .into_iter()
+                .map(|(n, t, nullable)| ColumnMeta {
+                    name: n.to_string(),
+                    data_type: t.to_string(),
+                    nullable,
+                })
+                .collect(),
+            row_count: rows,
+        }
+    }
 
-        let right = SanitizedSchema {
-            table_name: "payments".to_string(),
-            columns: vec![
-                ColumnMeta {
-                    name: "payment_ref".to_string(),
-                    data_type: "Utf8".to_string(),
-                    nullable: false,
-                },
-                ColumnMeta {
-                    name: "paid_amount".to_string(),
-                    data_type: "Float64".to_string(),
-                    nullable: false,
-                },
-            ],
-            row_count: 950,
-        };
+    #[test]
+    fn test_build_user_prompt_contains_all_fields() {
+        let left = make_schema("invoices", vec![
+            ("invoice_id", "Utf8", false),
+            ("amount", "Float64", false),
+        ], 1000);
+        let right = make_schema("payments", vec![
+            ("payment_ref", "Utf8", false),
+            ("paid_amount", "Float64", false),
+        ], 950);
 
         let prompt = build_user_prompt(
-            &left,
-            &right,
+            &left, &right,
             "Match invoices to payments by ID with 1 cent tolerance",
-            "file://invoices.csv",
-            "file://payments.csv",
+            "file://invoices.csv", "file://payments.csv",
         );
 
+        assert!(prompt.contains("invoices"));
+        assert!(prompt.contains("payments"));
         assert!(prompt.contains("invoice_id"));
         assert!(prompt.contains("payment_ref"));
+        assert!(prompt.contains("1000"));
+        assert!(prompt.contains("950"));
+        assert!(prompt.contains("file://invoices.csv"));
+        assert!(prompt.contains("file://payments.csv"));
         assert!(prompt.contains("1 cent tolerance"));
-        // Should NOT contain any actual data values
         assert!(!prompt.contains("$"));
     }
 
     #[test]
-    fn test_parse_recipe_response() {
+    fn test_build_user_prompt_nullable_annotation() {
+        let left = make_schema("t", vec![("col", "Int64", true)], 10);
+        let right = make_schema("t2", vec![("col2", "Int64", false)], 10);
+        let prompt = build_user_prompt(&left, &right, "test", "u1", "u2");
+        assert!(prompt.contains("(nullable)"));
+    }
+
+    #[test]
+    fn test_build_user_prompt_empty_columns() {
+        let left = make_schema("empty", vec![], 0);
+        let right = make_schema("empty2", vec![], 0);
+        let prompt = build_user_prompt(&left, &right, "test", "u1", "u2");
+        assert!(prompt.contains("empty"));
+        assert!(prompt.contains("0"));
+    }
+
+    #[test]
+    fn test_system_prompt_not_empty() {
+        assert!(!SYSTEM_PROMPT.is_empty());
+        assert!(SYSTEM_PROMPT.contains("tolerance"));
+        assert!(SYSTEM_PROMPT.contains("PII"));
+    }
+
+    #[test]
+    fn test_parse_recipe_response_json_code_block() {
         let response = r#"```json
 {
   "version": "1.0",
@@ -205,9 +222,103 @@ mod tests {
   }
 }
 ```"#;
-
         let recipe = parse_recipe_response(response).unwrap();
         assert_eq!(recipe.recipe_id, "test");
         assert_eq!(recipe.match_rules.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_recipe_response_plain_code_block() {
+        let response = r#"```
+{
+  "version": "1.0",
+  "recipe_id": "plain",
+  "sources": {
+    "left": { "alias": "l", "uri": "f://l.csv" },
+    "right": { "alias": "r", "uri": "f://r.csv" }
+  },
+  "match_rules": [
+    { "name": "r1", "pattern": "1:1", "conditions": [{ "left": "a", "op": "eq", "right": "b" }] }
+  ],
+  "output": { "matched": "m.p", "unmatched_left": "ul.p", "unmatched_right": "ur.p" }
+}
+```"#;
+        let recipe = parse_recipe_response(response).unwrap();
+        assert_eq!(recipe.recipe_id, "plain");
+    }
+
+    #[test]
+    fn test_parse_recipe_response_raw_json() {
+        let response = r#"{
+  "version": "1.0",
+  "recipe_id": "raw",
+  "sources": {
+    "left": { "alias": "l", "uri": "f://l.csv" },
+    "right": { "alias": "r", "uri": "f://r.csv" }
+  },
+  "match_rules": [
+    { "name": "r1", "pattern": "1:1", "conditions": [{ "left": "a", "op": "eq", "right": "b" }] }
+  ],
+  "output": { "matched": "m.p", "unmatched_left": "ul.p", "unmatched_right": "ur.p" }
+}"#;
+        let recipe = parse_recipe_response(response).unwrap();
+        assert_eq!(recipe.recipe_id, "raw");
+    }
+
+    #[test]
+    fn test_parse_recipe_response_invalid_json() {
+        let response = "This is not valid JSON at all";
+        let result = parse_recipe_response(response);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_recipe_response_incomplete_json() {
+        let response = r#"```json
+{ "version": "1.0" }
+```"#;
+        let result = parse_recipe_response(response);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_recipe_response_with_surrounding_text() {
+        let response = r#"Here's the recipe:
+
+```json
+{
+  "version": "1.0",
+  "recipe_id": "surrounded",
+  "sources": {
+    "left": { "alias": "l", "uri": "f://l.csv" },
+    "right": { "alias": "r", "uri": "f://r.csv" }
+  },
+  "match_rules": [
+    { "name": "r1", "pattern": "M:1", "conditions": [{ "left": "a", "op": "eq", "right": "b" }] }
+  ],
+  "output": { "matched": "m.p", "unmatched_left": "ul.p", "unmatched_right": "ur.p" }
+}
+```
+
+Hope this helps!"#;
+        let recipe = parse_recipe_response(response).unwrap();
+        assert_eq!(recipe.recipe_id, "surrounded");
+    }
+
+    #[test]
+    fn test_format_columns() {
+        let cols = vec![
+            ColumnMeta { name: "id".to_string(), data_type: "Int64".to_string(), nullable: false },
+            ColumnMeta { name: "name".to_string(), data_type: "Utf8".to_string(), nullable: true },
+        ];
+        let result = format_columns(&cols);
+        assert!(result.contains("- id: Int64"));
+        assert!(result.contains("- name: Utf8 (nullable)"));
+    }
+
+    #[test]
+    fn test_format_columns_empty() {
+        let result = format_columns(&[]);
+        assert_eq!(result, "");
     }
 }

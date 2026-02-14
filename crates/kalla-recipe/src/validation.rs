@@ -126,8 +126,7 @@ mod tests {
 
     #[test]
     fn test_valid_recipe() {
-        let recipe = valid_recipe();
-        assert!(validate_recipe(&recipe).is_ok());
+        assert!(validate_recipe(&valid_recipe()).is_ok());
     }
 
     #[test]
@@ -144,5 +143,100 @@ mod tests {
         recipe.match_rules[0].conditions[0].op = ComparisonOp::Tolerance;
         let errors = validate_recipe(&recipe).unwrap_err();
         assert!(errors.iter().any(|e| matches!(e, ValidationError::MissingThreshold(_, _))));
+    }
+
+    #[test]
+    fn test_tolerance_with_threshold_is_valid() {
+        let mut recipe = valid_recipe();
+        recipe.match_rules[0].conditions[0].op = ComparisonOp::Tolerance;
+        recipe.match_rules[0].conditions[0].threshold = Some(0.01);
+        assert!(validate_recipe(&recipe).is_ok());
+    }
+
+    #[test]
+    fn test_empty_recipe_id() {
+        let mut recipe = valid_recipe();
+        recipe.recipe_id = "".to_string();
+        let errors = validate_recipe(&recipe).unwrap_err();
+        assert!(errors.iter().any(|e| matches!(e, ValidationError::EmptyRecipeId)));
+    }
+
+    #[test]
+    fn test_whitespace_recipe_id() {
+        let mut recipe = valid_recipe();
+        recipe.recipe_id = "   ".to_string();
+        let errors = validate_recipe(&recipe).unwrap_err();
+        assert!(errors.iter().any(|e| matches!(e, ValidationError::EmptyRecipeId)));
+    }
+
+    #[test]
+    fn test_empty_left_source_uri() {
+        let mut recipe = valid_recipe();
+        recipe.sources.left.uri = "".to_string();
+        let errors = validate_recipe(&recipe).unwrap_err();
+        assert!(errors.iter().any(|e| matches!(e, ValidationError::EmptySourceUri(_))));
+    }
+
+    #[test]
+    fn test_empty_right_source_uri() {
+        let mut recipe = valid_recipe();
+        recipe.sources.right.uri = "".to_string();
+        let errors = validate_recipe(&recipe).unwrap_err();
+        assert!(errors.iter().any(|e| matches!(e, ValidationError::EmptySourceUri(_))));
+    }
+
+    #[test]
+    fn test_no_match_rules() {
+        let mut recipe = valid_recipe();
+        recipe.match_rules = vec![];
+        let errors = validate_recipe(&recipe).unwrap_err();
+        assert!(errors.iter().any(|e| matches!(e, ValidationError::NoMatchRules)));
+    }
+
+    #[test]
+    fn test_rule_with_no_conditions() {
+        let mut recipe = valid_recipe();
+        recipe.match_rules[0].conditions = vec![];
+        let errors = validate_recipe(&recipe).unwrap_err();
+        assert!(errors.iter().any(|e| matches!(e, ValidationError::NoConditions(_))));
+    }
+
+    #[test]
+    fn test_empty_column_name_left() {
+        let mut recipe = valid_recipe();
+        recipe.match_rules[0].conditions[0].left = "".to_string();
+        let errors = validate_recipe(&recipe).unwrap_err();
+        assert!(errors.iter().any(|e| matches!(e, ValidationError::EmptyColumnName(_))));
+    }
+
+    #[test]
+    fn test_empty_column_name_right() {
+        let mut recipe = valid_recipe();
+        recipe.match_rules[0].conditions[0].right = "  ".to_string();
+        let errors = validate_recipe(&recipe).unwrap_err();
+        assert!(errors.iter().any(|e| matches!(e, ValidationError::EmptyColumnName(_))));
+    }
+
+    #[test]
+    fn test_multiple_errors_accumulated() {
+        let mut recipe = valid_recipe();
+        recipe.version = "3.0".to_string();
+        recipe.recipe_id = "".to_string();
+        recipe.sources.left.uri = "".to_string();
+        let errors = validate_recipe(&recipe).unwrap_err();
+        // Should have at least 3 errors
+        assert!(errors.len() >= 3);
+    }
+
+    #[test]
+    fn test_validation_error_display() {
+        let err = ValidationError::InvalidVersion("2.0".to_string());
+        let msg = format!("{}", err);
+        assert!(msg.contains("2.0"));
+
+        let err = ValidationError::MissingThreshold("rule1".to_string(), "amount".to_string());
+        let msg = format!("{}", err);
+        assert!(msg.contains("rule1"));
+        assert!(msg.contains("amount"));
     }
 }

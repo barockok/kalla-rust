@@ -146,45 +146,144 @@ mod tests {
     use super::*;
     use datafusion::prelude::CsvReadOptions;
 
-    // Helper to get workspace root testdata path
     fn testdata_path(filename: &str) -> String {
-        // CARGO_MANIFEST_DIR points to crates/kalla-ai, so we need to go up two levels
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         format!("{}/../../testdata/{}", manifest_dir, filename)
     }
 
     #[tokio::test]
+    async fn test_extract_schema_invoices() {
+        let ctx = SessionContext::new();
+        ctx.register_csv("invoices", &testdata_path("invoices.csv"), CsvReadOptions::new())
+            .await
+            .unwrap();
+
+        let schema = extract_schema(&ctx, "invoices").await.unwrap();
+        assert_eq!(schema.table_name, "invoices");
+        assert!(!schema.columns.is_empty());
+        assert!(schema.row_count > 0);
+        // Verify column names include expected fields
+        let col_names: Vec<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
+        assert!(col_names.contains(&"invoice_id"));
+        assert!(col_names.contains(&"amount"));
+    }
+
+    #[tokio::test]
+    async fn test_extract_schema_payments() {
+        let ctx = SessionContext::new();
+        ctx.register_csv("payments", &testdata_path("payments.csv"), CsvReadOptions::new())
+            .await
+            .unwrap();
+
+        let schema = extract_schema(&ctx, "payments").await.unwrap();
+        assert_eq!(schema.table_name, "payments");
+        let col_names: Vec<&str> = schema.columns.iter().map(|c| c.name.as_str()).collect();
+        assert!(col_names.contains(&"payment_id"));
+        assert!(col_names.contains(&"paid_amount"));
+    }
+
+    #[tokio::test]
+    async fn test_extract_schema_nonexistent_table() {
+        let ctx = SessionContext::new();
+        let result = extract_schema(&ctx, "nonexistent").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_extract_schema_no_data_values() {
+        let ctx = SessionContext::new();
+        ctx.register_csv("invoices", &testdata_path("invoices.csv"), CsvReadOptions::new())
+            .await
+            .unwrap();
+
+        let schema = extract_schema(&ctx, "invoices").await.unwrap();
+        let json = serde_json::to_string(&schema).unwrap();
+
+        // Should not contain any actual data values from the CSV
+        assert!(!json.contains("Acme"));
+        assert!(!json.contains("15000"));
+        assert!(!json.contains("INV-2024"));
+    }
+
+    #[tokio::test]
     async fn test_detect_primary_key_single_column() {
         let ctx = SessionContext::new();
-        ctx.register_csv(
-            "test_table",
-            &testdata_path("invoices.csv"),
-            CsvReadOptions::new(),
-        )
-        .await
-        .unwrap();
+        ctx.register_csv("test_table", &testdata_path("invoices.csv"), CsvReadOptions::new())
+            .await
+            .unwrap();
 
         let detected = detect_primary_key(&ctx, "test_table").await.unwrap();
-
-        // invoice_id is unique and ends with "_id"
         assert!(detected.contains(&"invoice_id".to_string()));
     }
 
     #[tokio::test]
     async fn test_detect_primary_key_heuristics() {
         let ctx = SessionContext::new();
-        ctx.register_csv(
-            "test_table",
-            &testdata_path("payments.csv"),
-            CsvReadOptions::new(),
-        )
-        .await
-        .unwrap();
+        ctx.register_csv("test_table", &testdata_path("payments.csv"), CsvReadOptions::new())
+            .await
+            .unwrap();
 
         let detected = detect_primary_key(&ctx, "test_table").await.unwrap();
-
-        // payment_id matches heuristics
         assert!(detected.contains(&"payment_id".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_detect_primary_key_non_unique() {
+        use std::io::Write;
+        // Create a CSV with duplicate values in the id-like column
+        let csv = "user_id,name\n1,Alice\n1,Bob\n2,Carol\n";
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(csv.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f.as_file().sync_all().unwrap();
+        let path = f.path().to_str().unwrap();
+
+        let ctx = SessionContext::new();
+        ctx.register_csv("dup_table", path, CsvReadOptions::new())
+            .await
+            .unwrap();
+
+        let detected = detect_primary_key(&ctx, "dup_table").await.unwrap();
+        // user_id has duplicates, so no confirmed primary key
+        assert!(detected.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_extract_schema_column_types() {
+        let ctx = SessionContext::new();
+        ctx.register_csv("inv", &testdata_path("invoices.csv"), CsvReadOptions::new())
+            .await
+            .unwrap();
+
+        let schema = extract_schema(&ctx, "inv").await.unwrap();
+        // Verify we get reasonable types and multiple columns
+        assert!(schema.columns.len() >= 5);
+        // All columns should have non-empty data type strings
+        for col in &schema.columns {
+            assert!(!col.data_type.is_empty());
+            assert!(!col.name.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_primary_key_no_id_column_non_unique_fallback() {
+        use std::io::Write;
+        // first column has duplicates
+        let csv = "first_name,last_name\nAlice,Smith\nAlice,Jones\nBob,Brown\n";
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(csv.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f.as_file().sync_all().unwrap();
+        let path = f.path().to_str().unwrap();
+
+        let ctx = SessionContext::new();
+        ctx.register_csv("dup_fb_table", path, CsvReadOptions::new())
+            .await
+            .unwrap();
+
+        let detected = detect_primary_key(&ctx, "dup_fb_table").await.unwrap();
+        // Fallback column has duplicates, returns empty
+        assert!(detected.is_empty());
     }
 
     #[test]
@@ -194,10 +293,19 @@ mod tests {
             data_type: "Utf8".to_string(),
             nullable: false,
         };
-
         let json = serde_json::to_string(&meta).unwrap();
         assert!(json.contains("invoice_id"));
         assert!(json.contains("Utf8"));
+        assert!(json.contains("\"nullable\":false"));
+    }
+
+    #[test]
+    fn test_column_meta_deserialization() {
+        let json = r#"{"name":"col","data_type":"Int64","nullable":true}"#;
+        let meta: ColumnMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.name, "col");
+        assert_eq!(meta.data_type, "Int64");
+        assert!(meta.nullable);
     }
 
     #[test]
@@ -205,27 +313,24 @@ mod tests {
         let schema = SanitizedSchema {
             table_name: "invoices".to_string(),
             columns: vec![
-                ColumnMeta {
-                    name: "id".to_string(),
-                    data_type: "Int64".to_string(),
-                    nullable: false,
-                },
-                ColumnMeta {
-                    name: "amount".to_string(),
-                    data_type: "Float64".to_string(),
-                    nullable: false,
-                },
+                ColumnMeta { name: "id".to_string(), data_type: "Int64".to_string(), nullable: false },
+                ColumnMeta { name: "amount".to_string(), data_type: "Float64".to_string(), nullable: false },
             ],
             row_count: 1000,
         };
-
         let json = serde_json::to_string(&schema).unwrap();
-
-        // Verify NO actual data values could be in this
         assert!(!json.contains("$"));
         assert!(!json.contains("123.45"));
-        // Only metadata is present
         assert!(json.contains("row_count"));
         assert!(json.contains("1000"));
+    }
+
+    #[test]
+    fn test_sanitized_schema_deserialization() {
+        let json = r#"{"table_name":"t","columns":[{"name":"c","data_type":"Utf8","nullable":false}],"row_count":42}"#;
+        let schema: SanitizedSchema = serde_json::from_str(json).unwrap();
+        assert_eq!(schema.table_name, "t");
+        assert_eq!(schema.columns.len(), 1);
+        assert_eq!(schema.row_count, 42);
     }
 }

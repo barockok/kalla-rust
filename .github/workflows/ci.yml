@@ -1,0 +1,213 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ===== Rust =====
+  rust-lint:
+    name: Rust Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-lint-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  rust-test:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+
+      - name: Run unit tests
+        run: cargo test --workspace
+
+  # ===== Frontend =====
+  frontend-lint:
+    name: Frontend Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kalla-web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: kalla-web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+  frontend-test:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kalla-web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: kalla-web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Jest tests with coverage
+        run: npx jest --coverage --coverageReporters=text --coverageReporters=lcov
+
+      - name: Check coverage threshold
+        run: |
+          npx jest --coverage --coverageReporters=json-summary 2>/dev/null || true
+          COVERAGE=$(node -e "
+            const s = require('./coverage/coverage-summary.json');
+            console.log(s.total.lines.pct);
+          " 2>/dev/null || echo "0")
+          echo "Line coverage: ${COVERAGE}%"
+          node -e "
+            const pct = parseFloat('${COVERAGE}');
+            if (pct < 95) {
+              console.error('Coverage ${COVERAGE}% is below 95% threshold');
+              process.exit(1);
+            }
+            console.log('Coverage check passed: ${COVERAGE}%');
+          "
+
+  # ===== Docker =====
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: [rust-lint, rust-test, frontend-lint, frontend-test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: kalla-server/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build web image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./kalla-web
+          file: kalla-web/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===== Integration tests (require services) =====
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [rust-test, frontend-test]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: kalla
+          POSTGRES_PASSWORD: kalla_secret
+          POSTGRES_DB: kalla
+        options: >-
+          --health-cmd "pg_isready -U kalla"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize database
+        env:
+          PGPASSWORD: kalla_secret
+        run: psql -h localhost -U kalla -d kalla -f scripts/init.sql
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-integration-
+
+      - name: Build and start server
+        env:
+          DATABASE_URL: postgres://kalla:kalla_secret@localhost:5432/kalla
+          RUST_LOG: info
+        run: |
+          cargo build --release --bin kalla-server
+          ./target/release/kalla-server &
+          # Wait for server to be ready
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3001/health && break || sleep 1
+          done
+
+      - name: Run integration tests
+        env:
+          POSTGRES_HOST: localhost
+        run: cargo test --test reconciliation_test --test api_edge_cases_test -- --test-threads=1

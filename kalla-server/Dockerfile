@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 # Stage 2: Runtime
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends libssl3 ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/bin/kalla-server /usr/local/bin/
 EXPOSE 3001
 CMD ["kalla-server"]

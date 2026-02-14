@@ -208,50 +208,280 @@ mod tests {
     use super::*;
     use crate::schema::*;
 
+    fn make_condition(left: &str, op: ComparisonOp, right: &str, threshold: Option<f64>) -> MatchCondition {
+        MatchCondition {
+            left: left.to_string(),
+            op,
+            right: right.to_string(),
+            threshold,
+        }
+    }
+
+    fn make_rule(name: &str, pattern: MatchPattern, conditions: Vec<MatchCondition>) -> MatchRule {
+        MatchRule {
+            name: name.to_string(),
+            pattern,
+            conditions,
+            priority: None,
+        }
+    }
+
+    fn make_recipe(rules: Vec<MatchRule>) -> MatchRecipe {
+        MatchRecipe {
+            version: "1.0".to_string(),
+            recipe_id: "test-recipe".to_string(),
+            sources: Sources {
+                left: DataSource {
+                    alias: "inv".to_string(),
+                    uri: "file://invoices.csv".to_string(),
+                    primary_key: None,
+                },
+                right: DataSource {
+                    alias: "pay".to_string(),
+                    uri: "file://payments.csv".to_string(),
+                    primary_key: None,
+                },
+            },
+            match_rules: rules,
+            output: OutputConfig {
+                matched: "matched.parquet".to_string(),
+                unmatched_left: "unmatched_left.parquet".to_string(),
+                unmatched_right: "unmatched_right.parquet".to_string(),
+            },
+        }
+    }
+
+    // --- Condition transpilation tests ---
+
     #[test]
     fn test_transpile_eq_condition() {
-        let condition = MatchCondition {
-            left: "invoice_id".to_string(),
-            op: ComparisonOp::Eq,
-            right: "payment_ref".to_string(),
-            threshold: None,
-        };
-
+        let condition = make_condition("invoice_id", ComparisonOp::Eq, "payment_ref", None);
         let result = Transpiler::transpile_condition(&condition, "inv", "pay").unwrap();
         assert_eq!(result, "inv.invoice_id = pay.payment_ref");
     }
 
     #[test]
     fn test_transpile_tolerance_condition() {
-        let condition = MatchCondition {
-            left: "amount".to_string(),
-            op: ComparisonOp::Tolerance,
-            right: "paid_amount".to_string(),
-            threshold: Some(0.01),
-        };
-
+        let condition = make_condition("amount", ComparisonOp::Tolerance, "paid_amount", Some(0.01));
         let result = Transpiler::transpile_condition(&condition, "inv", "pay").unwrap();
         assert_eq!(result, "tolerance_match(inv.amount, pay.paid_amount, 0.01)");
     }
 
     #[test]
-    fn test_transpile_one_to_one_rule() {
-        let rule = MatchRule {
-            name: "test".to_string(),
-            pattern: MatchPattern::OneToOne,
-            conditions: vec![
-                MatchCondition {
-                    left: "id".to_string(),
-                    op: ComparisonOp::Eq,
-                    right: "ref".to_string(),
-                    threshold: None,
-                },
-            ],
-            priority: None,
-        };
+    fn test_transpile_tolerance_missing_threshold() {
+        let condition = make_condition("amount", ComparisonOp::Tolerance, "paid_amount", None);
+        let result = Transpiler::transpile_condition(&condition, "inv", "pay");
+        assert!(matches!(result, Err(TranspileError::MissingThreshold)));
+    }
 
+    #[test]
+    fn test_transpile_gt_condition() {
+        let condition = make_condition("amount", ComparisonOp::Gt, "paid", None);
+        let result = Transpiler::transpile_condition(&condition, "l", "r").unwrap();
+        assert_eq!(result, "l.amount > r.paid");
+    }
+
+    #[test]
+    fn test_transpile_lt_condition() {
+        let condition = make_condition("amount", ComparisonOp::Lt, "paid", None);
+        let result = Transpiler::transpile_condition(&condition, "l", "r").unwrap();
+        assert_eq!(result, "l.amount < r.paid");
+    }
+
+    #[test]
+    fn test_transpile_gte_condition() {
+        let condition = make_condition("amount", ComparisonOp::Gte, "paid", None);
+        let result = Transpiler::transpile_condition(&condition, "l", "r").unwrap();
+        assert_eq!(result, "l.amount >= r.paid");
+    }
+
+    #[test]
+    fn test_transpile_lte_condition() {
+        let condition = make_condition("amount", ComparisonOp::Lte, "paid", None);
+        let result = Transpiler::transpile_condition(&condition, "l", "r").unwrap();
+        assert_eq!(result, "l.amount <= r.paid");
+    }
+
+    #[test]
+    fn test_transpile_contains_condition() {
+        let condition = make_condition("name", ComparisonOp::Contains, "payer", None);
+        let result = Transpiler::transpile_condition(&condition, "l", "r").unwrap();
+        assert_eq!(result, "l.name LIKE '%' || r.payer || '%'");
+    }
+
+    #[test]
+    fn test_transpile_startswith_condition() {
+        let condition = make_condition("name", ComparisonOp::StartsWith, "prefix", None);
+        let result = Transpiler::transpile_condition(&condition, "l", "r").unwrap();
+        assert_eq!(result, "l.name LIKE r.prefix || '%'");
+    }
+
+    #[test]
+    fn test_transpile_endswith_condition() {
+        let condition = make_condition("name", ComparisonOp::EndsWith, "suffix", None);
+        let result = Transpiler::transpile_condition(&condition, "l", "r").unwrap();
+        assert_eq!(result, "l.name LIKE '%' || r.suffix");
+    }
+
+    // --- Rule transpilation tests ---
+
+    #[test]
+    fn test_transpile_one_to_one_rule() {
+        let rule = make_rule(
+            "test",
+            MatchPattern::OneToOne,
+            vec![make_condition("id", ComparisonOp::Eq, "ref", None)],
+        );
         let result = Transpiler::transpile_rule(&rule, "left", "right").unwrap();
         assert!(result.contains("INNER JOIN"));
         assert!(result.contains("left.id = right.ref"));
+    }
+
+    #[test]
+    fn test_transpile_one_to_many_rule() {
+        let rule = make_rule(
+            "one_to_many",
+            MatchPattern::OneToMany,
+            vec![make_condition("id", ComparisonOp::Eq, "ref", None)],
+        );
+        let result = Transpiler::transpile_rule(&rule, "left", "right").unwrap();
+        assert!(result.contains("LEFT JOIN"));
+    }
+
+    #[test]
+    fn test_transpile_many_to_one_rule() {
+        let rule = make_rule(
+            "many_to_one",
+            MatchPattern::ManyToOne,
+            vec![make_condition("id", ComparisonOp::Eq, "ref", None)],
+        );
+        let result = Transpiler::transpile_rule(&rule, "left", "right").unwrap();
+        assert!(result.contains("RIGHT JOIN"));
+    }
+
+    #[test]
+    fn test_transpile_rule_empty_conditions() {
+        let rule = make_rule("empty", MatchPattern::OneToOne, vec![]);
+        let result = Transpiler::transpile_rule(&rule, "l", "r");
+        assert!(matches!(result, Err(TranspileError::InvalidRecipe(_))));
+    }
+
+    #[test]
+    fn test_transpile_rule_multiple_conditions() {
+        let rule = make_rule(
+            "multi",
+            MatchPattern::OneToOne,
+            vec![
+                make_condition("id", ComparisonOp::Eq, "ref", None),
+                make_condition("amount", ComparisonOp::Tolerance, "paid", Some(0.01)),
+            ],
+        );
+        let result = Transpiler::transpile_rule(&rule, "l", "r").unwrap();
+        assert!(result.contains("l.id = r.ref"));
+        assert!(result.contains("AND"));
+        assert!(result.contains("tolerance_match(l.amount, r.paid, 0.01)"));
+    }
+
+    // --- Full recipe transpilation tests ---
+
+    #[test]
+    fn test_transpile_recipe() {
+        let recipe = make_recipe(vec![make_rule(
+            "id_match",
+            MatchPattern::OneToOne,
+            vec![make_condition("invoice_id", ComparisonOp::Eq, "payment_ref", None)],
+        )]);
+
+        let result = Transpiler::transpile(&recipe).unwrap();
+        assert_eq!(result.left_source, "file://invoices.csv");
+        assert_eq!(result.right_source, "file://payments.csv");
+        assert_eq!(result.left_alias, "inv");
+        assert_eq!(result.right_alias, "pay");
+        assert_eq!(result.match_queries.len(), 1);
+        assert_eq!(result.match_queries[0].name, "id_match");
+        assert!(result.left_orphan_query.is_some());
+        assert!(result.right_orphan_query.is_some());
+    }
+
+    #[test]
+    fn test_transpile_recipe_orphan_queries() {
+        let recipe = make_recipe(vec![make_rule(
+            "eq_match",
+            MatchPattern::OneToOne,
+            vec![make_condition("id", ComparisonOp::Eq, "ref", None)],
+        )]);
+
+        let result = Transpiler::transpile(&recipe).unwrap();
+        let left_orphan = result.left_orphan_query.unwrap();
+        let right_orphan = result.right_orphan_query.unwrap();
+
+        assert!(left_orphan.contains("LEFT JOIN"));
+        assert!(left_orphan.contains("IS NULL"));
+        assert!(right_orphan.contains("LEFT JOIN"));
+        assert!(right_orphan.contains("IS NULL"));
+    }
+
+    #[test]
+    fn test_transpile_recipe_no_eq_condition_no_orphan_queries() {
+        // When there are no Eq conditions, orphan queries should be None
+        let recipe = make_recipe(vec![make_rule(
+            "tolerance_only",
+            MatchPattern::OneToOne,
+            vec![make_condition("amount", ComparisonOp::Tolerance, "paid", Some(0.01))],
+        )]);
+
+        let result = Transpiler::transpile(&recipe).unwrap();
+        assert!(result.left_orphan_query.is_none());
+        assert!(result.right_orphan_query.is_none());
+    }
+
+    #[test]
+    fn test_transpile_recipe_multiple_rules() {
+        let recipe = make_recipe(vec![
+            make_rule(
+                "exact_match",
+                MatchPattern::OneToOne,
+                vec![make_condition("id", ComparisonOp::Eq, "ref", None)],
+            ),
+            make_rule(
+                "fuzzy_match",
+                MatchPattern::OneToOne,
+                vec![
+                    make_condition("name", ComparisonOp::Contains, "payer", None),
+                    make_condition("amount", ComparisonOp::Tolerance, "paid", Some(0.05)),
+                ],
+            ),
+        ]);
+
+        let result = Transpiler::transpile(&recipe).unwrap();
+        assert_eq!(result.match_queries.len(), 2);
+        assert_eq!(result.match_queries[0].name, "exact_match");
+        assert_eq!(result.match_queries[1].name, "fuzzy_match");
+    }
+
+    #[test]
+    fn test_transpile_recipe_output_config_preserved() {
+        let recipe = make_recipe(vec![make_rule(
+            "r",
+            MatchPattern::OneToOne,
+            vec![make_condition("id", ComparisonOp::Eq, "ref", None)],
+        )]);
+        let result = Transpiler::transpile(&recipe).unwrap();
+        assert_eq!(result.output.matched, "matched.parquet");
+        assert_eq!(result.output.unmatched_left, "unmatched_left.parquet");
+        assert_eq!(result.output.unmatched_right, "unmatched_right.parquet");
+    }
+
+    #[test]
+    fn test_transpile_recipe_pattern_preserved() {
+        let recipe = make_recipe(vec![
+            make_rule("1to1", MatchPattern::OneToOne, vec![make_condition("id", ComparisonOp::Eq, "ref", None)]),
+            make_rule("1toN", MatchPattern::OneToMany, vec![make_condition("id", ComparisonOp::Eq, "ref", None)]),
+            make_rule("Mto1", MatchPattern::ManyToOne, vec![make_condition("id", ComparisonOp::Eq, "ref", None)]),
+        ]);
+        let result = Transpiler::transpile(&recipe).unwrap();
+        assert_eq!(result.match_queries[0].pattern, MatchPattern::OneToOne);
+        assert_eq!(result.match_queries[1].pattern, MatchPattern::OneToMany);
+        assert_eq!(result.match_queries[2].pattern, MatchPattern::ManyToOne);
     }
 }

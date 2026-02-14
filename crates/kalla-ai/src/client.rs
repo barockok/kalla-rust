@@ -12,6 +12,7 @@ pub enum LlmProvider {
 }
 
 /// LLM client for generating recipes
+#[derive(Debug)]
 pub struct LlmClient {
     provider: LlmProvider,
     client: reqwest::Client,
@@ -203,5 +204,64 @@ impl LlmClient {
 
         info!("Received response from Anthropic");
         Ok(content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_llm_client_new_openai() {
+        let provider = LlmProvider::OpenAI {
+            api_key: "test-key".to_string(),
+            model: "gpt-4o".to_string(),
+            base_url: "https://api.openai.com".to_string(),
+        };
+        let client = LlmClient::new(provider);
+        assert!(matches!(client.provider, LlmProvider::OpenAI { .. }));
+    }
+
+    #[test]
+    fn test_llm_client_new_anthropic() {
+        let provider = LlmProvider::Anthropic {
+            api_key: "test-key".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+        };
+        let client = LlmClient::new(provider);
+        assert!(matches!(client.provider, LlmProvider::Anthropic { .. }));
+    }
+
+    #[test]
+    fn test_from_env_no_keys() {
+        // Clear relevant env vars for this test
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        let result = LlmClient::from_env();
+        match result {
+            Err(e) => assert!(e.to_string().contains("No LLM API key found")),
+            Ok(_) => panic!("Expected error when no API keys are set"),
+        }
+    }
+
+    #[test]
+    fn test_llm_provider_debug() {
+        let provider = LlmProvider::OpenAI {
+            api_key: "key".to_string(),
+            model: "model".to_string(),
+            base_url: "url".to_string(),
+        };
+        let debug = format!("{:?}", provider);
+        assert!(debug.contains("OpenAI"));
+    }
+
+    #[test]
+    fn test_llm_provider_clone() {
+        let provider = LlmProvider::Anthropic {
+            api_key: "key".to_string(),
+            model: "model".to_string(),
+        };
+        let cloned = provider.clone();
+        assert!(matches!(cloned, LlmProvider::Anthropic { api_key, model } if api_key == "key" && model == "model"));
     }
 }

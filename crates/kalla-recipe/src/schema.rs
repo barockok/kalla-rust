@@ -224,10 +224,157 @@ mod tests {
         };
 
         let json = serde_json::to_string_pretty(&recipe).unwrap();
-        println!("{}", json);
-
         let parsed: MatchRecipe = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.recipe_id, recipe.recipe_id);
         assert_eq!(parsed.match_rules.len(), 2);
+    }
+
+    #[test]
+    fn test_recipe_default() {
+        let recipe = MatchRecipe::default();
+        assert_eq!(recipe.version, "1.0");
+        assert_eq!(recipe.recipe_id, "default");
+        assert_eq!(recipe.sources.left.alias, "left");
+        assert_eq!(recipe.sources.right.alias, "right");
+        assert!(recipe.sources.left.uri.is_empty());
+        assert!(recipe.match_rules.is_empty());
+    }
+
+    #[test]
+    fn test_match_pattern_serialization() {
+        // 1:1
+        let json = serde_json::to_string(&MatchPattern::OneToOne).unwrap();
+        assert_eq!(json, "\"1:1\"");
+        let parsed: MatchPattern = serde_json::from_str("\"1:1\"").unwrap();
+        assert_eq!(parsed, MatchPattern::OneToOne);
+
+        // 1:N
+        let json = serde_json::to_string(&MatchPattern::OneToMany).unwrap();
+        assert_eq!(json, "\"1:N\"");
+        let parsed: MatchPattern = serde_json::from_str("\"1:N\"").unwrap();
+        assert_eq!(parsed, MatchPattern::OneToMany);
+
+        // M:1
+        let json = serde_json::to_string(&MatchPattern::ManyToOne).unwrap();
+        assert_eq!(json, "\"M:1\"");
+        let parsed: MatchPattern = serde_json::from_str("\"M:1\"").unwrap();
+        assert_eq!(parsed, MatchPattern::ManyToOne);
+    }
+
+    #[test]
+    fn test_comparison_op_serialization() {
+        let ops = vec![
+            (ComparisonOp::Eq, "\"eq\""),
+            (ComparisonOp::Tolerance, "\"tolerance\""),
+            (ComparisonOp::Gt, "\"gt\""),
+            (ComparisonOp::Lt, "\"lt\""),
+            (ComparisonOp::Gte, "\"gte\""),
+            (ComparisonOp::Lte, "\"lte\""),
+            (ComparisonOp::Contains, "\"contains\""),
+            (ComparisonOp::StartsWith, "\"startswith\""),
+            (ComparisonOp::EndsWith, "\"endswith\""),
+        ];
+        for (op, expected_json) in ops {
+            let json = serde_json::to_string(&op).unwrap();
+            assert_eq!(json, expected_json);
+            let parsed: ComparisonOp = serde_json::from_str(expected_json).unwrap();
+            assert_eq!(parsed, op);
+        }
+    }
+
+    #[test]
+    fn test_data_source_optional_primary_key() {
+        let json = r#"{"alias":"test","uri":"file://test.csv"}"#;
+        let ds: DataSource = serde_json::from_str(json).unwrap();
+        assert!(ds.primary_key.is_none());
+
+        let json_with_pk = r#"{"alias":"test","uri":"file://test.csv","primary_key":["id","sub_id"]}"#;
+        let ds: DataSource = serde_json::from_str(json_with_pk).unwrap();
+        assert_eq!(ds.primary_key.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_match_condition_with_threshold() {
+        let json = r#"{"left":"amount","op":"tolerance","right":"paid","threshold":0.05}"#;
+        let cond: MatchCondition = serde_json::from_str(json).unwrap();
+        assert_eq!(cond.threshold, Some(0.05));
+    }
+
+    #[test]
+    fn test_match_condition_without_threshold() {
+        let json = r#"{"left":"id","op":"eq","right":"ref"}"#;
+        let cond: MatchCondition = serde_json::from_str(json).unwrap();
+        assert_eq!(cond.threshold, None);
+    }
+
+    #[test]
+    fn test_match_rule_optional_priority() {
+        let json = r#"{
+            "name":"test_rule",
+            "pattern":"1:1",
+            "conditions":[{"left":"id","op":"eq","right":"ref"}]
+        }"#;
+        let rule: MatchRule = serde_json::from_str(json).unwrap();
+        assert!(rule.priority.is_none());
+    }
+
+    #[test]
+    fn test_recipe_deserialization_from_json() {
+        let json = r#"{
+            "version": "1.0",
+            "recipe_id": "test",
+            "sources": {
+                "left": {"alias": "l", "uri": "file://l.csv"},
+                "right": {"alias": "r", "uri": "file://r.csv"}
+            },
+            "match_rules": [
+                {
+                    "name": "rule1",
+                    "pattern": "1:1",
+                    "conditions": [
+                        {"left": "id", "op": "eq", "right": "ref"},
+                        {"left": "amt", "op": "tolerance", "right": "paid", "threshold": 0.01}
+                    ]
+                },
+                {
+                    "name": "rule2",
+                    "pattern": "1:N",
+                    "conditions": [
+                        {"left": "name", "op": "contains", "right": "payer"}
+                    ],
+                    "priority": 2
+                }
+            ],
+            "output": {
+                "matched": "m.parquet",
+                "unmatched_left": "ul.parquet",
+                "unmatched_right": "ur.parquet"
+            }
+        }"#;
+        let recipe: MatchRecipe = serde_json::from_str(json).unwrap();
+        assert_eq!(recipe.match_rules.len(), 2);
+        assert_eq!(recipe.match_rules[0].conditions.len(), 2);
+        assert_eq!(recipe.match_rules[1].pattern, MatchPattern::OneToMany);
+        assert_eq!(recipe.match_rules[1].priority, Some(2));
+    }
+
+    #[test]
+    fn test_malformed_json_missing_required_field() {
+        let json = r#"{"version":"1.0"}"#;
+        let result = serde_json::from_str::<MatchRecipe>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_operator_in_json() {
+        let json = r#"{"left":"id","op":"invalid_op","right":"ref"}"#;
+        let result = serde_json::from_str::<MatchCondition>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_pattern_in_json() {
+        let result = serde_json::from_str::<MatchPattern>("\"2:2\"");
+        assert!(result.is_err());
     }
 }

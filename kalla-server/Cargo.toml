@@ -29,6 +29,7 @@ tracing-subscriber.workspace = true
 sqlx.workspace = true
 url.workspace = true
 arrow.workspace = true
+futures = "0.3"
 
 [dev-dependencies]
 reqwest.workspace = true

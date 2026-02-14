@@ -582,7 +582,7 @@ export async function runAgent(
             const result = await executeTool(
               tu.name,
               tu.input as Record<string, unknown>,
-              session,
+              workingSession,
             );
 
             // --- Store tool results on sessionUpdates ---
@@ -595,17 +595,22 @@ export async function runAgent(
                 columns: ColumnInfo[];
                 rows: string[][];
               };
-              // First preview populates left, second populates right
+              // First preview populates left, second populates right.
+              // Also stores the source alias for left/right detection.
               if (
                 !workingSession.schema_left ||
-                (session.left_source_alias &&
-                  preview.alias === session.left_source_alias)
+                (workingSession.left_source_alias &&
+                  preview.alias === workingSession.left_source_alias)
               ) {
                 sessionUpdates.schema_left = preview.columns;
+                sessionUpdates.left_source_alias = preview.alias;
                 workingSession.schema_left = preview.columns;
+                workingSession.left_source_alias = preview.alias;
               } else {
                 sessionUpdates.schema_right = preview.columns;
+                sessionUpdates.right_source_alias = preview.alias;
                 workingSession.schema_right = preview.columns;
+                workingSession.right_source_alias = preview.alias;
               }
             } else if (tu.name === 'load_scoped') {
               const preview = result as {
@@ -626,8 +631,8 @@ export async function runAgent(
               // First load populates left, second populates right
               if (
                 !workingSession.sample_left ||
-                (session.left_source_alias &&
-                  preview.alias === session.left_source_alias)
+                (workingSession.left_source_alias &&
+                  preview.alias === workingSession.left_source_alias)
               ) {
                 sessionUpdates.sample_left = asObjects;
                 sessionUpdates.scope_left = conditions;
@@ -648,6 +653,14 @@ export async function runAgent(
                 type: 'card',
                 card_type: 'match_proposal',
                 card_id: `match-${Date.now()}`,
+                data: result as Record<string, unknown>,
+              });
+            } else if (tu.name === 'run_sample') {
+              // Emit validation results as a card for user review
+              segments.push({
+                type: 'card',
+                card_type: 'result_summary',
+                card_id: `validation-${Date.now()}`,
                 data: result as Record<string, unknown>,
               });
             } else if (tu.name === 'run_full') {
