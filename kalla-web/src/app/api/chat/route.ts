@@ -1,16 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSession, getSession, updateSession, addMessage } from '@/lib/session-store';
 import { runAgent } from '@/lib/agent';
-import type { ChatMessage, CardResponse, ChatSession } from '@/lib/chat-types';
+import type { ChatMessage, CardResponse, ChatSession, FileAttachment } from '@/lib/chat-types';
 
 export async function POST(request: NextRequest) {
   let session: ReturnType<typeof getSession> | ReturnType<typeof createSession> | undefined;
   try {
     const body = await request.json();
-    const { session_id, message, card_response } = body as {
+    const { session_id, message, card_response, files } = body as {
       session_id?: string;
       message?: string;
       card_response?: CardResponse;
+      files?: FileAttachment[];
     };
 
     // Get or create session
@@ -50,6 +51,7 @@ export async function POST(request: NextRequest) {
       role: 'user',
       segments: [{ type: 'text', content: userText }],
       timestamp: new Date().toISOString(),
+      files: files || undefined,
     };
     addMessage(session.id, userMsg);
 
