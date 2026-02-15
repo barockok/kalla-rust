@@ -34,3 +34,4 @@ dist/
 # Worktrees
 .worktrees/
 
+*.prompt.md
