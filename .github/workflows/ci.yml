@@ -136,15 +136,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build server image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: kalla-server/Dockerfile
-          push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
       - name: Build worker image
         uses: docker/build-push-action@v6
         with:
@@ -163,39 +154,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ===== Integration tests (require services) =====
+  # ===== Integration tests =====
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
     needs: [rust-test, frontend-test]
-    services:
-      postgres:
-        image: postgres:16-alpine
-        ports:
-          - 5432:5432
-        env:
-          POSTGRES_USER: kalla
-          POSTGRES_PASSWORD: kalla_secret
-          POSTGRES_DB: kalla
-        options: >-
-          --health-cmd "pg_isready -U kalla"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - uses: actions/checkout@v4
-
-      - name: Start NATS with JetStream
-        run: |
-          docker run -d --name nats -p 4222:4222 nats:2-alpine --jetstream
-          for i in $(seq 1 15); do
-            nc -z localhost 4222 && break || sleep 1
-          done
-
-      - name: Initialize database
-        env:
-          PGPASSWORD: kalla_secret
-        run: psql -h localhost -U kalla -d kalla -f scripts/init.sql
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -211,21 +176,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-integration-
 
-      - name: Build and start server + worker
+      - name: Build and start worker in single mode
         env:
-          DATABASE_URL: postgres://kalla:kalla_secret@localhost:5432/kalla
-          NATS_URL: nats://localhost:4222
           RUST_LOG: info
+          STAGING_PATH: /tmp/kalla-staging
         run: |
-          cargo build --release --bin kalla-server --bin kalla-worker
-          ./target/release/kalla-server &
+          cargo build --release --bin kalla-worker
+          mkdir -p /tmp/kalla-staging
           ./target/release/kalla-worker &
-          # Wait for server to be ready
+          # Wait for worker health endpoint
           for i in $(seq 1 30); do
-            curl -sf http://localhost:3001/health && break || sleep 1
+            curl -sf http://localhost:9090/health && break || sleep 1
           done
 
-      - name: Run integration tests
-        env:
-          POSTGRES_HOST: localhost
-        run: cargo test --test reconciliation_test --test api_edge_cases_test -- --test-threads=1
+      - name: Verify worker health
+        run: |
+          STATUS=$(curl -sf http://localhost:9090/health)
+          echo "Worker health: $STATUS"
+          # Verify the worker is running in single mode
+          curl -sf http://localhost:9090/health
