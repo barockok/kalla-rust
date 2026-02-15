@@ -16,13 +16,16 @@ CREATE TABLE IF NOT EXISTS sources (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Recipes table
+-- Recipes table (new schema: raw SQL match rules)
 CREATE TABLE IF NOT EXISTS recipes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     recipe_id VARCHAR(255) UNIQUE NOT NULL,
     name VARCHAR(255) NOT NULL,
     description TEXT,
-    config JSONB NOT NULL,
+    config JSONB,
+    match_sql TEXT NOT NULL DEFAULT '',
+    match_description TEXT NOT NULL DEFAULT '',
+    sources JSONB NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -32,18 +35,35 @@ CREATE TABLE IF NOT EXISTS runs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     recipe_id VARCHAR(255) REFERENCES recipes(recipe_id),
     status VARCHAR(50) NOT NULL DEFAULT 'pending',
-    left_source VARCHAR(500) NOT NULL,
-    right_source VARCHAR(500) NOT NULL,
+    left_source VARCHAR(500),
+    right_source VARCHAR(500),
     left_record_count BIGINT DEFAULT 0,
     right_record_count BIGINT DEFAULT 0,
     matched_count BIGINT DEFAULT 0,
     unmatched_left_count BIGINT DEFAULT 0,
     unmatched_right_count BIGINT DEFAULT 0,
+    output_matched TEXT,
+    output_unmatched_left TEXT,
+    output_unmatched_right TEXT,
     started_at TIMESTAMPTZ DEFAULT NOW(),
     completed_at TIMESTAMPTZ,
     error_message TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Run progress tracking (worker callbacks)
+CREATE TABLE IF NOT EXISTS run_progress (
+    run_id UUID PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    stage VARCHAR(50) NOT NULL,
+    progress REAL DEFAULT 0,
+    matched_count BIGINT DEFAULT 0,
+    total_left BIGINT DEFAULT 0,
+    total_right BIGINT DEFAULT 0,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_progress_run_id ON run_progress(run_id);
 
 -- Matched records evidence
 CREATE TABLE IF NOT EXISTS matched_records (
@@ -188,56 +208,25 @@ ON CONFLICT DO NOTHING;
 -- SEED DATA: SAMPLE RECIPE
 -- ============================================
 
-INSERT INTO recipes (recipe_id, name, description, config) VALUES
-('invoice-payment-match', 'Invoice to Payment Reconciliation', 'Match invoices with incoming payments based on reference numbers and amounts', '{
-  "version": "1.0",
-  "recipe_id": "invoice-payment-match",
-  "sources": {
+INSERT INTO recipes (recipe_id, name, description, match_sql, match_description, sources) VALUES
+('invoice-payment-match', 'Invoice to Payment Reconciliation',
+ 'Match invoices with incoming payments based on reference numbers and amounts',
+ 'SELECT i.invoice_id, p.payment_id, i.amount AS left_amount, p.paid_amount AS right_amount FROM invoices i JOIN payments p ON i.invoice_id = p.reference_number AND ABS(i.amount - p.paid_amount) / NULLIF(i.amount, 0) < 0.02',
+ 'Matches invoices to payments where reference numbers match exactly and amounts are within 2% tolerance.',
+ '{
     "left": {
       "alias": "invoices",
+      "type": "postgres",
       "uri": "postgres://kalla:kalla_secret@postgres:5432/kalla?table=invoices",
       "primary_key": ["invoice_id"]
     },
     "right": {
       "alias": "payments",
+      "type": "postgres",
       "uri": "postgres://kalla:kalla_secret@postgres:5432/kalla?table=payments",
       "primary_key": ["payment_id"]
     }
-  },
-  "match_rules": [
-    {
-      "name": "exact_reference_match",
-      "pattern": "1:1",
-      "conditions": [
-        {"left": "invoice_id", "op": "eq", "right": "reference_number"}
-      ],
-      "priority": 1
-    },
-    {
-      "name": "amount_and_customer_match",
-      "pattern": "1:1",
-      "conditions": [
-        {"left": "customer_id", "op": "eq", "right": "payer_id"},
-        {"left": "amount", "op": "tolerance", "right": "paid_amount", "threshold": 0.02}
-      ],
-      "priority": 2
-    },
-    {
-      "name": "split_payment_match",
-      "pattern": "1:N",
-      "conditions": [
-        {"left": "customer_id", "op": "eq", "right": "payer_id"},
-        {"left": "invoice_id", "op": "startswith", "right": "reference_number"}
-      ],
-      "priority": 3
-    }
-  ],
-  "output": {
-    "matched": "evidence/matched.parquet",
-    "unmatched_left": "evidence/unmatched_invoices.parquet",
-    "unmatched_right": "evidence/unmatched_payments.parquet"
-  }
-}'::jsonb)
+  }'::jsonb)
 ON CONFLICT DO NOTHING;
 
 -- ============================================
