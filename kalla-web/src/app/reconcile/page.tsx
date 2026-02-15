@@ -1,12 +1,17 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Loader2, Send, RotateCcw } from 'lucide-react';
+import { Loader2, Send, RotateCcw, Paperclip } from 'lucide-react';
 import { ChatMessage } from '@/components/chat/ChatMessage';
 import { RecipeCard } from '@/components/chat/RecipeCard';
-import type { ChatMessage as ChatMessageType, CardResponse } from '@/lib/chat-types';
+import { FileUploadPill } from '@/components/chat/FileUploadPill';
+import { FileMessageCard } from '@/components/chat/FileMessageCard';
+import { uploadFile } from '@/lib/upload-client';
+import type { UploadProgress } from '@/lib/upload-client';
+import type { ChatMessage as ChatMessageType, CardResponse, FileAttachment } from '@/lib/chat-types';
+import { cn } from '@/lib/utils';
 
 export default function ReconcilePage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -19,6 +24,13 @@ export default function ReconcilePage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // File upload state
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
+  const [fileAttachment, setFileAttachment] = useState<FileAttachment | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -27,7 +39,65 @@ export default function ReconcilePage() {
     if (!loading) inputRef.current?.focus();
   }, [loading]);
 
-  const sendMessage = async (text: string, cardResponse?: CardResponse) => {
+  const handleFileSelect = useCallback(async (file: File) => {
+    setPendingFile(file);
+    setFileAttachment(null);
+    setUploadProgress({ phase: 'presigning', percent: 0 });
+
+    // We need a session ID for uploads. If we don't have one yet, we can't
+    // upload. In practice the session is created on first message.
+    if (!sessionId) {
+      setUploadProgress({
+        phase: 'error',
+        percent: 0,
+        error: 'Start a conversation first before uploading files',
+      });
+      return;
+    }
+
+    try {
+      const attachment = await uploadFile(file, sessionId, setUploadProgress);
+      setFileAttachment(attachment);
+    } catch {
+      // Error already set via onProgress callback
+    }
+  }, [sessionId]);
+
+  const handleRemoveFile = useCallback(() => {
+    setPendingFile(null);
+    setUploadProgress(null);
+    setFileAttachment(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) {
+      handleFileSelect(file);
+    }
+  }, [handleFileSelect]);
+
+  const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      handleFileSelect(file);
+    }
+  }, [handleFileSelect]);
+
+  const sendMessage = async (text: string, cardResponse?: CardResponse, files?: FileAttachment[]) => {
     if (!text.trim() && !cardResponse) return;
     setLoading(true);
 
@@ -36,6 +106,7 @@ export default function ReconcilePage() {
         role: 'user',
         segments: [{ type: 'text', content: text }],
         timestamp: new Date().toISOString(),
+        files: files || undefined,
       };
       setMessages(prev => [...prev, userMsg]);
       setInput('');
@@ -49,6 +120,7 @@ export default function ReconcilePage() {
           session_id: sessionId,
           message: cardResponse ? undefined : text,
           card_response: cardResponse,
+          files: files || undefined,
         }),
       });
 
@@ -90,11 +162,17 @@ export default function ReconcilePage() {
     setPhase('greeting');
     setRecipeDraft(null);
     setStarted(false);
+    handleRemoveFile();
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (input.trim() && !loading) sendMessage(input);
+    if (input.trim() && !loading) {
+      const files = fileAttachment ? [fileAttachment] : undefined;
+      sendMessage(input, undefined, files);
+      // Clear file state after sending
+      handleRemoveFile();
+    }
   };
 
   if (!started) {
@@ -115,7 +193,15 @@ export default function ReconcilePage() {
   }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-8rem)]">
+    <div
+      className={cn(
+        'flex flex-col h-[calc(100vh-8rem)]',
+        isDragging && 'border-2 border-dashed border-primary',
+      )}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <div className="flex items-center justify-between border-b px-4 py-2">
         <div className="flex items-center gap-2">
           <h1 className="text-lg font-semibold">Recipe Builder</h1>
@@ -130,7 +216,22 @@ export default function ReconcilePage() {
       </div>
       <div className="flex-1 overflow-y-auto pb-32">
         {messages.map((msg, i) => (
-          <ChatMessage key={i} message={msg} onCardAction={handleCardAction} />
+          <div key={i}>
+            {msg.files && msg.files.length > 0 && (
+              <div className={cn(
+                'flex gap-3 px-4 py-1',
+                msg.role === 'user' ? 'flex-row-reverse' : '',
+              )}>
+                <div className="h-8 w-8 shrink-0" /> {/* spacer matching avatar */}
+                <div className={cn('flex flex-col gap-1', msg.role === 'user' ? 'items-end' : '')}>
+                  {msg.files.map((file) => (
+                    <FileMessageCard key={file.upload_id} file={file} />
+                  ))}
+                </div>
+              </div>
+            )}
+            <ChatMessage message={msg} onCardAction={handleCardAction} />
+          </div>
         ))}
         {loading && (
           <div className="flex gap-3 px-4 py-3">
@@ -146,19 +247,50 @@ export default function ReconcilePage() {
         <div ref={messagesEndRef} />
       </div>
       <div className="border-t px-4 py-3 bg-background">
-        <form onSubmit={handleSubmit} className="flex gap-2 max-w-3xl mx-auto">
-          <Input
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={loading ? 'Waiting for response...' : 'Type your message...'}
-            disabled={loading}
-            className="flex-1"
-          />
-          <Button type="submit" disabled={loading || !input.trim()} aria-label="Send">
-            <Send className="h-4 w-4" />
-          </Button>
-        </form>
+        <div className="max-w-3xl mx-auto">
+          {/* File upload pill */}
+          {pendingFile && (
+            <div className="mb-2">
+              <FileUploadPill
+                filename={pendingFile.name}
+                progress={uploadProgress}
+                attachment={fileAttachment}
+                onRemove={handleRemoveFile}
+              />
+            </div>
+          )}
+          <form onSubmit={handleSubmit} className="flex gap-2">
+            {/* Hidden file input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv"
+              className="hidden"
+              onChange={handleFileInputChange}
+            />
+            <Input
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={loading ? 'Waiting for response...' : 'Type your message...'}
+              disabled={loading}
+              className="flex-1"
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={loading}
+              aria-label="Attach file"
+            >
+              <Paperclip className="h-4 w-4" />
+            </Button>
+            <Button type="submit" disabled={loading || !input.trim()} aria-label="Send">
+              <Send className="h-4 w-4" />
+            </Button>
+          </form>
+        </div>
       </div>
       <RecipeCard recipe={recipeDraft} />
     </div>
