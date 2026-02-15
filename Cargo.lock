@@ -2417,6 +2417,7 @@ dependencies = [
  "object_store",
  "parquet",
  "prometheus-client",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",
