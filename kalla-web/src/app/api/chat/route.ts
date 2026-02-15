@@ -55,8 +55,18 @@ export async function POST(request: NextRequest) {
     };
     addMessage(session.id, userMsg);
 
+    // Build the text Claude actually sees — include file metadata so the agent
+    // knows files were uploaded and can reference them by s3_uri.
+    let agentText = userText;
+    if (files && files.length > 0) {
+      const fileLines = files.map(
+        (f) => `- ${f.filename}: columns=[${f.columns.join(', ')}], ${f.row_count} rows, s3_uri=${f.s3_uri}`,
+      );
+      agentText += `\n\n[Attached files:\n${fileLines.join('\n')}\n]`;
+    }
+
     // Run the agent (ALL phase management happens inside)
-    const agentResponse = await runAgent(session, userText);
+    const agentResponse = await runAgent(session, agentText);
 
     // Apply phase transition and session updates in a single write to avoid
     // a race window where the phase advances but prerequisite data is missing.

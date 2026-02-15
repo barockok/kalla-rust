@@ -57,18 +57,8 @@ describe('orchestrator helpers', () => {
       expect(() => checkPrerequisites(PHASES.greeting, session)).not.toThrow();
     });
 
-    test('intent phase requires sources_list -- throws when null', () => {
+    test('intent phase has no prerequisites (relaxed for file uploads)', () => {
       const session = makeSession({ phase: 'intent' });
-      expect(() => checkPrerequisites(PHASES.intent, session)).toThrow(
-        /sources_list/,
-      );
-    });
-
-    test('intent phase passes when sources_list is populated', () => {
-      const session = makeSession({
-        phase: 'intent',
-        sources_list: [{ alias: 'a', uri: '', source_type: 'csv', status: 'ok' }],
-      });
       expect(() => checkPrerequisites(PHASES.intent, session)).not.toThrow();
     });
 
@@ -130,12 +120,15 @@ describe('orchestrator helpers', () => {
   describe('getPhaseTools', () => {
     test('returns only tools defined for the phase', () => {
       const tools = getPhaseTools('greeting');
-      expect(tools).toHaveLength(1);
-      expect(tools[0].name).toBe('list_sources');
+      expect(tools).toHaveLength(3);
+      const names = tools.map(t => t.name);
+      expect(names).toContain('list_sources');
+      expect(names).toContain('get_source_preview');
+      expect(names).toContain('request_file_upload');
     });
 
     test('excludes tools from exhausted retry set', () => {
-      const exhausted = new Set(['list_sources']);
+      const exhausted = new Set(['list_sources', 'get_source_preview', 'request_file_upload']);
       const tools = getPhaseTools('greeting', exhausted);
       expect(tools).toHaveLength(0);
     });
@@ -614,9 +607,10 @@ describe('runAgent integration', () => {
     // Claude was called 3 times: 2 tool_use cycles + 1 final text
     expect(mockCreate).toHaveBeenCalledTimes(3);
 
-    // The third call should have no tools (list_sources exhausted, greeting only has list_sources)
+    // The third call should have list_sources exhausted (2 remaining: get_source_preview, request_file_upload)
     const thirdCallArgs = mockCreate.mock.calls[2][0];
-    expect(thirdCallArgs.tools).toHaveLength(0);
+    expect(thirdCallArgs.tools).toHaveLength(2);
+    expect(thirdCallArgs.tools.map((t: { name: string }) => t.name)).not.toContain('list_sources');
   });
 
   // --- Context Injections per Phase ---

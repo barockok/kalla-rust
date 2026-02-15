@@ -23,10 +23,12 @@ export default function ReconcilePage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // File upload state
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
-  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
-  const [fileAttachment, setFileAttachment] = useState<FileAttachment | null>(null);
+  // File upload state — supports multiple files (e.g. left + right)
+  const [pendingFiles, setPendingFiles] = useState<Array<{
+    file: File;
+    progress: UploadProgress | null;
+    attachment: FileAttachment | null;
+  }>>([]);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -39,33 +41,40 @@ export default function ReconcilePage() {
   }, [loading]);
 
   const handleFileSelect = useCallback(async (file: File) => {
-    setPendingFile(file);
-    setFileAttachment(null);
-    setUploadProgress({ phase: 'presigning', percent: 0 });
+    // Don't add duplicate filenames
+    if (pendingFiles.some(pf => pf.file.name === file.name)) return;
 
-    // We need a session ID for uploads. If we don't have one yet, we can't
-    // upload. In practice the session is created on first message.
+    const idx = pendingFiles.length;
+    const newEntry = { file, progress: { phase: 'presigning' as const, percent: 0 }, attachment: null };
+    setPendingFiles(prev => [...prev, newEntry]);
+
     if (!sessionId) {
-      setUploadProgress({
-        phase: 'error',
-        percent: 0,
-        error: 'Start a conversation first before uploading files',
-      });
+      setPendingFiles(prev => prev.map((pf, i) =>
+        i === idx ? { ...pf, progress: { phase: 'error', percent: 0, error: 'Start a conversation first' } } : pf,
+      ));
       return;
     }
 
     try {
-      const attachment = await uploadFile(file, sessionId, setUploadProgress);
-      setFileAttachment(attachment);
+      const attachment = await uploadFile(file, sessionId, (p) => {
+        setPendingFiles(prev => prev.map(pf =>
+          pf.file.name === file.name ? { ...pf, progress: p } : pf,
+        ));
+      });
+      setPendingFiles(prev => prev.map(pf =>
+        pf.file.name === file.name ? { ...pf, attachment } : pf,
+      ));
     } catch {
       // Error already set via onProgress callback
     }
-  }, [sessionId]);
+  }, [sessionId, pendingFiles]);
 
-  const handleRemoveFile = useCallback(() => {
-    setPendingFile(null);
-    setUploadProgress(null);
-    setFileAttachment(null);
+  const handleRemoveFile = useCallback((filename?: string) => {
+    if (filename) {
+      setPendingFiles(prev => prev.filter(pf => pf.file.name !== filename));
+    } else {
+      setPendingFiles([]);
+    }
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -83,15 +92,14 @@ export default function ReconcilePage() {
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) {
+    // Support dropping multiple files
+    for (const file of Array.from(e.dataTransfer.files)) {
       handleFileSelect(file);
     }
   }, [handleFileSelect]);
 
   const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
+    for (const file of Array.from(e.target.files || [])) {
       handleFileSelect(file);
     }
   }, [handleFileSelect]);
@@ -166,13 +174,16 @@ export default function ReconcilePage() {
     setPhase('greeting');
     setRecipeDraft(null);
     setStarted(false);
-    handleRemoveFile();
+    handleRemoveFile(); // clears all
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (input.trim() && !loading) {
-      const files = fileAttachment ? [fileAttachment] : undefined;
+      const completedAttachments = pendingFiles
+        .filter(pf => pf.attachment !== null)
+        .map(pf => pf.attachment!);
+      const files = completedAttachments.length > 0 ? completedAttachments : undefined;
       sendMessage(input, undefined, files);
       // Clear file state after sending
       handleRemoveFile();
@@ -243,23 +254,27 @@ export default function ReconcilePage() {
       </div>
       <div className="border-t px-4 py-3 bg-background">
         <div className="max-w-3xl mx-auto">
-          {/* File upload pill */}
-          {pendingFile && (
-            <div className="mb-2">
-              <FileUploadPill
-                filename={pendingFile.name}
-                progress={uploadProgress}
-                attachment={fileAttachment}
-                onRemove={handleRemoveFile}
-              />
+          {/* File upload pills */}
+          {pendingFiles.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1">
+              {pendingFiles.map((pf) => (
+                <FileUploadPill
+                  key={pf.file.name}
+                  filename={pf.file.name}
+                  progress={pf.progress}
+                  attachment={pf.attachment}
+                  onRemove={() => handleRemoveFile(pf.file.name)}
+                />
+              ))}
             </div>
           )}
           <form onSubmit={handleSubmit} className="flex gap-2">
-            {/* Hidden file input */}
+            {/* Hidden file input — multiple */}
             <input
               ref={fileInputRef}
               type="file"
               accept=".csv"
+              multiple
               className="hidden"
               onChange={handleFileInputChange}
             />

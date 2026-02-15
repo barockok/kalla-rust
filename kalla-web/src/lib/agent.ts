@@ -46,18 +46,18 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   {
     name: 'get_source_preview',
     description:
-      'Get schema info and sample rows from a registered data source. Returns column names, data types, and a preview of rows.',
+      'Get schema info and sample rows from a data source. Provide either alias (for registered sources) or s3_uri (for uploaded files). Returns column names, data types, and a preview of rows.',
     input_schema: {
       type: 'object' as const,
       properties: {
-        alias: { type: 'string', description: 'The alias of the data source to preview' },
+        alias: { type: 'string', description: 'The alias of a registered data source to preview' },
         limit: { type: 'number', description: 'Max rows to return (default 10, max 100)' },
         s3_uri: {
           type: 'string',
-          description: 'S3 URI of an uploaded file to preview (alternative to alias)',
+          description: 'S3 URI of an uploaded file to preview (use this for user-uploaded CSV files)',
         },
       },
-      required: ['alias'],
+      required: [],
     },
   },
   {
@@ -474,7 +474,12 @@ function buildSystemPrompt(session: ChatSession, config: PhaseConfig): string {
   // File upload instructions
   lines.push(
     '',
-    'When a user sends a message with attached files, the file metadata (filename, columns, row_count, s3_uri) is available in the conversation. Use get_source_preview with the s3_uri to inspect uploaded file data. Use request_file_upload to ask the user for a file when you need one.',
+    'FILE UPLOADS:',
+    'When a user sends a message with attached files, the metadata appears as [Attached files: ...] in their message.',
+    'Each attached file has: filename, columns, row_count, and s3_uri.',
+    'To inspect an uploaded file, call get_source_preview with the s3_uri parameter (not alias).',
+    'To ask the user for a file, use request_file_upload.',
+    'Treat uploaded files as data sources — use their s3_uri wherever you would use a source alias.',
   );
 
   // Selected sources info
@@ -620,13 +625,17 @@ export async function runAgent(
                 columns: ColumnInfo[];
                 rows: string[][];
               };
+              const inputArgs = tu.input as Record<string, unknown>;
+              const isUploadedFile = !!inputArgs.s3_uri;
+
               // First preview populates left, second populates right.
               // Also stores the source alias for left/right detection.
-              if (
+              const isLeft =
                 !workingSession.schema_left ||
                 (workingSession.left_source_alias &&
-                  preview.alias === workingSession.left_source_alias)
-              ) {
+                  preview.alias === workingSession.left_source_alias);
+
+              if (isLeft) {
                 sessionUpdates.schema_left = preview.columns;
                 sessionUpdates.left_source_alias = preview.alias;
                 workingSession.schema_left = preview.columns;
@@ -636,6 +645,38 @@ export async function runAgent(
                 sessionUpdates.right_source_alias = preview.alias;
                 workingSession.schema_right = preview.columns;
                 workingSession.right_source_alias = preview.alias;
+              }
+
+              // For uploaded files: also populate sources_list and sample data
+              // so phase advancement works without load_scoped
+              if (isUploadedFile) {
+                const virtualSource: SourceInfo = {
+                  alias: preview.alias,
+                  uri: inputArgs.s3_uri as string,
+                  source_type: 'csv_upload',
+                  status: 'ok',
+                };
+                const currentSources = workingSession.sources_list || [];
+                const updatedSources = [...currentSources.filter(s => s.alias !== preview.alias), virtualSource];
+                sessionUpdates.sources_list = updatedSources;
+                workingSession.sources_list = updatedSources;
+
+                // Convert preview rows to objects for sample data
+                const asObjects = preview.rows.map((row) => {
+                  const obj: Record<string, unknown> = {};
+                  preview.columns.forEach((col, j) => {
+                    obj[col.name] = row[j];
+                  });
+                  return obj;
+                });
+
+                if (isLeft) {
+                  sessionUpdates.sample_left = asObjects;
+                  workingSession.sample_left = asObjects;
+                } else {
+                  sessionUpdates.sample_right = asObjects;
+                  workingSession.sample_right = asObjects;
+                }
               }
             } else if (tu.name === 'load_scoped') {
               const preview = result as {

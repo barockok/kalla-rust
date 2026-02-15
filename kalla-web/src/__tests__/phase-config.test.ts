@@ -53,10 +53,15 @@ describe('PhaseConfig types and PHASES config', () => {
     }
   });
 
-  test('greeting advancesWhen sources_list is populated', () => {
-    const session = { sources_list: null } as unknown as ChatSession;
+  test('greeting advancesWhen sources_list is populated or schema_left exists', () => {
+    const session = { sources_list: null, schema_left: null } as unknown as ChatSession;
     expect(PHASES.greeting.advancesWhen(session)).toBe(false);
+    // Advances when sources_list is populated (registered sources path)
     session.sources_list = [{ alias: 'inv', uri: '', source_type: 'csv', status: 'ok' }];
+    expect(PHASES.greeting.advancesWhen(session)).toBe(true);
+    // Also advances when schema_left exists (file upload path)
+    session.sources_list = null;
+    session.schema_left = [{ name: 'id', data_type: 'string', nullable: true }];
     expect(PHASES.greeting.advancesWhen(session)).toBe(true);
   });
 

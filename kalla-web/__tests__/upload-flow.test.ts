@@ -1,3 +1,6 @@
+/**
+ * @jest-environment node
+ */
 import { describe, test, expect } from '@jest/globals';
 
 const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:3000';

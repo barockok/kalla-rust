@@ -25,22 +25,40 @@ export async function listSources(): Promise<SourceInfo[]> {
 // ---------------------------------------------------------------------------
 
 export async function getSourcePreview(
-  alias: string,
+  alias?: string,
   limit: number = 10,
   s3Uri?: string,
 ): Promise<SourcePreview> {
-  // When s3_uri is provided, use the upload preview endpoint instead
+  // When s3_uri is provided, use the upload preview endpoint (Next.js server-side)
   if (s3Uri) {
-    const apiBase = RUST_API.startsWith('http') ? RUST_API : '';
-    const baseUrl = apiBase || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000');
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
     const res = await fetch(`${baseUrl}/api/uploads/preview`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ s3_uri: s3Uri }),
     });
     if (!res.ok) throw new Error(`Failed to preview uploaded file: ${res.statusText}`);
-    return res.json();
+    const data = await res.json();
+
+    // Normalize upload preview response to match SourcePreview shape
+    const columns = (data.columns as string[]).map((name: string) => ({
+      name,
+      data_type: 'string',
+      nullable: true,
+    }));
+    const rows = (data.sample as Record<string, string>[]).map(
+      (row: Record<string, string>) => data.columns.map((col: string) => row[col] ?? ''),
+    );
+    return {
+      alias: s3Uri,
+      columns,
+      rows,
+      total_rows: data.row_count,
+      preview_rows: rows.length,
+    };
   }
+
+  if (!alias) throw new Error('Either alias or s3_uri must be provided');
 
   const res = await fetch(`${RUST_API}/api/sources/${encodeURIComponent(alias)}/preview?limit=${limit}`);
   if (!res.ok) throw new Error(`Failed to get preview for ${alias}: ${res.statusText}`);
