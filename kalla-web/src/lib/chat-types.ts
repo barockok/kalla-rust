@@ -128,6 +128,7 @@ export const AGENT_TOOLS = [
   'validate_recipe',
   'run_sample',
   'run_full',
+  'request_file_upload',
 ] as const;
 
 export type AgentTool = (typeof AGENT_TOOLS)[number];

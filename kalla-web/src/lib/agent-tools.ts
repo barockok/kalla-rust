@@ -27,10 +27,35 @@ export async function listSources(): Promise<SourceInfo[]> {
 export async function getSourcePreview(
   alias: string,
   limit: number = 10,
+  s3Uri?: string,
 ): Promise<SourcePreview> {
+  // When s3_uri is provided, use the upload preview endpoint instead
+  if (s3Uri) {
+    const apiBase = RUST_API.startsWith('http') ? RUST_API : '';
+    const baseUrl = apiBase || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000');
+    const res = await fetch(`${baseUrl}/api/uploads/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ s3_uri: s3Uri }),
+    });
+    if (!res.ok) throw new Error(`Failed to preview uploaded file: ${res.statusText}`);
+    return res.json();
+  }
+
   const res = await fetch(`${RUST_API}/api/sources/${encodeURIComponent(alias)}/preview?limit=${limit}`);
   if (!res.ok) throw new Error(`Failed to get preview for ${alias}: ${res.statusText}`);
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Tool: request_file_upload
+// ---------------------------------------------------------------------------
+
+async function requestFileUpload(input: { message: string }): Promise<Record<string, unknown>> {
+  return {
+    card_type: 'upload_request',
+    message: input.message,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +297,10 @@ export async function executeTool(
       return listSources();
 
     case 'get_source_preview':
-      return getSourcePreview(args.alias as string, (args.limit as number) || 10);
+      return getSourcePreview(args.alias as string, (args.limit as number) || 10, args.s3_uri as string | undefined);
+
+    case 'request_file_upload':
+      return requestFileUpload(args as { message: string });
 
     case 'load_scoped':
       return loadScoped(

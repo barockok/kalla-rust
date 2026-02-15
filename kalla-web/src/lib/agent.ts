@@ -52,6 +52,10 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       properties: {
         alias: { type: 'string', description: 'The alias of the data source to preview' },
         limit: { type: 'number', description: 'Max rows to return (default 10, max 100)' },
+        s3_uri: {
+          type: 'string',
+          description: 'S3 URI of an uploaded file to preview (alternative to alias)',
+        },
       },
       required: ['alias'],
     },
@@ -249,6 +253,21 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         },
       },
       required: ['recipe'],
+    },
+  },
+  {
+    name: 'request_file_upload',
+    description:
+      'Ask the user to upload a CSV file. Use when you need a file from the user (sample data, source file for reconciliation).',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        message: {
+          type: 'string',
+          description: 'Context message explaining what file is needed and why',
+        },
+      },
+      required: ['message'],
     },
   },
 ];
@@ -451,6 +470,12 @@ function buildSystemPrompt(session: ChatSession, config: PhaseConfig): string {
   if (injections) {
     lines.push(injections);
   }
+
+  // File upload instructions
+  lines.push(
+    '',
+    'When a user sends a message with attached files, the file metadata (filename, columns, row_count, s3_uri) is available in the conversation. Use get_source_preview with the s3_uri to inspect uploaded file data. Use request_file_upload to ask the user for a file when you need one.',
+  );
 
   // Selected sources info
   if (session.left_source_alias || session.right_source_alias) {
@@ -666,6 +691,13 @@ export async function runAgent(
             } else if (tu.name === 'run_full') {
               sessionUpdates.status = 'running';
               workingSession.status = 'running';
+            } else if (tu.name === 'request_file_upload') {
+              segments.push({
+                type: 'card',
+                card_type: 'upload_request',
+                card_id: `upload-${Date.now()}`,
+                data: result as Record<string, unknown>,
+              });
             }
 
             toolResults.push({
