@@ -23,6 +23,16 @@ export interface FilterCondition {
   value: string | number | string[] | [string, string];
 }
 
+// --- File Attachments ---
+
+export interface FileAttachment {
+  upload_id: string;
+  filename: string;
+  s3_uri: string;
+  columns: string[];
+  row_count: number;
+}
+
 // --- Card Types ---
 
 export type CardType =
@@ -32,7 +42,8 @@ export type CardType =
   | 'match_proposal'
   | 'rule_summary'
   | 'progress'
-  | 'result_summary';
+  | 'result_summary'
+  | 'upload_request';
 
 // --- Message Types ---
 
@@ -48,6 +59,7 @@ export interface ChatMessage {
   role: 'agent' | 'user';
   segments: ChatSegment[];
   timestamp: string;
+  files?: FileAttachment[];
 }
 
 export interface CardResponse {
