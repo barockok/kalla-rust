@@ -1,16 +1,20 @@
 'use client';
 
-import type { ChatMessage as ChatMessageType, ChatSegment } from '@/lib/chat-types';
+import type { ChatMessage as ChatMessageType, ChatSegment, FileAttachment } from '@/lib/chat-types';
 import { MatchProposalCard } from './MatchProposalCard';
+import { UploadRequestCard } from './UploadRequestCard';
+import { FileMessageCard } from './FileMessageCard';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { cn } from '@/lib/utils';
 
 interface ChatMessageProps {
   message: ChatMessageType;
+  sessionId?: string;
   onCardAction?: (cardId: string, action: string, value?: unknown) => void;
+  onFileUploaded?: (attachment: FileAttachment) => void;
 }
 
-export function ChatMessage({ message, onCardAction }: ChatMessageProps) {
+export function ChatMessage({ message, sessionId, onCardAction, onFileUploaded }: ChatMessageProps) {
   const isAgent = message.role === 'agent';
 
   return (
@@ -25,8 +29,23 @@ export function ChatMessage({ message, onCardAction }: ChatMessageProps) {
         {isAgent ? 'K' : 'U'}
       </div>
       <div className={cn('flex flex-col gap-2 max-w-[80%]', isAgent ? '' : 'items-end')}>
+        {/* Render file attachments */}
+        {message.files && message.files.length > 0 && (
+          <div className="flex flex-col gap-1">
+            {message.files.map((file) => (
+              <FileMessageCard key={file.upload_id} file={file} />
+            ))}
+          </div>
+        )}
         {message.segments.map((segment, i) => (
-          <SegmentRenderer key={i} segment={segment} isAgent={isAgent} onCardAction={onCardAction} />
+          <SegmentRenderer
+            key={i}
+            segment={segment}
+            isAgent={isAgent}
+            sessionId={sessionId}
+            onCardAction={onCardAction}
+            onFileUploaded={onFileUploaded}
+          />
         ))}
         <span className="text-xs text-muted-foreground">
           {new Date(message.timestamp).toLocaleTimeString()}
@@ -36,9 +55,11 @@ export function ChatMessage({ message, onCardAction }: ChatMessageProps) {
   );
 }
 
-function SegmentRenderer({ segment, isAgent, onCardAction }: {
+function SegmentRenderer({ segment, isAgent, sessionId, onCardAction, onFileUploaded }: {
   segment: ChatSegment; isAgent: boolean;
+  sessionId?: string;
   onCardAction?: (cardId: string, action: string, value?: unknown) => void;
+  onFileUploaded?: (attachment: FileAttachment) => void;
 }) {
   if (segment.type === 'text' && segment.content) {
     // Only render markdown for agent messages; keep user messages as plain text
@@ -60,6 +81,15 @@ function SegmentRenderer({ segment, isAgent, onCardAction }: {
   }
   if (segment.type === 'card' && segment.card_type === 'match_proposal') {
     return <MatchProposalCard cardId={segment.card_id!} data={segment.data!} onAction={onCardAction} />;
+  }
+  if (segment.type === 'card' && segment.card_type === 'upload_request' && sessionId && onFileUploaded) {
+    return (
+      <UploadRequestCard
+        message={(segment.data?.message as string) || 'Please upload a CSV file.'}
+        sessionId={sessionId}
+        onFileUploaded={onFileUploaded}
+      />
+    );
   }
   return null;
 }

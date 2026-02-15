@@ -7,7 +7,6 @@ import { Loader2, Send, RotateCcw, Paperclip } from 'lucide-react';
 import { ChatMessage } from '@/components/chat/ChatMessage';
 import { RecipeCard } from '@/components/chat/RecipeCard';
 import { FileUploadPill } from '@/components/chat/FileUploadPill';
-import { FileMessageCard } from '@/components/chat/FileMessageCard';
 import { uploadFile } from '@/lib/upload-client';
 import type { UploadProgress } from '@/lib/upload-client';
 import type { ChatMessage as ChatMessageType, CardResponse, FileAttachment } from '@/lib/chat-types';
@@ -155,6 +154,11 @@ export default function ReconcilePage() {
     sendMessage('Hello, I want to reconcile some data.');
   };
 
+  const handleFileUploaded = (attachment: FileAttachment) => {
+    // File uploaded via agent's upload request card - send as a message
+    sendMessage(`I've uploaded ${attachment.filename}`, undefined, [attachment]);
+  };
+
   const handleReset = () => {
     setSessionId(null);
     setMessages([]);
@@ -216,22 +220,13 @@ export default function ReconcilePage() {
       </div>
       <div className="flex-1 overflow-y-auto pb-32">
         {messages.map((msg, i) => (
-          <div key={i}>
-            {msg.files && msg.files.length > 0 && (
-              <div className={cn(
-                'flex gap-3 px-4 py-1',
-                msg.role === 'user' ? 'flex-row-reverse' : '',
-              )}>
-                <div className="h-8 w-8 shrink-0" /> {/* spacer matching avatar */}
-                <div className={cn('flex flex-col gap-1', msg.role === 'user' ? 'items-end' : '')}>
-                  {msg.files.map((file) => (
-                    <FileMessageCard key={file.upload_id} file={file} />
-                  ))}
-                </div>
-              </div>
-            )}
-            <ChatMessage message={msg} onCardAction={handleCardAction} />
-          </div>
+          <ChatMessage
+            key={i}
+            message={msg}
+            sessionId={sessionId || undefined}
+            onCardAction={handleCardAction}
+            onFileUploaded={handleFileUploaded}
+          />
         ))}
         {loading && (
           <div className="flex gap-3 px-4 py-3">
