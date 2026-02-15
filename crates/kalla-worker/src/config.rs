@@ -60,8 +60,7 @@ impl WorkerConfig {
                 .context("Invalid REAPER_INTERVAL_SECS")?,
             staging_bucket: std::env::var("STAGING_BUCKET")
                 .unwrap_or_else(|_| "kalla-staging".to_string()),
-            staging_path: std::env::var("STAGING_PATH")
-                .unwrap_or_else(|_| "./staging".to_string()),
+            staging_path: std::env::var("STAGING_PATH").unwrap_or_else(|_| "./staging".to_string()),
         })
     }
 

@@ -251,7 +251,9 @@ async fn count_unmatched(
          (SELECT \"{right_alias}\".\"{right_pk}\" FROM ({match_sql}) AS _matched)"
     );
 
-    let unmatched_left = run_count_query(engine, &unmatched_left_sql).await.unwrap_or(0);
+    let unmatched_left = run_count_query(engine, &unmatched_left_sql)
+        .await
+        .unwrap_or(0);
     let unmatched_right = run_count_query(engine, &unmatched_right_sql)
         .await
         .unwrap_or(0);
@@ -375,13 +377,12 @@ pub async fn handle_exec(
     let left_alias = &recipe.sources.left.alias;
     let right_alias = &recipe.sources.right.alias;
 
-    if !recipe.sources.left.primary_key.is_empty()
-        && !recipe.sources.right.primary_key.is_empty()
-    {
+    if !recipe.sources.left.primary_key.is_empty() && !recipe.sources.right.primary_key.is_empty() {
         let lpk = &recipe.sources.left.primary_key[0];
         let rpk = &recipe.sources.right.primary_key[0];
 
-        let left_orphan_sql = format!(
+        let left_orphan_sql =
+            format!(
             "SELECT {l}.* FROM {l} LEFT JOIN {r} ON {l}.{lpk} = {r}.{rpk} WHERE {r}.{rpk} IS NULL",
             l = left_alias, r = right_alias, lpk = lpk, rpk = rpk
         );
@@ -391,7 +392,8 @@ pub async fn handle_exec(
             }
         }
 
-        let right_orphan_sql = format!(
+        let right_orphan_sql =
+            format!(
             "SELECT {r}.* FROM {r} LEFT JOIN {l} ON {r}.{rpk} = {l}.{lpk} WHERE {l}.{lpk} IS NULL",
             l = left_alias, r = right_alias, lpk = lpk, rpk = rpk
         );

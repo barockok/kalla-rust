@@ -8,11 +8,12 @@ fn sample_recipe() -> Recipe {
         recipe_id: "invoice-payment-match".to_string(),
         name: "Invoice-Payment Reconciliation".to_string(),
         description: "Match invoices to payments by reference and amount".to_string(),
-        match_sql: "SELECT i.invoice_id, p.payment_id, i.amount AS left_amount, p.amount AS right_amount \
+        match_sql:
+            "SELECT i.invoice_id, p.payment_id, i.amount AS left_amount, p.amount AS right_amount \
                      FROM invoices i JOIN payments p \
                      ON i.invoice_id = p.reference_number \
                      AND ABS(i.amount - p.amount) / NULLIF(i.amount, 0) < 0.01"
-            .to_string(),
+                .to_string(),
         match_description:
             "Matches invoices to payments where reference numbers match and amounts are within 1%"
                 .to_string(),
