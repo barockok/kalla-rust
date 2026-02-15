@@ -1,14 +1,9 @@
-//! Kalla Recipe - Match Recipe schema and transpiler
+//! Kalla Recipe — simplified SQL-based recipe schema
 //!
-//! This crate defines the Match Recipe JSON schema and provides
-//! a transpiler to convert recipes into DataFusion logical plans.
+//! This crate defines the Recipe schema with raw DataFusion SQL match rules.
 
-pub mod field_resolver;
 pub mod schema;
-pub mod schema_validation;
-pub mod transpiler;
 pub mod validation;
 
-pub use schema::{DataSource, MatchCondition, MatchPattern, MatchRecipe, MatchRule, OutputConfig};
-pub use transpiler::Transpiler;
+pub use schema::{Recipe, RecipeSource, RecipeSources, SourceType};
 pub use validation::validate_recipe;

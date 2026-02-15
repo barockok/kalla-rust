@@ -1,81 +1,47 @@
-//! Recipe validation
+//! Recipe validation for the simplified SQL-based schema
 
-use crate::schema::{ComparisonOp, MatchRecipe};
+use crate::schema::{Recipe, SourceType};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ValidationError {
-    #[error("Invalid version: expected '1.0', got '{0}'")]
-    InvalidVersion(String),
-
     #[error("Recipe ID cannot be empty")]
     EmptyRecipeId,
 
-    #[error("Source URI cannot be empty for '{0}'")]
-    EmptySourceUri(String),
+    #[error("Recipe name cannot be empty")]
+    EmptyName,
 
-    #[error("No match rules defined")]
-    NoMatchRules,
+    #[error("match_sql cannot be empty")]
+    EmptyMatchSql,
 
-    #[error("Rule '{0}' has no conditions")]
-    NoConditions(String),
+    #[error("Source '{0}' must have at least one primary key column")]
+    EmptyPrimaryKey(String),
 
-    #[error("Rule '{0}': tolerance operation on '{1}' requires a threshold")]
-    MissingThreshold(String, String),
+    #[error("File source '{0}' must have a schema (expected column names)")]
+    FileSourceMissingSchema(String),
 
-    #[error("Rule '{0}': column name cannot be empty")]
-    EmptyColumnName(String),
+    #[error("Persistent source '{0}' must have a URI")]
+    PersistentSourceMissingUri(String),
 }
 
-/// Validate a match recipe
-pub fn validate_recipe(recipe: &MatchRecipe) -> Result<(), Vec<ValidationError>> {
+/// Validate a recipe against the new schema rules.
+pub fn validate_recipe(recipe: &Recipe) -> Result<(), Vec<ValidationError>> {
     let mut errors = Vec::new();
 
-    // Validate version
-    if recipe.version != "1.0" {
-        errors.push(ValidationError::InvalidVersion(recipe.version.clone()));
-    }
-
-    // Validate recipe ID
     if recipe.recipe_id.trim().is_empty() {
         errors.push(ValidationError::EmptyRecipeId);
     }
 
-    // Validate sources
-    if recipe.sources.left.uri.trim().is_empty() {
-        errors.push(ValidationError::EmptySourceUri(
-            recipe.sources.left.alias.clone(),
-        ));
-    }
-    if recipe.sources.right.uri.trim().is_empty() {
-        errors.push(ValidationError::EmptySourceUri(
-            recipe.sources.right.alias.clone(),
-        ));
+    if recipe.name.trim().is_empty() {
+        errors.push(ValidationError::EmptyName);
     }
 
-    // Validate match rules
-    if recipe.match_rules.is_empty() {
-        errors.push(ValidationError::NoMatchRules);
+    if recipe.match_sql.trim().is_empty() {
+        errors.push(ValidationError::EmptyMatchSql);
     }
 
-    for rule in &recipe.match_rules {
-        if rule.conditions.is_empty() {
-            errors.push(ValidationError::NoConditions(rule.name.clone()));
-        }
-
-        for condition in &rule.conditions {
-            if condition.left.trim().is_empty() || condition.right.trim().is_empty() {
-                errors.push(ValidationError::EmptyColumnName(rule.name.clone()));
-            }
-
-            if condition.op == ComparisonOp::Tolerance && condition.threshold.is_none() {
-                errors.push(ValidationError::MissingThreshold(
-                    rule.name.clone(),
-                    condition.left.clone(),
-                ));
-            }
-        }
-    }
+    validate_source(&recipe.sources.left, &mut errors);
+    validate_source(&recipe.sources.right, &mut errors);
 
     if errors.is_empty() {
         Ok(())
@@ -84,42 +50,57 @@ pub fn validate_recipe(recipe: &MatchRecipe) -> Result<(), Vec<ValidationError>>
     }
 }
 
+fn validate_source(source: &crate::schema::RecipeSource, errors: &mut Vec<ValidationError>) {
+    if source.primary_key.is_empty() {
+        errors.push(ValidationError::EmptyPrimaryKey(source.alias.clone()));
+    }
+
+    match source.source_type {
+        SourceType::File => {
+            if source.schema.as_ref().is_none_or(|s| s.is_empty()) {
+                errors.push(ValidationError::FileSourceMissingSchema(
+                    source.alias.clone(),
+                ));
+            }
+        }
+        SourceType::Postgres | SourceType::Bigquery | SourceType::Elasticsearch => {
+            if source.uri.as_ref().is_none_or(|u| u.trim().is_empty()) {
+                errors.push(ValidationError::PersistentSourceMissingUri(
+                    source.alias.clone(),
+                ));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::schema::*;
 
-    fn valid_recipe() -> MatchRecipe {
-        MatchRecipe {
-            version: "1.0".to_string(),
+    fn valid_recipe() -> Recipe {
+        Recipe {
             recipe_id: "test".to_string(),
-            sources: Sources {
-                left: DataSource {
-                    alias: "left".to_string(),
-                    uri: "file://test.csv".to_string(),
-                    primary_key: None,
+            name: "Test Recipe".to_string(),
+            description: "A test recipe".to_string(),
+            match_sql: "SELECT l.id, r.id FROM left_src l JOIN right_src r ON l.id = r.ref"
+                .to_string(),
+            match_description: "Match by ID".to_string(),
+            sources: RecipeSources {
+                left: RecipeSource {
+                    alias: "left_src".to_string(),
+                    source_type: SourceType::Postgres,
+                    uri: Some("postgres://host/db".to_string()),
+                    schema: None,
+                    primary_key: vec!["id".to_string()],
                 },
-                right: DataSource {
-                    alias: "right".to_string(),
-                    uri: "file://test2.csv".to_string(),
-                    primary_key: None,
+                right: RecipeSource {
+                    alias: "right_src".to_string(),
+                    source_type: SourceType::File,
+                    uri: None,
+                    schema: Some(vec!["id".to_string(), "ref".to_string()]),
+                    primary_key: vec!["id".to_string()],
                 },
-            },
-            match_rules: vec![MatchRule {
-                name: "test_rule".to_string(),
-                pattern: MatchPattern::OneToOne,
-                conditions: vec![MatchCondition {
-                    left: "id".to_string(),
-                    op: ComparisonOp::Eq,
-                    right: "ref".to_string(),
-                    threshold: None,
-                }],
-                priority: None,
-            }],
-            output: OutputConfig {
-                matched: "matched.parquet".to_string(),
-                unmatched_left: "left.parquet".to_string(),
-                unmatched_right: "right.parquet".to_string(),
             },
         }
     }
@@ -127,34 +108,6 @@ mod tests {
     #[test]
     fn test_valid_recipe() {
         assert!(validate_recipe(&valid_recipe()).is_ok());
-    }
-
-    #[test]
-    fn test_invalid_version() {
-        let mut recipe = valid_recipe();
-        recipe.version = "2.0".to_string();
-        let errors = validate_recipe(&recipe).unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| matches!(e, ValidationError::InvalidVersion(_))));
-    }
-
-    #[test]
-    fn test_missing_threshold() {
-        let mut recipe = valid_recipe();
-        recipe.match_rules[0].conditions[0].op = ComparisonOp::Tolerance;
-        let errors = validate_recipe(&recipe).unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| matches!(e, ValidationError::MissingThreshold(_, _))));
-    }
-
-    #[test]
-    fn test_tolerance_with_threshold_is_valid() {
-        let mut recipe = valid_recipe();
-        recipe.match_rules[0].conditions[0].op = ComparisonOp::Tolerance;
-        recipe.match_rules[0].conditions[0].threshold = Some(0.01);
-        assert!(validate_recipe(&recipe).is_ok());
     }
 
     #[test]
@@ -178,85 +131,131 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_left_source_uri() {
+    fn test_empty_name() {
         let mut recipe = valid_recipe();
-        recipe.sources.left.uri = "".to_string();
+        recipe.name = "".to_string();
         let errors = validate_recipe(&recipe).unwrap_err();
         assert!(errors
             .iter()
-            .any(|e| matches!(e, ValidationError::EmptySourceUri(_))));
+            .any(|e| matches!(e, ValidationError::EmptyName)));
     }
 
     #[test]
-    fn test_empty_right_source_uri() {
+    fn test_empty_match_sql() {
         let mut recipe = valid_recipe();
-        recipe.sources.right.uri = "".to_string();
+        recipe.match_sql = "".to_string();
         let errors = validate_recipe(&recipe).unwrap_err();
         assert!(errors
             .iter()
-            .any(|e| matches!(e, ValidationError::EmptySourceUri(_))));
+            .any(|e| matches!(e, ValidationError::EmptyMatchSql)));
     }
 
     #[test]
-    fn test_no_match_rules() {
+    fn test_whitespace_match_sql() {
         let mut recipe = valid_recipe();
-        recipe.match_rules = vec![];
+        recipe.match_sql = "   ".to_string();
         let errors = validate_recipe(&recipe).unwrap_err();
         assert!(errors
             .iter()
-            .any(|e| matches!(e, ValidationError::NoMatchRules)));
+            .any(|e| matches!(e, ValidationError::EmptyMatchSql)));
     }
 
     #[test]
-    fn test_rule_with_no_conditions() {
+    fn test_empty_primary_key() {
         let mut recipe = valid_recipe();
-        recipe.match_rules[0].conditions = vec![];
+        recipe.sources.left.primary_key = vec![];
         let errors = validate_recipe(&recipe).unwrap_err();
         assert!(errors
             .iter()
-            .any(|e| matches!(e, ValidationError::NoConditions(_))));
+            .any(|e| matches!(e, ValidationError::EmptyPrimaryKey(_))));
     }
 
     #[test]
-    fn test_empty_column_name_left() {
+    fn test_file_source_missing_schema() {
         let mut recipe = valid_recipe();
-        recipe.match_rules[0].conditions[0].left = "".to_string();
+        recipe.sources.right.schema = None;
         let errors = validate_recipe(&recipe).unwrap_err();
         assert!(errors
             .iter()
-            .any(|e| matches!(e, ValidationError::EmptyColumnName(_))));
+            .any(|e| matches!(e, ValidationError::FileSourceMissingSchema(_))));
     }
 
     #[test]
-    fn test_empty_column_name_right() {
+    fn test_file_source_empty_schema() {
         let mut recipe = valid_recipe();
-        recipe.match_rules[0].conditions[0].right = "  ".to_string();
+        recipe.sources.right.schema = Some(vec![]);
         let errors = validate_recipe(&recipe).unwrap_err();
         assert!(errors
             .iter()
-            .any(|e| matches!(e, ValidationError::EmptyColumnName(_))));
+            .any(|e| matches!(e, ValidationError::FileSourceMissingSchema(_))));
+    }
+
+    #[test]
+    fn test_persistent_source_missing_uri() {
+        let mut recipe = valid_recipe();
+        recipe.sources.left.uri = None;
+        let errors = validate_recipe(&recipe).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::PersistentSourceMissingUri(_))));
+    }
+
+    #[test]
+    fn test_persistent_source_empty_uri() {
+        let mut recipe = valid_recipe();
+        recipe.sources.left.uri = Some("  ".to_string());
+        let errors = validate_recipe(&recipe).unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::PersistentSourceMissingUri(_))));
     }
 
     #[test]
     fn test_multiple_errors_accumulated() {
         let mut recipe = valid_recipe();
-        recipe.version = "3.0".to_string();
         recipe.recipe_id = "".to_string();
-        recipe.sources.left.uri = "".to_string();
+        recipe.match_sql = "".to_string();
+        recipe.sources.left.primary_key = vec![];
         let errors = validate_recipe(&recipe).unwrap_err();
-        // Should have at least 3 errors
         assert!(errors.len() >= 3);
     }
 
     #[test]
     fn test_validation_error_display() {
-        let err = ValidationError::InvalidVersion("2.0".to_string());
+        let err = ValidationError::EmptyMatchSql;
         let msg = format!("{}", err);
-        assert!(msg.contains("2.0"));
+        assert!(msg.contains("match_sql"));
 
-        let err = ValidationError::MissingThreshold("rule1".to_string(), "amount".to_string());
+        let err = ValidationError::FileSourceMissingSchema("payments".to_string());
         let msg = format!("{}", err);
-        assert!(msg.contains("rule1"));
-        assert!(msg.contains("amount"));
+        assert!(msg.contains("payments"));
+    }
+
+    #[test]
+    fn test_both_sources_as_persistent() {
+        let recipe = Recipe {
+            recipe_id: "test".to_string(),
+            name: "Test".to_string(),
+            description: "Test".to_string(),
+            match_sql: "SELECT * FROM a JOIN b ON a.id = b.id".to_string(),
+            match_description: "Match by ID".to_string(),
+            sources: RecipeSources {
+                left: RecipeSource {
+                    alias: "a".to_string(),
+                    source_type: SourceType::Postgres,
+                    uri: Some("postgres://host/db".to_string()),
+                    schema: None,
+                    primary_key: vec!["id".to_string()],
+                },
+                right: RecipeSource {
+                    alias: "b".to_string(),
+                    source_type: SourceType::Bigquery,
+                    uri: Some("bigquery://project/dataset".to_string()),
+                    schema: None,
+                    primary_key: vec!["id".to_string()],
+                },
+            },
+        };
+        assert!(validate_recipe(&recipe).is_ok());
     }
 }

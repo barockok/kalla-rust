@@ -1,10 +1,13 @@
 //! Kalla CLI - Command-line interface for the reconciliation engine
+//!
+//! NOTE: This crate is scheduled for deletion. It has been updated to compile
+//! against the new simplified recipe schema but functionality is reduced.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use kalla_core::ReconciliationEngine;
 use kalla_evidence::{EvidenceStore, MatchedRecord, RunMetadata, UnmatchedRecord};
-use kalla_recipe::{validate_recipe, MatchRecipe, Transpiler};
+use kalla_recipe::{validate_recipe, Recipe};
 use std::path::PathBuf;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -103,7 +106,7 @@ async fn run_reconciliation(recipe_path: &PathBuf, output_dir: &PathBuf) -> Resu
 
     // Load and validate recipe
     let recipe_content = std::fs::read_to_string(recipe_path)?;
-    let recipe: MatchRecipe = serde_json::from_str(&recipe_content)?;
+    let recipe: Recipe = serde_json::from_str(&recipe_content)?;
 
     if let Err(errors) = validate_recipe(&recipe) {
         for error in &errors {
@@ -119,97 +122,117 @@ async fn run_reconciliation(recipe_path: &PathBuf, output_dir: &PathBuf) -> Resu
     let store = EvidenceStore::new(output_dir)?;
 
     // Initialize run metadata
+    let left_uri = recipe
+        .sources
+        .left
+        .uri
+        .as_deref()
+        .unwrap_or("(file upload)");
+    let right_uri = recipe
+        .sources
+        .right
+        .uri
+        .as_deref()
+        .unwrap_or("(file upload)");
     let mut metadata = RunMetadata::new(
         recipe.recipe_id.clone(),
-        recipe.sources.left.uri.clone(),
-        recipe.sources.right.uri.clone(),
+        left_uri.to_string(),
+        right_uri.to_string(),
     );
     let run_path = store.init_run(&metadata)?;
     info!("Run ID: {}", metadata.run_id);
 
     // Register data sources
-    register_source(
-        &engine,
-        &recipe.sources.left.alias,
-        &recipe.sources.left.uri,
-    )
-    .await?;
-    register_source(
-        &engine,
-        &recipe.sources.right.alias,
-        &recipe.sources.right.uri,
-    )
-    .await?;
+    register_source(&engine, &recipe.sources.left.alias, left_uri).await?;
+    register_source(&engine, &recipe.sources.right.alias, right_uri).await?;
 
-    // Transpile recipe to queries
-    let transpiled = Transpiler::transpile(&recipe)?;
-    info!("Transpiled {} match rules", transpiled.match_queries.len());
-
-    // Execute match queries
+    // Execute match SQL directly
+    info!("Executing match SQL");
     let mut all_matched: Vec<MatchedRecord> = Vec::new();
+    let df = engine.sql(&recipe.match_sql).await?;
+    let batches = df.collect().await?;
 
-    for rule in &transpiled.match_queries {
-        info!("Executing rule: {}", rule.name);
-        let df = engine.sql(&rule.query).await?;
-        let batches = df.collect().await?;
+    let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
+    info!("Match SQL produced {} rows", row_count);
 
-        let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
-        info!("Rule '{}' matched {} rows", rule.name, row_count);
-
-        // For now, create simple matched records
-        // In a full implementation, we'd extract actual keys from the results
-        for batch in &batches {
-            for i in 0..batch.num_rows() {
-                all_matched.push(MatchedRecord::new(
-                    format!("row_{}", i),
-                    format!("row_{}", i),
-                    rule.name.clone(),
-                    1.0, // exact match confidence
-                ));
-            }
+    for batch in &batches {
+        for i in 0..batch.num_rows() {
+            all_matched.push(MatchedRecord::new(
+                format!("row_{}", i),
+                format!("row_{}", i),
+                "match_sql".to_string(),
+                1.0,
+            ));
         }
     }
 
     metadata.matched_count = all_matched.len() as u64;
 
-    // Execute orphan queries
+    // Derive unmatched using primary keys via ANTI JOIN
+    let left_alias = &recipe.sources.left.alias;
+    let right_alias = &recipe.sources.right.alias;
+    let left_pk = &recipe.sources.left.primary_key;
+    let right_pk = &recipe.sources.right.primary_key;
+
     let mut left_orphans: Vec<UnmatchedRecord> = Vec::new();
     let mut right_orphans: Vec<UnmatchedRecord> = Vec::new();
 
-    if let Some(query) = &transpiled.left_orphan_query {
+    if !left_pk.is_empty() && !right_pk.is_empty() {
+        // Left unmatched
+        let left_pk_cols = left_pk.join(", ");
+        let right_pk_cols = right_pk.join(", ");
+        let left_orphan_sql = format!(
+            "SELECT {left_alias}.* FROM {left_alias} \
+             LEFT JOIN {right_alias} ON {left_alias}.{lpk} = {right_alias}.{rpk} \
+             WHERE {right_alias}.{rpk} IS NULL",
+            left_alias = left_alias,
+            right_alias = right_alias,
+            lpk = left_pk_cols,
+            rpk = right_pk_cols,
+        );
         info!("Finding left orphans...");
-        let df = engine.sql(query).await?;
-        let batches = df.collect().await?;
-        let count: usize = batches.iter().map(|b| b.num_rows()).sum();
-        info!("Found {} left orphans", count);
-
-        for batch in &batches {
-            for i in 0..batch.num_rows() {
-                left_orphans.push(UnmatchedRecord {
-                    record_key: format!("row_{}", i),
-                    attempted_rules: recipe.match_rules.iter().map(|r| r.name.clone()).collect(),
-                    closest_candidate: None,
-                    rejection_reason: "No matching record found".to_string(),
-                });
+        if let Ok(df) = engine.sql(&left_orphan_sql).await {
+            if let Ok(batches) = df.collect().await {
+                let count: usize = batches.iter().map(|b| b.num_rows()).sum();
+                info!("Found {} left orphans", count);
+                for batch in &batches {
+                    for i in 0..batch.num_rows() {
+                        left_orphans.push(UnmatchedRecord {
+                            record_key: format!("row_{}", i),
+                            attempted_rules: vec!["match_sql".to_string()],
+                            closest_candidate: None,
+                            rejection_reason: "No matching record found".to_string(),
+                        });
+                    }
+                }
             }
         }
-    }
 
-    if let Some(query) = &transpiled.right_orphan_query {
+        // Right unmatched
+        let right_orphan_sql = format!(
+            "SELECT {right_alias}.* FROM {right_alias} \
+             LEFT JOIN {left_alias} ON {right_alias}.{rpk} = {left_alias}.{lpk} \
+             WHERE {left_alias}.{lpk} IS NULL",
+            left_alias = left_alias,
+            right_alias = right_alias,
+            lpk = left_pk_cols,
+            rpk = right_pk_cols,
+        );
         info!("Finding right orphans...");
-        let df = engine.sql(query).await?;
-        let batches = df.collect().await?;
-        let count: usize = batches.iter().map(|b| b.num_rows()).sum();
-        info!("Found {} right orphans", count);
-
-        for batch in &batches {
-            for i in 0..batch.num_rows() {
-                right_orphans.push(UnmatchedRecord {
-                    record_key: format!("row_{}", i),
-                    attempted_rules: recipe.match_rules.iter().map(|r| r.name.clone()).collect(),
-                    closest_candidate: None,
-                    rejection_reason: "No matching record found".to_string(),
-                });
+        if let Ok(df) = engine.sql(&right_orphan_sql).await {
+            if let Ok(batches) = df.collect().await {
+                let count: usize = batches.iter().map(|b| b.num_rows()).sum();
+                info!("Found {} right orphans", count);
+                for batch in &batches {
+                    for i in 0..batch.num_rows() {
+                        right_orphans.push(UnmatchedRecord {
+                            record_key: format!("row_{}", i),
+                            attempted_rules: vec!["match_sql".to_string()],
+                            closest_candidate: None,
+                            rejection_reason: "No matching record found".to_string(),
+                        });
+                    }
+                }
             }
         }
     }
@@ -255,8 +278,6 @@ async fn register_source(engine: &ReconciliationEngine, alias: &str, uri: &str) 
             anyhow::bail!("Unsupported file format: {}", path);
         }
     } else if uri.starts_with("postgres://") {
-        // For Postgres, we'd use the connector
-        // This is a simplified placeholder
         anyhow::bail!(
             "Postgres support requires connection string parsing - not yet implemented in CLI"
         );
@@ -271,22 +292,14 @@ fn validate_recipe_file(path: &PathBuf) -> Result<()> {
     info!("Validating recipe: {:?}", path);
 
     let content = std::fs::read_to_string(path)?;
-    let recipe: MatchRecipe = serde_json::from_str(&content)?;
+    let recipe: Recipe = serde_json::from_str(&content)?;
 
     match validate_recipe(&recipe) {
         Ok(()) => {
             println!("Recipe is valid!");
             println!("  Recipe ID: {}", recipe.recipe_id);
-            println!("  Version: {}", recipe.version);
-            println!("  Rules: {}", recipe.match_rules.len());
-            for rule in &recipe.match_rules {
-                println!(
-                    "    - {}: {:?} pattern, {} conditions",
-                    rule.name,
-                    rule.pattern,
-                    rule.conditions.len()
-                );
-            }
+            println!("  Name: {}", recipe.name);
+            println!("  Match SQL: {}...", &recipe.match_sql[..recipe.match_sql.len().min(80)]);
             Ok(())
         }
         Err(errors) => {

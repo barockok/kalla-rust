@@ -1,49 +1,31 @@
 //! Prompt building for LLM recipe generation
 
 use crate::schema_extractor::SanitizedSchema;
-use kalla_recipe::schema::MatchRecipe;
+use kalla_recipe::schema::Recipe;
 
 /// System prompt for recipe generation
-pub const SYSTEM_PROMPT: &str = r#"You are a reconciliation expert. Your task is to generate Match Recipe JSON configurations for data reconciliation.
+pub const SYSTEM_PROMPT: &str = r#"You are a reconciliation expert. Your task is to generate Recipe JSON configurations for data reconciliation.
 
-Given table schemas (column names and types only - you will NOT see any actual data values), generate a valid Match Recipe that matches records between the left and right data sources.
+Given table schemas (column names and types only - you will NOT see any actual data values), generate a valid Recipe with a DataFusion SQL query that matches records between the left and right data sources.
 
-The Match Recipe JSON schema is:
+The Recipe JSON schema is:
 {
-  "version": "1.0",
   "recipe_id": "<descriptive-id>",
+  "name": "<human-readable name>",
+  "description": "<what this recipe does>",
   "sources": {
-    "left": { "alias": "<left_alias>", "uri": "<left_uri>" },
-    "right": { "alias": "<right_alias>", "uri": "<right_uri>" }
+    "left": { "alias": "<left_alias>", "type": "postgres"|"file", "uri": "<uri>", "primary_key": ["<col>"] },
+    "right": { "alias": "<right_alias>", "type": "postgres"|"file", "schema": ["<col1>", "<col2>"], "primary_key": ["<col>"] }
   },
-  "match_rules": [
-    {
-      "name": "<rule_name>",
-      "pattern": "1:1" | "1:N" | "M:1",
-      "conditions": [
-        { "left": "<column>", "op": "<operator>", "right": "<column>", "threshold": <optional_number> }
-      ]
-    }
-  ],
-  "output": {
-    "matched": "<output_path>",
-    "unmatched_left": "<output_path>",
-    "unmatched_right": "<output_path>"
-  }
+  "match_sql": "<DataFusion SQL query that JOINs left and right sources>",
+  "match_description": "<human-readable explanation of the match logic>"
 }
-
-Operators:
-- "eq": Exact equality
-- "tolerance": Numeric match within threshold (requires "threshold" field)
-- "gt", "lt", "gte", "lte": Comparisons
-- "contains", "startswith", "endswith": String operations
 
 Guidelines:
 1. Identify likely join keys by column names (e.g., "id", "ref", "key" suffixes)
-2. For financial amounts, suggest tolerance matching with small threshold (0.01)
-3. Prefer 1:1 pattern unless user specifies otherwise
-4. Use descriptive rule names
-5. Output ONLY valid JSON, no explanation
+2. For financial amounts, use tolerance matching: ABS(l.amount - r.amount) / NULLIF(l.amount, 0) < 0.01
+3. Use descriptive aliases in the SQL
+4. Output ONLY valid JSON, no explanation
 
 IMPORTANT: You will NEVER see actual data values - only column names and types. This is intentional for PII protection."#;
 
@@ -71,7 +53,7 @@ Row count: {right_rows}
 ## User Request
 {request}
 
-Generate a Match Recipe JSON for this reconciliation task."#,
+Generate a Recipe JSON for this reconciliation task."#,
         left_name = left_schema.table_name,
         left_uri = left_uri,
         left_columns = format_columns(&left_schema.columns),
@@ -99,8 +81,8 @@ fn format_columns(columns: &[crate::schema_extractor::ColumnMeta]) -> String {
         .join("\n")
 }
 
-/// Parse LLM response into a Match Recipe
-pub fn parse_recipe_response(response: &str) -> anyhow::Result<MatchRecipe> {
+/// Parse LLM response into a Recipe
+pub fn parse_recipe_response(response: &str) -> anyhow::Result<Recipe> {
     // Try to extract JSON from the response (in case of markdown code blocks)
     let json_str = if response.contains("```json") {
         response
@@ -119,7 +101,7 @@ pub fn parse_recipe_response(response: &str) -> anyhow::Result<MatchRecipe> {
         response.trim()
     };
 
-    let recipe: MatchRecipe = serde_json::from_str(json_str)?;
+    let recipe: Recipe = serde_json::from_str(json_str)?;
     Ok(recipe)
 }
 
@@ -207,66 +189,33 @@ mod tests {
     fn test_parse_recipe_response_json_code_block() {
         let response = r#"```json
 {
-  "version": "1.0",
   "recipe_id": "test",
+  "name": "Test Recipe",
+  "description": "Test",
   "sources": {
-    "left": { "alias": "left", "uri": "file://left.csv" },
-    "right": { "alias": "right", "uri": "file://right.csv" }
+    "left": { "alias": "left", "type": "file", "schema": ["id"], "primary_key": ["id"] },
+    "right": { "alias": "right", "type": "file", "schema": ["ref"], "primary_key": ["ref"] }
   },
-  "match_rules": [
-    {
-      "name": "id_match",
-      "pattern": "1:1",
-      "conditions": [
-        { "left": "id", "op": "eq", "right": "ref" }
-      ]
-    }
-  ],
-  "output": {
-    "matched": "matched.parquet",
-    "unmatched_left": "left.parquet",
-    "unmatched_right": "right.parquet"
-  }
+  "match_sql": "SELECT l.id, r.ref FROM left l JOIN right r ON l.id = r.ref",
+  "match_description": "Match by ID"
 }
 ```"#;
         let recipe = parse_recipe_response(response).unwrap();
         assert_eq!(recipe.recipe_id, "test");
-        assert_eq!(recipe.match_rules.len(), 1);
-    }
-
-    #[test]
-    fn test_parse_recipe_response_plain_code_block() {
-        let response = r#"```
-{
-  "version": "1.0",
-  "recipe_id": "plain",
-  "sources": {
-    "left": { "alias": "l", "uri": "f://l.csv" },
-    "right": { "alias": "r", "uri": "f://r.csv" }
-  },
-  "match_rules": [
-    { "name": "r1", "pattern": "1:1", "conditions": [{ "left": "a", "op": "eq", "right": "b" }] }
-  ],
-  "output": { "matched": "m.p", "unmatched_left": "ul.p", "unmatched_right": "ur.p" }
-}
-```"#;
-        let recipe = parse_recipe_response(response).unwrap();
-        assert_eq!(recipe.recipe_id, "plain");
     }
 
     #[test]
     fn test_parse_recipe_response_raw_json() {
         let response = r#"{
-  "version": "1.0",
   "recipe_id": "raw",
+  "name": "Raw Recipe",
+  "description": "Test",
   "sources": {
-    "left": { "alias": "l", "uri": "f://l.csv" },
-    "right": { "alias": "r", "uri": "f://r.csv" }
+    "left": { "alias": "l", "type": "file", "schema": ["a"], "primary_key": ["a"] },
+    "right": { "alias": "r", "type": "file", "schema": ["b"], "primary_key": ["b"] }
   },
-  "match_rules": [
-    { "name": "r1", "pattern": "1:1", "conditions": [{ "left": "a", "op": "eq", "right": "b" }] }
-  ],
-  "output": { "matched": "m.p", "unmatched_left": "ul.p", "unmatched_right": "ur.p" }
+  "match_sql": "SELECT * FROM l JOIN r ON l.a = r.b",
+  "match_description": "Match a to b"
 }"#;
         let recipe = parse_recipe_response(response).unwrap();
         assert_eq!(recipe.recipe_id, "raw");
@@ -282,34 +231,10 @@ mod tests {
     #[test]
     fn test_parse_recipe_response_incomplete_json() {
         let response = r#"```json
-{ "version": "1.0" }
+{ "recipe_id": "1.0" }
 ```"#;
         let result = parse_recipe_response(response);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_recipe_response_with_surrounding_text() {
-        let response = r#"Here's the recipe:
-
-```json
-{
-  "version": "1.0",
-  "recipe_id": "surrounded",
-  "sources": {
-    "left": { "alias": "l", "uri": "f://l.csv" },
-    "right": { "alias": "r", "uri": "f://r.csv" }
-  },
-  "match_rules": [
-    { "name": "r1", "pattern": "M:1", "conditions": [{ "left": "a", "op": "eq", "right": "b" }] }
-  ],
-  "output": { "matched": "m.p", "unmatched_left": "ul.p", "unmatched_right": "ur.p" }
-}
-```
-
-Hope this helps!"#;
-        let recipe = parse_recipe_response(response).unwrap();
-        assert_eq!(recipe.recipe_id, "surrounded");
     }
 
     #[test]

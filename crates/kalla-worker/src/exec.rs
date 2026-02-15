@@ -1,13 +1,13 @@
 //! Exec handler — runs reconciliation after all sources are staged.
 //!
-//! Transpiles the recipe to SQL, executes via DataFusion (local or Ballista),
-//! and writes evidence.
+//! Executes match_sql directly via DataFusion and derives unmatched records
+//! using primary keys.
 
 use anyhow::Result;
 use futures::StreamExt;
 use kalla_core::ReconciliationEngine;
 use kalla_evidence::{EvidenceStore, MatchedRecord};
-use kalla_recipe::{MatchRecipe, Transpiler};
+use kalla_recipe::Recipe;
 use sqlx::PgPool;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -22,7 +22,7 @@ pub async fn handle_exec(
     recipe_json: &str,
     staged_sources: &[StagedSource],
 ) -> Result<ExecResult> {
-    let recipe: MatchRecipe = serde_json::from_str(recipe_json)?;
+    let recipe: Recipe = serde_json::from_str(recipe_json)?;
 
     let engine = ReconciliationEngine::new();
 
@@ -41,10 +41,7 @@ pub async fn handle_exec(
         );
     }
 
-    // Transpile recipe to SQL
-    let transpiled = Transpiler::transpile(&recipe)?;
-
-    // Execute matches
+    // Execute match SQL directly
     let mut total_matched = 0u64;
     let mut matched_records: Vec<MatchedRecord> = Vec::new();
 
@@ -52,57 +49,67 @@ pub async fn handle_exec(
         .sources
         .left
         .primary_key
-        .as_ref()
-        .and_then(|v| v.first())
+        .first()
         .map(|s| s.as_str())
         .unwrap_or("id");
     let right_pk = recipe
         .sources
         .right
         .primary_key
-        .as_ref()
-        .and_then(|v| v.first())
+        .first()
         .map(|s| s.as_str())
         .unwrap_or("id");
 
-    for rule in &transpiled.match_queries {
-        match engine.sql_stream(&rule.query).await {
-            Ok(mut stream) => {
-                while let Some(batch_result) = stream.next().await {
-                    let batch = batch_result?;
-                    for row_idx in 0..batch.num_rows() {
-                        let left_key = extract_string_value(&batch, left_pk, row_idx)
-                            .unwrap_or_else(|| format!("row_{}", row_idx));
-                        let right_key = extract_string_value(&batch, right_pk, row_idx)
-                            .unwrap_or_else(|| format!("row_{}", row_idx));
-                        matched_records.push(MatchedRecord::new(
-                            left_key,
-                            right_key,
-                            rule.name.clone(),
-                            1.0,
-                        ));
-                    }
-                    total_matched += batch.num_rows() as u64;
+    match engine.sql_stream(&recipe.match_sql).await {
+        Ok(mut stream) => {
+            while let Some(batch_result) = stream.next().await {
+                let batch = batch_result?;
+                for row_idx in 0..batch.num_rows() {
+                    let left_key = extract_string_value(&batch, left_pk, row_idx)
+                        .unwrap_or_else(|| format!("row_{}", row_idx));
+                    let right_key = extract_string_value(&batch, right_pk, row_idx)
+                        .unwrap_or_else(|| format!("row_{}", row_idx));
+                    matched_records.push(MatchedRecord::new(
+                        left_key,
+                        right_key,
+                        "match_sql".to_string(),
+                        1.0,
+                    ));
                 }
+                total_matched += batch.num_rows() as u64;
             }
-            Err(e) => warn!("Match rule '{}' failed: {}", rule.name, e),
         }
+        Err(e) => warn!("Match SQL failed: {}", e),
     }
 
-    // Execute orphan queries
+    // Derive unmatched using primary keys via LEFT ANTI JOIN
     let mut unmatched_left = 0u64;
     let mut unmatched_right = 0u64;
 
-    if let Some(ref query) = transpiled.left_orphan_query {
-        if let Ok(mut stream) = engine.sql_stream(query).await {
+    let left_alias = &recipe.sources.left.alias;
+    let right_alias = &recipe.sources.right.alias;
+
+    if !recipe.sources.left.primary_key.is_empty()
+        && !recipe.sources.right.primary_key.is_empty()
+    {
+        let lpk = &recipe.sources.left.primary_key[0];
+        let rpk = &recipe.sources.right.primary_key[0];
+
+        let left_orphan_sql = format!(
+            "SELECT {l}.* FROM {l} LEFT JOIN {r} ON {l}.{lpk} = {r}.{rpk} WHERE {r}.{rpk} IS NULL",
+            l = left_alias, r = right_alias, lpk = lpk, rpk = rpk
+        );
+        if let Ok(mut stream) = engine.sql_stream(&left_orphan_sql).await {
             while let Some(Ok(batch)) = stream.next().await {
                 unmatched_left += batch.num_rows() as u64;
             }
         }
-    }
 
-    if let Some(ref query) = transpiled.right_orphan_query {
-        if let Ok(mut stream) = engine.sql_stream(query).await {
+        let right_orphan_sql = format!(
+            "SELECT {r}.* FROM {r} LEFT JOIN {l} ON {r}.{rpk} = {l}.{lpk} WHERE {l}.{lpk} IS NULL",
+            l = left_alias, r = right_alias, lpk = lpk, rpk = rpk
+        );
+        if let Ok(mut stream) = engine.sql_stream(&right_orphan_sql).await {
             while let Some(Ok(batch)) = stream.next().await {
                 unmatched_right += batch.num_rows() as u64;
             }
