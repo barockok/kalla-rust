@@ -1,0 +1,67 @@
+# Kalla — Single VM Production Deployment
+#
+# Usage:
+#   docker compose -f docker-compose.single.yml up -d
+#
+# Requirements:
+#   - Set ANTHROPIC_API_KEY in environment or .env file
+#
+# Architecture:
+#   App (Next.js) --HTTP--> Worker (Rust) --local-fs--> /data/staging
+#   App --SQL--> Postgres
+#   Worker --callback--> App /api/worker/*
+#
+# No NATS, no S3 — worker uses local filesystem via object_store.
+
+services:
+  app:
+    build:
+      context: ./kalla-web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://kalla:kalla_secret@postgres:5432/kalla
+      WORKER_URL: http://worker:9090
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: crates/kalla-worker/Dockerfile
+    ports:
+      - "9090:9090"
+    environment:
+      STAGING_PATH: /data/staging
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - staging_data:/data/staging
+      - results_data:/data/results
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: kalla
+      POSTGRES_PASSWORD: kalla_secret
+      POSTGRES_DB: kalla
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "kalla"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  staging_data:
+  results_data:
