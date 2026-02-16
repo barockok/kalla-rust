@@ -298,18 +298,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-      minio:
-        image: minio/minio:latest
-        ports:
-          - 9000:9000
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/minio/health/live || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     env:
       DATABASE_URL: postgresql://kalla:kalla_secret@localhost:5432/kalla
       NATS_URL: nats://localhost:4222
@@ -349,6 +337,17 @@ jobs:
 
       - name: Init DB schema
         run: psql "$DATABASE_URL" -f scripts/init.sql
+
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio --network host \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data
+          # Wait for MinIO to be healthy
+          for i in $(seq 1 15); do
+            curl -sf http://localhost:9000/minio/health/live && break || sleep 1
+          done
 
       - name: Start NATS with JetStream
         run: |
