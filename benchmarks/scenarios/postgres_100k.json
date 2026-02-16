@@ -6,13 +6,13 @@
   "sources": [
     {
       "alias": "left_src",
-      "uri": "${PG_URL}",
+      "uri": "postgres://${PG_HOST}/${PG_DB}",
       "format": "postgres",
       "table": "bench_invoices"
     },
     {
       "alias": "right_src",
-      "uri": "${PG_URL}",
+      "uri": "postgres://${PG_HOST}/${PG_DB}",
       "format": "postgres",
       "table": "bench_payments"
     }

@@ -6,12 +6,12 @@
   "sources": [
     {
       "alias": "left_src",
-      "uri": "file://${DATA_DIR}/invoices.csv",
+      "uri": "${DATA_DIR}/invoices.csv",
       "format": "csv"
     },
     {
       "alias": "right_src",
-      "uri": "file://${DATA_DIR}/payments.csv",
+      "uri": "${DATA_DIR}/payments.csv",
       "format": "csv"
     }
   ],

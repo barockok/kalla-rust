@@ -144,14 +144,17 @@ data_dir = os.environ["_BENCH_DATA_DIR"]
 pg_url = os.environ["_BENCH_PG_URL"]
 
 if source_type == "csv":
+    # Worker matches local CSV by .csv suffix on a plain path (no file:// prefix)
     sources = [
-        {"alias": "left_src", "uri": f"file://{data_dir}/invoices.csv"},
-        {"alias": "right_src", "uri": f"file://{data_dir}/payments.csv"},
+        {"alias": "left_src", "uri": f"{data_dir}/invoices.csv"},
+        {"alias": "right_src", "uri": f"{data_dir}/payments.csv"},
     ]
 else:
+    # Worker checks uri.starts_with("postgres://"), not "postgresql://"
+    pg = pg_url.replace("postgresql://", "postgres://", 1)
     sources = [
-        {"alias": "left_src", "uri": f"{pg_url}?table=bench_invoices"},
-        {"alias": "right_src", "uri": f"{pg_url}?table=bench_payments"},
+        {"alias": "left_src", "uri": f"{pg}?table=bench_invoices"},
+        {"alias": "right_src", "uri": f"{pg}?table=bench_payments"},
     ]
 
 print(json.dumps({
