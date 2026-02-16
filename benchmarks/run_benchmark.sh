@@ -87,6 +87,7 @@ for scenario_file in "${SCENARIOS[@]}"; do
     SOURCE_TYPE=$(json_field "source_type" "$scenario_file")
     ROWS=$(json_field "rows" "$scenario_file")
     MATCH_SQL=$(json_field "match_sql" "$scenario_file")
+    STAGE_TO_PARQUET=$(json_field "stage_to_parquet" "$scenario_file")
 
     echo "=== Scenario: ${SCENARIO_NAME} (${ROWS} rows, ${SOURCE_TYPE}) ==="
 
@@ -118,6 +119,7 @@ for scenario_file in "${SCENARIOS[@]}"; do
         _BENCH_RUN_ID="$RUN_ID" \
         _BENCH_MATCH_SQL="$MATCH_SQL" \
         _BENCH_OUTPUT_PATH="$OUTPUT_PATH" \
+        _BENCH_STAGE_TO_PARQUET="$STAGE_TO_PARQUET" \
         python3 - <<'PYEOF'
 import json, os
 
@@ -139,14 +141,19 @@ else:
         {"alias": "right_src", "uri": f"{pg}?table=bench_payments"},
     ]
 
-print(json.dumps({
+job = {
     "run_id": os.environ["_BENCH_RUN_ID"],
     "callback_url": "http://127.0.0.1:0/noop",
     "match_sql": os.environ["_BENCH_MATCH_SQL"],
     "sources": sources,
     "output_path": os.environ["_BENCH_OUTPUT_PATH"],
     "primary_keys": {"left_src": ["invoice_id"], "right_src": ["payment_id"]},
-}))
+}
+
+if os.environ.get("_BENCH_STAGE_TO_PARQUET", "").lower() == "true":
+    job["stage_to_parquet"] = True
+
+print(json.dumps(job))
 PYEOF
     )
 

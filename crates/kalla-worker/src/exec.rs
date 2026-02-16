@@ -10,10 +10,13 @@ use futures::StreamExt;
 use kalla_core::ReconciliationEngine;
 use kalla_evidence::{EvidenceStore, MatchedRecord};
 use kalla_recipe::Recipe;
+use parquet::arrow::ArrowWriter;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use tracing::{info, warn};
 use uuid::Uuid;
+
+use std::time::Instant;
 
 use crate::config::WorkerConfig;
 use crate::http_api::{CallbackClient, JobRequest};
@@ -54,6 +57,7 @@ pub async fn handle_http_job(
     let engine = ReconciliationEngine::new();
 
     // Register all sources
+    let staging_start = Instant::now();
     for (i, source) in job.sources.iter().enumerate() {
         register_source(&engine, &source.alias, &source.uri, config).await?;
         info!("Registered source '{}' from {}", source.alias, source.uri);
@@ -71,6 +75,43 @@ pub async fn handle_http_job(
             )
             .await;
     }
+    let staging_ms = staging_start.elapsed().as_millis();
+    info!("Run {}: staging completed in {}ms", run_id, staging_ms);
+
+    // Parquet staging phase: write sources to local Parquet, then re-register
+    if job.stage_to_parquet {
+        let parquet_staging_start = Instant::now();
+        let parquet_dir = format!("{}/{}", config.staging_path, run_id);
+        std::fs::create_dir_all(&parquet_dir)?;
+
+        for source in &job.sources {
+            let alias = &source.alias;
+            let parquet_path = format!("{}/{}.parquet", parquet_dir, alias);
+
+            // Read all data from the registered table
+            let df = engine.sql(&format!("SELECT * FROM \"{}\"", alias)).await?;
+            let batches = df.collect().await?;
+
+            // Write to local Parquet file
+            if !batches.is_empty() {
+                let schema = batches[0].schema();
+                let file = std::fs::File::create(&parquet_path)?;
+                let mut writer = ArrowWriter::try_new(file, schema, None)?;
+                for batch in &batches {
+                    writer.write(batch)?;
+                }
+                writer.close()?;
+            }
+
+            // Deregister original table and re-register from Parquet
+            engine.context().deregister_table(alias)?;
+            engine.register_parquet(alias, &parquet_path).await?;
+            info!("Run {}: staged '{}' to Parquet ({})", run_id, alias, parquet_path);
+        }
+
+        let parquet_staging_ms = parquet_staging_start.elapsed().as_millis();
+        info!("Run {}: parquet staging completed in {}ms", run_id, parquet_staging_ms);
+    }
 
     // Report matching started
     let _ = callback
@@ -85,6 +126,7 @@ pub async fn handle_http_job(
         .await;
 
     // Execute match SQL
+    let matching_start = Instant::now();
     let mut matched_count = 0u64;
     let mut matched_records: Vec<MatchedRecord> = Vec::new();
 
@@ -124,15 +166,18 @@ pub async fn handle_http_job(
         }
     }
 
-    info!("Run {}: {} matched records", run_id, matched_count);
+    let matching_ms = matching_start.elapsed().as_millis();
+    info!("Run {}: {} matched records in {}ms", run_id, matched_count, matching_ms);
 
     // Derive unmatched using LEFT ANTI JOIN on primary keys
+    let unmatched_start = Instant::now();
     let (unmatched_left, unmatched_right) =
         count_unmatched(&engine, &job.match_sql, &job.primary_keys).await?;
+    let unmatched_ms = unmatched_start.elapsed().as_millis();
 
     info!(
-        "Run {}: {} unmatched_left, {} unmatched_right",
-        run_id, unmatched_left, unmatched_right
+        "Run {}: {} unmatched_left, {} unmatched_right in {}ms",
+        run_id, unmatched_left, unmatched_right, unmatched_ms
     );
 
     // Report writing results
