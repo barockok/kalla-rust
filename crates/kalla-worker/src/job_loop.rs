@@ -179,6 +179,7 @@ async fn handle_job(
             );
 
             exec::handle_exec(
+                config,
                 pool,
                 run_id,
                 job_id,

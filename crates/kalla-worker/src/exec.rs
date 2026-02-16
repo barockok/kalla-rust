@@ -7,7 +7,7 @@
 //!   using local DataFusion against staged Parquet/CSV sources.
 //! - `handle_exec` (distributed): Scaled mode with Ballista — same NATS interface
 //!   but uses `ReconciliationEngine::new_distributed()` for distributed query execution.
-//!   Enabled via `BALLISTA_ENABLED=true|1` env var.
+//!   Enabled via `config.ballista_enabled` (set by `BALLISTA_ENABLED` env var).
 
 use anyhow::Result;
 use futures::StreamExt;
@@ -380,11 +380,13 @@ fn extract_first_key(
 
 /// Execute the reconciliation run (scaled mode — NATS).
 ///
-/// Dispatches to the distributed (Ballista) path when `BALLISTA_ENABLED=true|1`,
+/// Dispatches to the distributed (Ballista) path when `config.ballista_enabled`,
 /// otherwise falls back to the staged (local DataFusion) path.
 ///
 /// If `callback_url` is provided, POSTs completion results to `{callback_url}/complete`.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_exec(
+    config: &WorkerConfig,
     pool: &PgPool,
     run_id: Uuid,
     job_id: Uuid,
@@ -393,16 +395,13 @@ pub async fn handle_exec(
     callback_url: Option<&str>,
     source_uris: Option<&[SourceUri]>,
 ) -> Result<ExecResult> {
-    let use_distributed = std::env::var("BALLISTA_ENABLED")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
-
-    if use_distributed {
+    if config.ballista_enabled {
         info!(
             "Run {}: using distributed (Ballista) execution path",
             run_id
         );
         handle_exec_distributed(
+            config,
             pool,
             run_id,
             job_id,
@@ -584,7 +583,9 @@ async fn handle_exec_staged(
 // Distributed path: Ballista standalone execution
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_exec_distributed(
+    config: &WorkerConfig,
     pool: &PgPool,
     run_id: Uuid,
     job_id: Uuid,
@@ -601,10 +602,7 @@ async fn handle_exec_distributed(
     // Register sources: prefer direct source URIs when available,
     // otherwise fall back to staged Parquet/CSV files.
     if let Some(uris) = source_uris {
-        let num_partitions = std::env::var("BALLISTA_PARTITIONS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(4);
+        let num_partitions = config.ballista_partitions;
 
         for source_uri in uris {
             if source_uri.uri.starts_with("postgres://")

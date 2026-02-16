@@ -18,6 +18,10 @@ pub struct WorkerConfig {
     pub nats_url: Option<String>,
     /// App database URL — only used in scaled mode for job tracking.
     pub database_url: Option<String>,
+    /// Enable Ballista distributed execution (skips staging when source_uris available).
+    pub ballista_enabled: bool,
+    /// Number of partitions per source for distributed reads.
+    pub ballista_partitions: usize,
     pub metrics_port: u16,
     // Staging config
     pub max_parallel_chunks: usize,
@@ -38,6 +42,13 @@ impl WorkerConfig {
                 .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string()),
             nats_url: std::env::var("NATS_URL").ok(),
             database_url: std::env::var("DATABASE_URL").ok(),
+            ballista_enabled: std::env::var("BALLISTA_ENABLED")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(false),
+            ballista_partitions: std::env::var("BALLISTA_PARTITIONS")
+                .unwrap_or_else(|_| "4".to_string())
+                .parse()
+                .context("Invalid BALLISTA_PARTITIONS")?,
             metrics_port: std::env::var("METRICS_PORT")
                 .unwrap_or_else(|_| "9090".to_string())
                 .parse()
@@ -87,6 +98,8 @@ mod tests {
             "WORKER_ID",
             "NATS_URL",
             "DATABASE_URL",
+            "BALLISTA_ENABLED",
+            "BALLISTA_PARTITIONS",
             "METRICS_PORT",
             "MAX_PARALLEL_CHUNKS",
             "CHUNK_THRESHOLD_ROWS",
@@ -150,7 +163,38 @@ mod tests {
         assert_eq!(config.max_parallel_chunks, 10);
         assert_eq!(config.chunk_threshold_rows, 1_000_000);
         assert_eq!(config.staging_path, "./staging");
+        assert!(!config.ballista_enabled);
+        assert_eq!(config.ballista_partitions, 4);
         assert_eq!(config.mode(), WorkerMode::Single);
+
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_ballista_defaults() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env();
+
+        let config = WorkerConfig::from_env().unwrap();
+        assert!(!config.ballista_enabled);
+        assert_eq!(config.ballista_partitions, 4);
+
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_ballista_enabled() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env();
+
+        unsafe {
+            std::env::set_var("BALLISTA_ENABLED", "true");
+            std::env::set_var("BALLISTA_PARTITIONS", "8");
+        }
+
+        let config = WorkerConfig::from_env().unwrap();
+        assert!(config.ballista_enabled);
+        assert_eq!(config.ballista_partitions, 8);
 
         clear_env();
     }
