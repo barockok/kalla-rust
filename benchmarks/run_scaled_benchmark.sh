@@ -101,6 +101,8 @@ start_workers() {
         AWS_REGION="${AWS_REGION}" \
         AWS_ALLOW_HTTP="${AWS_ALLOW_HTTP}" \
         STAGING_BUCKET="${STAGING_BUCKET}" \
+        BALLISTA_ENABLED="true" \
+        BALLISTA_PARTITIONS="4" \
         WORKER_ID="bench-worker-${i}" \
         METRICS_PORT=$((9090 + i)) \
         RUST_LOG=info \
@@ -160,21 +162,23 @@ for scenario_file in "${SCENARIOS[@]}"; do
     MATCH_SQL=$(json_field "match_sql" "$scenario_file")
     SCENARIO_WORKERS=$(json_field "workers" "$scenario_file")
     SCENARIO_WORKERS="${SCENARIO_WORKERS:-${NUM_WORKERS}}"
+    DIRECT_EXEC=$(json_field "direct_exec" "$scenario_file")
 
     echo ""
     echo "=== Scenario: ${SCENARIO_NAME} (${ROWS} rows, ${SOURCE_TYPE}, ${SCENARIO_WORKERS} workers) ==="
 
     START_TIME=$(now_ns)
 
+    # Build injector arguments
+    INJECT_ARGS="--rows $ROWS --pg-url $PG_URL --nats-url $NATS_URL --staging-bucket $STAGING_BUCKET --match-sql $MATCH_SQL --timeout $TIMEOUT_SECS --json-output"
+    if [ "$DIRECT_EXEC" = "True" ] || [ "$DIRECT_EXEC" = "true" ]; then
+        INJECT_ARGS="$INJECT_ARGS --direct-exec"
+        echo "  (direct exec mode — skipping staging, Ballista enabled)"
+    fi
+
     # Run the injector script
     RESULT=$(python3 "${SCRIPT_DIR}/inject_scaled_job.py" \
-        --rows "$ROWS" \
-        --pg-url "$PG_URL" \
-        --nats-url "$NATS_URL" \
-        --staging-bucket "$STAGING_BUCKET" \
-        --match-sql "$MATCH_SQL" \
-        --timeout "$TIMEOUT_SECS" \
-        --json-output \
+        $INJECT_ARGS \
     2>&1 | tee /dev/stderr | tail -1)
 
     END_TIME=$(now_ns)

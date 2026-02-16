@@ -1,0 +1,9 @@
+{
+    "name": "direct_postgres_100k",
+    "mode": "scaled",
+    "source_type": "postgres",
+    "rows": 100000,
+    "workers": 2,
+    "direct_exec": true,
+    "match_sql": "SELECT i.*, p.* FROM left_src i JOIN right_src p ON i.invoice_id = p.reference_number AND tolerance_match(i.amount, p.paid_amount, 0.02)"
+}

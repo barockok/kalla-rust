@@ -383,6 +383,8 @@ jobs:
           PG_URL: postgresql://kalla:kalla_secret@localhost:5432/kalla
           WORKER_BINARY: ./target/release/kalla-worker
           NUM_WORKERS: "2"
+          BALLISTA_ENABLED: "true"
+          BALLISTA_PARTITIONS: "4"
         run: bash benchmarks/run_scaled_benchmark.sh
 
       - name: Upload benchmark results
