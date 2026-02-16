@@ -2,7 +2,7 @@
 
 use datafusion::common::Result as DFResult;
 use datafusion::physical_plan::SendableRecordBatchStream;
-use datafusion::prelude::*;
+use datafusion::prelude::{CsvReadOptions, DataFrame, ParquetReadOptions, SessionContext};
 use tracing::info;
 
 use crate::udf;
@@ -28,9 +28,9 @@ impl ReconciliationEngine {
     /// Create a distributed reconciliation engine using Ballista standalone mode.
     /// Embeds scheduler + executor in-process for distributed query execution.
     pub async fn new_distributed() -> anyhow::Result<Self> {
-        use ballista::prelude::SessionContextExt;
+        use ballista::prelude::SessionContextExt as _;
 
-        let ctx = SessionContext::standalone().await?;
+        let ctx: SessionContext = SessionContext::standalone().await?;
         udf::register_financial_udfs(&ctx);
 
         info!("ReconciliationEngine (distributed/Ballista standalone) initialized");
