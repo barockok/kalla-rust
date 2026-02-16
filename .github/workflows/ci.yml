@@ -195,3 +195,83 @@ jobs:
           echo "Worker health: $STATUS"
           # Verify the worker is running in single mode
           curl -sf http://localhost:9090/health
+
+  # ===== Benchmarks =====
+  benchmark:
+    name: Benchmark
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, '[perform-benchmark]')
+    needs: [rust-test]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install psycopg2-binary
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+
+      - name: Build worker (release)
+        run: cargo build --release --bin kalla-worker
+
+      - name: Start worker
+        env:
+          RUST_LOG: info
+          STAGING_PATH: /tmp/kalla-staging
+        run: |
+          mkdir -p /tmp/kalla-staging
+          ./target/release/kalla-worker &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9090/health && break || sleep 1
+          done
+
+      - name: Run benchmarks
+        env:
+          PG_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          STAGING_PATH: /tmp/kalla-staging
+        run: bash benchmarks/run_benchmark.sh
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results
+          path: benchmarks/results/
+
+      - name: Append report to summary
+        if: always()
+        run: |
+          LATEST=$(ls -t benchmarks/results/report-*.md 2>/dev/null | head -1)
+          if [ -n "$LATEST" ]; then
+            cat "$LATEST" >> "$GITHUB_STEP_SUMMARY"
+          fi
