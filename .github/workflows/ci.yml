@@ -250,7 +250,7 @@ jobs:
           STAGING_PATH: /tmp/kalla-staging
         run: |
           mkdir -p /tmp/kalla-staging
-          ./target/release/kalla-worker &
+          ./target/release/kalla-worker > /tmp/kalla-worker-bench.log 2>&1 &
           for i in $(seq 1 30); do
             curl -sf http://localhost:9090/health && break || sleep 1
           done

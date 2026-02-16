@@ -16,7 +16,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKER_URL="${WORKER_URL:-http://localhost:9090}"
 CALLBACK_PORT="${CALLBACK_PORT:-9099}"
-CALLBACK_URL="http://localhost:${CALLBACK_PORT}"
+CALLBACK_URL="http://127.0.0.1:${CALLBACK_PORT}"
 PG_URL="${PG_URL:-postgresql://postgres:postgres@localhost:5432/postgres}"
 STAGING_PATH="${STAGING_PATH:-/tmp/kalla-staging}"
 TIMEOUT_SECS=300
@@ -183,11 +183,12 @@ PYEOF
         continue
     fi
 
-    # Step 5: Poll callback server for completion
+    # Step 5: Poll for completion via callback server OR worker log
     echo "  Waiting for completion (timeout ${TIMEOUT_SECS}s)..."
     ELAPSED=0
     PEAK_RSS=$BASELINE_RSS
     STATUS="timeout"
+    WORKER_LOG="/tmp/kalla-worker-bench.log"
 
     while [ "$ELAPSED" -lt "$TIMEOUT_SECS" ]; do
         sleep "$POLL_INTERVAL"
@@ -199,8 +200,8 @@ PYEOF
             PEAK_RSS=$CURRENT_RSS
         fi
 
-        # Check callback status
-        CB_STATUS=$(curl -s "http://localhost:${CALLBACK_PORT}/status" 2>/dev/null || echo '{"status":"waiting"}')
+        # Method 1: Check callback server
+        CB_STATUS=$(curl -s --connect-timeout 1 "http://127.0.0.1:${CALLBACK_PORT}/status" 2>/dev/null || echo '{"status":"waiting"}')
         CURRENT=$(echo "$CB_STATUS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','waiting'))" 2>/dev/null || echo "waiting")
 
         if [ "$CURRENT" = "complete" ]; then
@@ -208,6 +209,17 @@ PYEOF
             break
         elif [ "$CURRENT" = "error" ]; then
             STATUS="error"
+            break
+        fi
+
+        # Method 2: Check worker log for run completion (fallback if callback unreachable)
+        if grep -q "Run ${RUN_ID} completed" "$WORKER_LOG" 2>/dev/null; then
+            STATUS="complete"
+            echo "  (detected via worker log)"
+            break
+        elif grep -q "Run ${RUN_ID} failed" "$WORKER_LOG" 2>/dev/null; then
+            STATUS="error"
+            echo "  (detected via worker log)"
             break
         fi
     done

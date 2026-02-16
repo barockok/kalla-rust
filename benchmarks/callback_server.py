@@ -75,10 +75,14 @@ class CallbackHandler(BaseHTTPRequestHandler):
         pass
 
 
+class ReusableHTTPServer(HTTPServer):
+    allow_reuse_address = True
+
+
 def main():
     global _server_ref
     port = int(os.environ.get("CALLBACK_PORT", "9099"))
-    server = HTTPServer(("127.0.0.1", port), CallbackHandler)
+    server = ReusableHTTPServer(("0.0.0.0", port), CallbackHandler)
     _server_ref = server
     print(f"Callback server listening on :{port}", file=sys.stderr)
     try:
