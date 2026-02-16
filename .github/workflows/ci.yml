@@ -198,12 +198,44 @@ jobs:
           # Verify the worker is running in single mode
           curl -sf http://localhost:9090/health
 
+  # ===== Benchmark Build (shared) =====
+  benchmark-build:
+    name: Benchmark Build
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, '[perform-benchmark]')
+    needs: [rust-test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+
+      - name: Build worker (release)
+        run: cargo build --release --bin kalla-worker
+
+      - name: Upload worker binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: kalla-worker-binary
+          path: target/release/kalla-worker
+          retention-days: 1
+
   # ===== Benchmarks =====
   benchmark:
     name: Benchmark
     runs-on: ubuntu-latest
-    if: contains(github.event.head_commit.message, '[perform-benchmark]')
-    needs: [rust-test]
+    needs: [benchmark-build]
     services:
       postgres:
         image: postgres:16
@@ -229,22 +261,14 @@ jobs:
       - name: Install Python dependencies
         run: pip install psycopg2-binary
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry & build
-        uses: actions/cache@v4
+      - name: Download worker binary
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-bench-
+          name: kalla-worker-binary
+          path: target/release/
 
-      - name: Build worker (release)
-        run: cargo build --release --bin kalla-worker
+      - name: Make binary executable
+        run: chmod +x target/release/kalla-worker
 
       - name: Start worker
         env:
@@ -282,8 +306,7 @@ jobs:
   benchmark-scaled:
     name: Benchmark (Scaled)
     runs-on: ubuntu-latest
-    if: contains(github.event.head_commit.message, '[perform-benchmark]')
-    needs: [rust-test]
+    needs: [benchmark-build]
     services:
       postgres:
         image: postgres:16
@@ -318,22 +341,14 @@ jobs:
       - name: Install Python dependencies
         run: pip install psycopg2-binary nats-py
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry & build
-        uses: actions/cache@v4
+      - name: Download worker binary
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-bench-scaled-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-bench-scaled-
+          name: kalla-worker-binary
+          path: target/release/
 
-      - name: Build worker (release)
-        run: cargo build --release --bin kalla-worker
+      - name: Make binary executable
+        run: chmod +x target/release/kalla-worker
 
       - name: Init DB schema
         run: psql "$DATABASE_URL" -f scripts/init.sql
