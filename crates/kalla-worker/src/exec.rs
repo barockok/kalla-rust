@@ -179,9 +179,11 @@ pub async fn handle_http_job(
     );
 
     // Derive unmatched using LEFT ANTI JOIN on primary keys
+    // Use source ordering from job.sources (Vec preserves order: left, right)
+    let source_aliases: Vec<&str> = job.sources.iter().map(|s| s.alias.as_str()).collect();
     let unmatched_start = Instant::now();
     let (unmatched_left, unmatched_right) =
-        count_unmatched(&engine, &job.match_sql, &job.primary_keys).await?;
+        count_unmatched(&engine, &job.match_sql, &job.primary_keys, &source_aliases).await?;
     let unmatched_ms = unmatched_start.elapsed().as_millis();
 
     info!(
@@ -275,20 +277,20 @@ async fn register_source(
 }
 
 /// Count unmatched records by running LEFT ANTI JOIN queries using primary keys.
+///
+/// `source_aliases` provides deterministic left/right ordering (from job.sources Vec).
 async fn count_unmatched(
     engine: &ReconciliationEngine,
     match_sql: &str,
     primary_keys: &HashMap<String, Vec<String>>,
+    source_aliases: &[&str],
 ) -> Result<(u64, u64)> {
-    // We need to know the source aliases from the primary_keys map.
-    // The first two entries represent left and right sources.
-    let aliases: Vec<&String> = primary_keys.keys().collect();
-    if aliases.len() < 2 {
+    if source_aliases.len() < 2 {
         return Ok((0, 0));
     }
 
-    let left_alias = aliases[0];
-    let right_alias = aliases[1];
+    let left_alias = source_aliases[0];
+    let right_alias = source_aliases[1];
     let left_pks = &primary_keys[left_alias];
     let right_pks = &primary_keys[right_alias];
 
@@ -296,28 +298,37 @@ async fn count_unmatched(
         return Ok((0, 0));
     }
 
-    // Build LEFT ANTI JOIN for unmatched left:
-    // SELECT l.* FROM left_alias l WHERE l.pk NOT IN (SELECT left_pk FROM (match_sql) AS matched)
+    // Build NOT IN subquery for unmatched counts.
+    // The match_sql result is aliased as _matched — column refs inside must be
+    // unqualified since the original table aliases don't exist in the subquery result.
     let left_pk = &left_pks[0];
     let unmatched_left_sql = format!(
         "SELECT COUNT(*) AS cnt FROM \"{left_alias}\" \
          WHERE \"{left_pk}\" NOT IN \
-         (SELECT \"{left_alias}\".\"{left_pk}\" FROM ({match_sql}) AS _matched)"
+         (SELECT \"{left_pk}\" FROM ({match_sql}) AS _matched)"
     );
 
     let right_pk = &right_pks[0];
     let unmatched_right_sql = format!(
         "SELECT COUNT(*) AS cnt FROM \"{right_alias}\" \
          WHERE \"{right_pk}\" NOT IN \
-         (SELECT \"{right_alias}\".\"{right_pk}\" FROM ({match_sql}) AS _matched)"
+         (SELECT \"{right_pk}\" FROM ({match_sql}) AS _matched)"
     );
 
-    let unmatched_left = run_count_query(engine, &unmatched_left_sql)
-        .await
-        .unwrap_or(0);
-    let unmatched_right = run_count_query(engine, &unmatched_right_sql)
-        .await
-        .unwrap_or(0);
+    let unmatched_left = match run_count_query(engine, &unmatched_left_sql).await {
+        Ok(count) => count,
+        Err(e) => {
+            warn!("Unmatched left query failed: {}", e);
+            0
+        }
+    };
+    let unmatched_right = match run_count_query(engine, &unmatched_right_sql).await {
+        Ok(count) => count,
+        Err(e) => {
+            warn!("Unmatched right query failed: {}", e);
+            0
+        }
+    };
 
     Ok((unmatched_left, unmatched_right))
 }

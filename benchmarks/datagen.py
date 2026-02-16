@@ -56,20 +56,37 @@ def generate_invoices(n: int) -> list[dict]:
     return invoices
 
 
-def generate_payments(n: int, invoices: list[dict]) -> list[dict]:
+def generate_payments(n: int, invoices: list[dict], match_rate: float = 0.75) -> list[dict]:
     """Generate payment rows for *invoices*.
 
-    Distribution (relative to *n* = len(invoices)):
+    *match_rate* controls the fraction of invoices that get a matching payment
+    (exact or tolerance).  The remainder are orphans.
+
+    When match_rate == 1.0 every invoice gets a payment (no orphans).
+
+    Default distribution (match_rate=0.75, relative to *n* = len(invoices)):
       - 60 % exact matches
       - 15 % tolerance matches (amount ±2 %)
       - 5 %  duplicates (two half-amount payments)
       - remainder left-side orphans (no payment generated)
       - 10 % extra right-side orphans (payment with no invoice)
     """
-    exact_count = int(n * 0.60)
-    tolerance_count = int(n * 0.15)
-    duplicate_count = int(n * 0.05)
-    orphan_right_count = int(n * 0.10)
+    if match_rate >= 1.0:
+        exact_count = n
+        tolerance_count = 0
+        duplicate_count = 0
+        orphan_right_count = 0
+    elif match_rate != 0.75:
+        # Custom match rate: all exact matches, no tolerance/duplicates
+        exact_count = int(n * match_rate)
+        tolerance_count = 0
+        duplicate_count = 0
+        orphan_right_count = 0
+    else:
+        exact_count = int(n * 0.60)
+        tolerance_count = int(n * 0.15)
+        duplicate_count = int(n * 0.05)
+        orphan_right_count = int(n * 0.10)
 
     payments: list[dict] = []
     pay_idx = 1

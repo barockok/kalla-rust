@@ -17,12 +17,13 @@ def main():
     parser = argparse.ArgumentParser(description="Generate benchmark CSV data")
     parser.add_argument("--rows", type=int, required=True, help="Number of invoice rows")
     parser.add_argument("--output-dir", required=True, help="Directory to write CSVs into")
+    parser.add_argument("--match-rate", type=float, default=0.75, help="Match rate 0.0-1.0 (default 0.75)")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
 
     invoices = generate_invoices(args.rows)
-    payments = generate_payments(args.rows, invoices)
+    payments = generate_payments(args.rows, invoices, match_rate=args.match_rate)
 
     inv_path = os.path.join(args.output_dir, "invoices.csv")
     pay_path = os.path.join(args.output_dir, "payments.csv")

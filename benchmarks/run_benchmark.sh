@@ -88,6 +88,7 @@ for scenario_file in "${SCENARIOS[@]}"; do
     ROWS=$(json_field "rows" "$scenario_file")
     MATCH_SQL=$(json_field "match_sql" "$scenario_file")
     STAGE_TO_PARQUET=$(json_field "stage_to_parquet" "$scenario_file")
+    MATCH_RATE=$(json_field "match_rate" "$scenario_file")
 
     echo "=== Scenario: ${SCENARIO_NAME} (${ROWS} rows, ${SOURCE_TYPE}) ==="
 
@@ -95,12 +96,17 @@ for scenario_file in "${SCENARIOS[@]}"; do
     mkdir -p "${DATA_DIR}"
 
     # Step 1: Generate / seed data
+    MATCH_RATE_ARG=""
+    if [ -n "$MATCH_RATE" ] && [ "$MATCH_RATE" != "" ]; then
+        MATCH_RATE_ARG="--match-rate $MATCH_RATE"
+    fi
+
     if [ "$SOURCE_TYPE" = "csv" ]; then
         echo "  Generating CSV data..."
-        python3 "${SCRIPT_DIR}/generate_data.py" --rows "$ROWS" --output-dir "$DATA_DIR"
+        python3 "${SCRIPT_DIR}/generate_data.py" --rows "$ROWS" --output-dir "$DATA_DIR" $MATCH_RATE_ARG
     elif [ "$SOURCE_TYPE" = "postgres" ]; then
         echo "  Seeding Postgres..."
-        python3 "${SCRIPT_DIR}/seed_postgres.py" --rows "$ROWS" --pg-url "$PG_URL"
+        python3 "${SCRIPT_DIR}/seed_postgres.py" --rows "$ROWS" --pg-url "$PG_URL" $MATCH_RATE_ARG
     fi
 
     # Step 2: Record baseline

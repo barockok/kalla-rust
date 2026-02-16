@@ -69,10 +69,11 @@ def main():
     parser = argparse.ArgumentParser(description="Seed Postgres with benchmark data")
     parser.add_argument("--rows", type=int, required=True, help="Number of invoice rows")
     parser.add_argument("--pg-url", required=True, help="PostgreSQL connection URL")
+    parser.add_argument("--match-rate", type=float, default=0.75, help="Match rate 0.0-1.0 (default 0.75)")
     args = parser.parse_args()
 
     invoices = generate_invoices(args.rows)
-    payments = generate_payments(args.rows, invoices)
+    payments = generate_payments(args.rows, invoices, match_rate=args.match_rate)
 
     conn = psycopg2.connect(args.pg_url)
     try:
