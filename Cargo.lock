@@ -2513,6 +2513,7 @@ dependencies = [
  "arrow",
  "async-nats",
  "axum",
+ "ballista",
  "chrono",
  "datafusion",
  "futures",

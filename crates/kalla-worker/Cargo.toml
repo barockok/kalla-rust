@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 kalla-core.workspace = true
 kalla-connectors.workspace = true
+ballista.workspace = true
 kalla-recipe.workspace = true
 kalla-evidence.workspace = true
 datafusion.workspace = true
