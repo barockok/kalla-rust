@@ -106,11 +106,17 @@ pub async fn handle_http_job(
             // Deregister original table and re-register from Parquet
             engine.context().deregister_table(alias)?;
             engine.register_parquet(alias, &parquet_path).await?;
-            info!("Run {}: staged '{}' to Parquet ({})", run_id, alias, parquet_path);
+            info!(
+                "Run {}: staged '{}' to Parquet ({})",
+                run_id, alias, parquet_path
+            );
         }
 
         let parquet_staging_ms = parquet_staging_start.elapsed().as_millis();
-        info!("Run {}: parquet staging completed in {}ms", run_id, parquet_staging_ms);
+        info!(
+            "Run {}: parquet staging completed in {}ms",
+            run_id, parquet_staging_ms
+        );
     }
 
     // Report matching started
@@ -167,7 +173,10 @@ pub async fn handle_http_job(
     }
 
     let matching_ms = matching_start.elapsed().as_millis();
-    info!("Run {}: {} matched records in {}ms", run_id, matched_count, matching_ms);
+    info!(
+        "Run {}: {} matched records in {}ms",
+        run_id, matched_count, matching_ms
+    );
 
     // Derive unmatched using LEFT ANTI JOIN on primary keys
     let unmatched_start = Instant::now();
