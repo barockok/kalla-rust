@@ -115,6 +115,74 @@ describe('ChatMessage', () => {
     render(<ChatMessage message={makeMessage('user', 'u')} />);
     expect(screen.getByText('U')).toBeInTheDocument();
   });
+
+  it('renders file attachments when message has files', () => {
+    const files = [
+      { upload_id: 'u1', filename: 'payments.csv', s3_uri: 's3://b/k1', columns: ['id', 'amount'], row_count: 10 },
+      { upload_id: 'u2', filename: 'invoices.csv', s3_uri: 's3://b/k2', columns: ['inv_id'], row_count: 5 },
+    ];
+    const message = makeMessage('user', 'Here are my files', { files });
+    render(<ChatMessage message={message} />);
+    expect(screen.getByText('payments.csv')).toBeInTheDocument();
+    expect(screen.getByText('invoices.csv')).toBeInTheDocument();
+  });
+
+  it('renders result_summary card with counts', () => {
+    const message: ChatMessageType = {
+      role: 'agent',
+      segments: [{
+        type: 'card',
+        card_type: 'result_summary',
+        card_id: 'rs-1',
+        data: {
+          matched_count: 42,
+          unmatched_left_count: 8,
+          unmatched_right_count: 3,
+        },
+      }],
+      timestamp: '2025-01-15T10:30:00Z',
+    };
+    render(<ChatMessage message={message} />);
+    // ResultSummary component renders counts
+    expect(screen.getByText('42')).toBeInTheDocument();
+  });
+
+  it('renders progress card with run_id', () => {
+    mockGetRun.mockReturnValue(new Promise(() => {})); // never resolves
+    const message: ChatMessageType = {
+      role: 'agent',
+      segments: [{
+        type: 'card',
+        card_type: 'progress',
+        card_id: 'p-1',
+        data: { run_id: 'run-1' },
+      }],
+      timestamp: '2025-01-15T10:30:00Z',
+    };
+    render(<ChatMessage message={message} />);
+    expect(screen.getByTestId('progress-spinner')).toBeInTheDocument();
+  });
+
+  it('renders upload_request card when sessionId and onFileUploaded are provided', () => {
+    const message: ChatMessageType = {
+      role: 'agent',
+      segments: [{
+        type: 'card',
+        card_type: 'upload_request',
+        card_id: 'ur-1',
+        data: { message: 'Upload your data' },
+      }],
+      timestamp: '2025-01-15T10:30:00Z',
+    };
+    render(
+      <ChatMessage
+        message={message}
+        sessionId="sess-1"
+        onFileUploaded={jest.fn()}
+      />,
+    );
+    expect(screen.getByText('Upload your data')).toBeInTheDocument();
+  });
 });
 
 // ---------------------------------------------------------------------------

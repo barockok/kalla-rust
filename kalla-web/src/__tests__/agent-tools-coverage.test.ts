@@ -567,5 +567,75 @@ describe('agent-tools coverage', () => {
       const result = await executeTool('run_full', { recipe_id: 'recipe-2' }, makeSession());
       expect(result).toEqual(data);
     });
+
+    test('request_file_upload returns card data', async () => {
+      const result = await executeTool(
+        'request_file_upload',
+        { message: 'Please upload your CSV' },
+        makeSession(),
+      );
+      expect(result).toEqual({ card_type: 'upload_request', message: 'Please upload your CSV' });
+    });
+
+    test('load_scoped with default limit', async () => {
+      const data = { alias: 'inv', columns: [], rows: [], total_rows: 0, preview_rows: 0 };
+      mockFetch.mockResolvedValueOnce(okJson(data));
+
+      const result = await executeTool(
+        'load_scoped',
+        { alias: 'inv', conditions: [{ column: 'date', op: 'gte', value: '2024-01-01' }] },
+        makeSession(),
+      );
+      expect(result).toEqual(data);
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(body.limit).toBe(200);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 12. getSourcePreview with s3_uri
+  // -------------------------------------------------------------------------
+  describe('getSourcePreview s3_uri path', () => {
+    test('uses upload preview endpoint and normalizes response', async () => {
+      mockFetch.mockResolvedValueOnce(okJson({
+        columns: ['payment_id', 'amount'],
+        row_count: 3,
+        sample: [
+          { payment_id: '1', amount: '100' },
+          { payment_id: '2', amount: '200' },
+        ],
+      }));
+
+      const result = await getSourcePreview(undefined, 10, 's3://bucket/key.csv');
+
+      expect(result.alias).toBe('s3://bucket/key.csv');
+      expect(result.columns).toEqual([
+        { name: 'payment_id', data_type: 'string', nullable: true },
+        { name: 'amount', data_type: 'string', nullable: true },
+      ]);
+      expect(result.rows).toEqual([['1', '100'], ['2', '200']]);
+      expect(result.total_rows).toBe(3);
+      expect(result.preview_rows).toBe(2);
+
+      // Verify it called the upload preview endpoint
+      const [url, opts] = mockFetch.mock.calls[0];
+      expect(url).toContain('/api/uploads/preview');
+      expect(opts.method).toBe('POST');
+      const body = JSON.parse(opts.body);
+      expect(body.s3_uri).toBe('s3://bucket/key.csv');
+    });
+
+    test('s3_uri error throws', async () => {
+      mockFetch.mockResolvedValueOnce(failRes('Not Found'));
+      await expect(getSourcePreview(undefined, 10, 's3://bad/path')).rejects.toThrow(
+        'Failed to preview uploaded file: Not Found',
+      );
+    });
+
+    test('throws when neither alias nor s3_uri provided', async () => {
+      await expect(getSourcePreview(undefined, 10, undefined)).rejects.toThrow(
+        'Either alias or s3_uri must be provided',
+      );
+    });
   });
 });
