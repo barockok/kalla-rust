@@ -7,6 +7,7 @@ description = "Core DataFusion engine and UDFs for Kalla reconciliation"
 
 [dependencies]
 datafusion.workspace = true
+ballista.workspace = true
 arrow.workspace = true
 tokio.workspace = true
 thiserror.workspace = true

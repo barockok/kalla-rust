@@ -17,6 +17,7 @@ repository = "https://github.com/your-org/kalla"
 [workspace.dependencies]
 # DataFusion ecosystem
 datafusion = "44"
+ballista = { version = "44", default-features = false, features = ["standalone"] }
 arrow = "53"
 parquet = { version = "53", features = ["async"] }
 
