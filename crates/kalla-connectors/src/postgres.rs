@@ -194,7 +194,7 @@ pub fn build_scoped_query(
 }
 
 /// Convert PostgreSQL type name to Arrow DataType
-fn pg_type_to_arrow(pg_type: &str) -> DataType {
+pub(crate) fn pg_type_to_arrow(pg_type: &str) -> DataType {
     match pg_type.to_uppercase().as_str() {
         "INT2" | "SMALLINT" => DataType::Int16,
         "INT4" | "INTEGER" | "INT" => DataType::Int32,
@@ -215,7 +215,7 @@ fn pg_type_to_arrow(pg_type: &str) -> DataType {
 }
 
 /// Convert PostgreSQL rows to Arrow RecordBatch
-fn rows_to_record_batch(rows: &[PgRow], schema: Arc<Schema>) -> Result<RecordBatch> {
+pub(crate) fn rows_to_record_batch(rows: &[PgRow], schema: Arc<Schema>) -> Result<RecordBatch> {
     use arrow::array::*;
 
     let mut columns: Vec<ArrayRef> = Vec::new();

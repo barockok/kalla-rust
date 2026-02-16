@@ -18,9 +18,9 @@ serde.workspace = true
 url.workspace = true
 async-trait = "0.1"
 object_store = { version = "0.11", features = ["aws"] }
+futures = "0.3"
 
 [dev-dependencies]
 serde_json = { workspace = true }
 parquet.workspace = true
 tempfile = "3"
-futures = "0.3"

@@ -8,11 +8,13 @@
 pub mod bigquery;
 pub mod filter;
 pub mod postgres;
+pub mod postgres_partitioned;
 pub mod s3;
 
 pub use bigquery::BigQueryConnector;
 pub use filter::{build_where_clause, FilterCondition, FilterOp, FilterValue};
 pub use postgres::PostgresConnector;
+pub use postgres_partitioned::PostgresPartitionedTable;
 pub use s3::{S3Config, S3Connector};
 
 use async_trait::async_trait;

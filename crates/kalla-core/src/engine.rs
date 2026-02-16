@@ -495,7 +495,10 @@ mod tests {
         let engine = ReconciliationEngine::new_distributed().await.unwrap();
         engine.register_csv("dist_t", &path).await.unwrap();
 
-        let df = engine.sql("SELECT COUNT(*) AS cnt FROM dist_t").await.unwrap();
+        let df = engine
+            .sql("SELECT COUNT(*) AS cnt FROM dist_t")
+            .await
+            .unwrap();
         let batches = df.collect().await.unwrap();
         let cnt = batches[0]
             .column(0)
