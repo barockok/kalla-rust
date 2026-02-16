@@ -169,6 +169,7 @@ async fn handle_job(
             ref recipe_json,
             ref staged_sources,
             ref callback_url,
+            ref source_uris,
         } => {
             claim_job(pool, job_id, &config.worker_id).await?;
             let _heartbeat = spawn_heartbeat(
@@ -184,6 +185,7 @@ async fn handle_job(
                 recipe_json,
                 staged_sources,
                 callback_url.as_deref(),
+                source_uris.as_deref(),
             )
             .await?;
 

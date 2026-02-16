@@ -89,8 +89,13 @@ def start_callback_listener(result_file: str) -> tuple[subprocess.Popen, int]:
 
 def insert_jobs(pg_url: str, run_id: str, staging_bucket: str,
                 match_sql: str, source_pg_url: str,
-                callback_url: str | None = None):
-    """Insert stage_plan + exec jobs into the jobs table."""
+                callback_url: str | None = None,
+                direct_exec: bool = False):
+    """Insert stage_plan + exec jobs into the jobs table.
+
+    When *direct_exec* is True, skip StagePlan jobs and include source_uris
+    in the Exec payload so the worker reads directly from the source.
+    """
     conn = psycopg2.connect(pg_url)
 
     # Build source URIs (worker expects postgres:// not postgresql://)
@@ -102,7 +107,7 @@ def insert_jobs(pg_url: str, run_id: str, staging_bucket: str,
     right_job_id = str(uuid.uuid4())
     exec_job_id = str(uuid.uuid4())
 
-    # StagePlan payloads
+    # StagePlan payloads (only used when not direct_exec)
     left_stage = {
         "type": "StagePlan",
         "job_id": left_job_id,
@@ -120,7 +125,7 @@ def insert_jobs(pg_url: str, run_id: str, staging_bucket: str,
         "partition_key": None,
     }
 
-    # Exec payload — will be picked up after staging completes
+    # Exec payload — will be picked up after staging completes (or directly)
     exec_payload = {
         "type": "Exec",
         "job_id": exec_job_id,
@@ -153,33 +158,54 @@ def insert_jobs(pg_url: str, run_id: str, staging_bucket: str,
     }
     if callback_url:
         exec_payload["callback_url"] = callback_url
+    if direct_exec:
+        exec_payload["source_uris"] = [
+            {"alias": "left_src", "uri": left_uri},
+            {"alias": "right_src", "uri": right_uri},
+        ]
 
     try:
         with conn.cursor() as cur:
-            for job_id, payload, jtype in [
-                (left_job_id, left_stage, "stage_plan"),
-                (right_job_id, right_stage, "stage_plan"),
-                (exec_job_id, exec_payload, "exec"),
-            ]:
+            if direct_exec:
+                # Direct exec: only insert the exec job
                 cur.execute(
                     "INSERT INTO jobs (job_id, run_id, job_type, status, payload) "
                     "VALUES (%s, %s, %s, 'pending', %s)",
-                    (job_id, run_id, jtype, json.dumps(payload)),
+                    (exec_job_id, run_id, "exec", json.dumps(exec_payload)),
                 )
-            conn.commit()
-        print(f"Inserted 3 jobs for run {run_id}")
+                conn.commit()
+                print(f"Inserted 1 direct-exec job for run {run_id}")
+            else:
+                for job_id, payload, jtype in [
+                    (left_job_id, left_stage, "stage_plan"),
+                    (right_job_id, right_stage, "stage_plan"),
+                    (exec_job_id, exec_payload, "exec"),
+                ]:
+                    cur.execute(
+                        "INSERT INTO jobs (job_id, run_id, job_type, status, payload) "
+                        "VALUES (%s, %s, %s, 'pending', %s)",
+                        (job_id, run_id, jtype, json.dumps(payload)),
+                    )
+                conn.commit()
+                print(f"Inserted 3 jobs for run {run_id}")
     finally:
         conn.close()
 
-    return left_stage, right_stage
+    return left_stage, right_stage, exec_payload
 
 
-async def publish_to_nats(nats_url: str, left_stage: dict, right_stage: dict):
-    """Publish StagePlan messages to NATS JetStream."""
+async def publish_to_nats(nats_url: str, left_stage: dict, right_stage: dict,
+                         direct_exec: bool = False,
+                         exec_payload: dict | None = None):
+    """Publish job messages to NATS JetStream.
+
+    When *direct_exec* is True, publish the Exec payload directly to
+    ``kalla.exec`` instead of the StagePlan messages.
+    """
     nc = await nats.connect(nats_url)
     js = nc.jetstream()
 
-    # Ensure the stream exists
+    # Ensure streams exist
     try:
         await js.find_stream_name_by_subject("kalla.stage")
     except Exception:
@@ -198,9 +224,13 @@ async def publish_to_nats(nats_url: str, left_stage: dict, right_stage: dict):
             retention="workqueue",
         )
 
-    await js.publish("kalla.stage", json.dumps(left_stage).encode())
-    await js.publish("kalla.stage", json.dumps(right_stage).encode())
-    print("Published 2 StagePlan messages to NATS kalla.stage")
+    if direct_exec and exec_payload is not None:
+        await js.publish("kalla.exec", json.dumps(exec_payload).encode())
+        print("Published 1 Exec message to NATS kalla.exec (direct exec)")
+    else:
+        await js.publish("kalla.stage", json.dumps(left_stage).encode())
+        await js.publish("kalla.stage", json.dumps(right_stage).encode())
+        print("Published 2 StagePlan messages to NATS kalla.stage")
 
     await nc.close()
 
@@ -242,6 +272,8 @@ def main():
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--skip-seed", action="store_true",
                         help="Skip data seeding (assume already seeded)")
+    parser.add_argument("--direct-exec", action="store_true",
+                        help="Skip staging; send source_uris in Exec for direct reading")
     parser.add_argument("--json-output", action="store_true",
                         help="Output results as JSON")
     args = parser.parse_args()
@@ -265,15 +297,20 @@ def main():
         # Step 3: Insert jobs into Postgres (with callback_url in exec payload)
         print("Inserting jobs...")
         start_time = time.time()
-        left_stage, right_stage = insert_jobs(
+        left_stage, right_stage, exec_payload = insert_jobs(
             args.pg_url, run_id, args.staging_bucket,
             args.match_sql, args.pg_url,
             callback_url=callback_url,
+            direct_exec=args.direct_exec,
         )
 
         # Step 4: Publish to NATS
         print("Publishing to NATS...")
-        asyncio.run(publish_to_nats(args.nats_url, left_stage, right_stage))
+        asyncio.run(publish_to_nats(
+            args.nats_url, left_stage, right_stage,
+            direct_exec=args.direct_exec,
+            exec_payload=exec_payload,
+        ))
 
         # Step 5: Wait for callback
         print("Waiting for worker callback...")

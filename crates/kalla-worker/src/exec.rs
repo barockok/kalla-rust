@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use crate::config::WorkerConfig;
 use crate::http_api::{CallbackClient, JobRequest};
-use crate::queue::StagedSource;
+use crate::queue::{SourceUri, StagedSource};
 
 pub struct ExecResult {
     pub matched: u64,
@@ -391,6 +391,7 @@ pub async fn handle_exec(
     recipe_json: &str,
     staged_sources: &[StagedSource],
     callback_url: Option<&str>,
+    source_uris: Option<&[SourceUri]>,
 ) -> Result<ExecResult> {
     let use_distributed = std::env::var("BALLISTA_ENABLED")
         .map(|v| v == "true" || v == "1")
@@ -401,10 +402,26 @@ pub async fn handle_exec(
             "Run {}: using distributed (Ballista) execution path",
             run_id
         );
-        handle_exec_distributed(pool, run_id, job_id, recipe_json, staged_sources, callback_url)
-            .await
+        handle_exec_distributed(
+            pool,
+            run_id,
+            job_id,
+            recipe_json,
+            staged_sources,
+            callback_url,
+            source_uris,
+        )
+        .await
     } else {
-        handle_exec_staged(pool, run_id, job_id, recipe_json, staged_sources, callback_url).await
+        handle_exec_staged(
+            pool,
+            run_id,
+            job_id,
+            recipe_json,
+            staged_sources,
+            callback_url,
+        )
+        .await
     }
 }
 
@@ -574,32 +591,104 @@ async fn handle_exec_distributed(
     recipe_json: &str,
     staged_sources: &[StagedSource],
     callback_url: Option<&str>,
+    source_uris: Option<&[SourceUri]>,
 ) -> Result<ExecResult> {
     let recipe: Recipe = serde_json::from_str(recipe_json)?;
 
     let engine = ReconciliationEngine::new_distributed().await?;
     info!("Run {}: Ballista distributed engine created", run_id);
 
-    // Register all sources with the distributed engine.
-    // Currently staged_sources point to S3 Parquet files; the distributed path
-    // will benefit from direct source reading once source_uris are added (Task 6).
-    for source in staged_sources {
-        if source.s3_path.starts_with("s3://") && source.s3_path.ends_with(".csv") {
-            let connector = kalla_connectors::S3Connector::from_env()?;
-            connector
-                .register_csv_listing_table(engine.context(), &source.alias, &source.s3_path)
+    // Register sources: prefer direct source URIs when available,
+    // otherwise fall back to staged Parquet/CSV files.
+    if let Some(uris) = source_uris {
+        let num_partitions = std::env::var("BALLISTA_PARTITIONS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4);
+
+        for source_uri in uris {
+            if source_uri.uri.starts_with("postgres://")
+                || source_uri.uri.starts_with("postgresql://")
+            {
+                let parsed = url::Url::parse(&source_uri.uri)?;
+                let table_name = parsed
+                    .query_pairs()
+                    .find(|(k, _)| k == "table")
+                    .map(|(_, v)| v.to_string())
+                    .ok_or_else(|| anyhow::anyhow!("Missing 'table' query parameter"))?;
+                let mut conn_url = parsed.clone();
+                conn_url.set_query(None);
+
+                kalla_connectors::postgres_partitioned::register(
+                    engine.context(),
+                    &source_uri.alias,
+                    conn_url.as_str(),
+                    &table_name,
+                    num_partitions,
+                    None,
+                )
                 .await?;
-        } else if source.s3_path.ends_with(".parquet") || source.s3_path.contains("/staging/") {
-            engine
-                .register_parquet(&source.alias, &source.s3_path)
+                info!(
+                    "Run {}: registered partitioned Postgres table '{}' ({} partitions)",
+                    run_id, source_uri.alias, num_partitions
+                );
+            } else if source_uri.uri.starts_with("s3://") && source_uri.uri.ends_with(".csv") {
+                let s3_config = kalla_connectors::S3Config::from_env()?;
+                kalla_connectors::csv_partitioned::register(
+                    engine.context(),
+                    &source_uri.alias,
+                    &source_uri.uri,
+                    num_partitions,
+                    s3_config,
+                )
                 .await?;
-        } else if source.s3_path.ends_with(".csv") {
-            engine.register_csv(&source.alias, &source.s3_path).await?;
+                info!(
+                    "Run {}: registered byte-range CSV table '{}' ({} partitions)",
+                    run_id, source_uri.alias, num_partitions
+                );
+            } else if source_uri.uri.ends_with(".parquet") || source_uri.uri.contains("/staging/") {
+                engine
+                    .register_parquet(&source_uri.alias, &source_uri.uri)
+                    .await?;
+                info!(
+                    "Run {}: registered source '{}' from {} (distributed)",
+                    run_id, source_uri.alias, source_uri.uri
+                );
+            } else if source_uri.uri.ends_with(".csv") {
+                engine
+                    .register_csv(&source_uri.alias, &source_uri.uri)
+                    .await?;
+                info!(
+                    "Run {}: registered source '{}' from {} (distributed)",
+                    run_id, source_uri.alias, source_uri.uri
+                );
+            } else {
+                anyhow::bail!(
+                    "Unsupported source URI format for direct exec: {}",
+                    source_uri.uri
+                );
+            }
         }
-        info!(
-            "Run {}: registered source '{}' from {} (distributed)",
-            run_id, source.alias, source.s3_path
-        );
+    } else {
+        // No source_uris — use staged_sources (existing logic)
+        for source in staged_sources {
+            if source.s3_path.starts_with("s3://") && source.s3_path.ends_with(".csv") {
+                let connector = kalla_connectors::S3Connector::from_env()?;
+                connector
+                    .register_csv_listing_table(engine.context(), &source.alias, &source.s3_path)
+                    .await?;
+            } else if source.s3_path.ends_with(".parquet") || source.s3_path.contains("/staging/") {
+                engine
+                    .register_parquet(&source.alias, &source.s3_path)
+                    .await?;
+            } else if source.s3_path.ends_with(".csv") {
+                engine.register_csv(&source.alias, &source.s3_path).await?;
+            }
+            info!(
+                "Run {}: registered source '{}' from {} (distributed)",
+                run_id, source.alias, source.s3_path
+            );
+        }
     }
 
     // Execute match SQL via the distributed engine

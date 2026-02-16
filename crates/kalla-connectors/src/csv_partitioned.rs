@@ -255,8 +255,7 @@ impl TableProvider for CsvByteRangeTable {
             None => Arc::clone(&self.schema),
         };
 
-        let mut partitions: Vec<Vec<arrow::array::RecordBatch>> =
-            Vec::with_capacity(ranges.len());
+        let mut partitions: Vec<Vec<arrow::array::RecordBatch>> = Vec::with_capacity(ranges.len());
 
         for (i, (start, end)) in ranges.iter().enumerate() {
             let is_first = i == 0;
@@ -266,30 +265,23 @@ impl TableProvider for CsvByteRangeTable {
                 range: Some(GetRange::Bounded(*start as usize..*end as usize)),
                 ..Default::default()
             };
-            let result = store
-                .get_opts(&path, opts)
-                .await
-                .map_err(|e| {
-                    datafusion::error::DataFusionError::Execution(format!(
-                        "failed to read S3 byte range {}..{}: {}",
-                        start, end, e
-                    ))
-                })?;
-            let raw_bytes = result
-                .bytes()
-                .await
-                .map_err(|e| {
-                    datafusion::error::DataFusionError::Execution(format!(
-                        "failed to read bytes for partition {}: {}",
-                        i, e
-                    ))
-                })?;
+            let result = store.get_opts(&path, opts).await.map_err(|e| {
+                datafusion::error::DataFusionError::Execution(format!(
+                    "failed to read S3 byte range {}..{}: {}",
+                    start, end, e
+                ))
+            })?;
+            let raw_bytes = result.bytes().await.map_err(|e| {
+                datafusion::error::DataFusionError::Execution(format!(
+                    "failed to read bytes for partition {}: {}",
+                    i, e
+                ))
+            })?;
 
             // Handle partial lines at partition boundaries
             let (_skipped, lines) = if is_first {
                 // First partition: skip the header line, keep data lines
-                let all_lines: Vec<&[u8]> =
-                    raw_bytes.split(|&b| b == b'\n').collect();
+                let all_lines: Vec<&[u8]> = raw_bytes.split(|&b| b == b'\n').collect();
                 let data_lines: Vec<&[u8]> = all_lines
                     .into_iter()
                     .skip(1) // skip header
@@ -347,13 +339,12 @@ impl TableProvider for CsvByteRangeTable {
                 // Apply projection if requested
                 let projected_batch = match projection {
                     Some(indices) => {
-                        let columns: Vec<_> =
-                            indices.iter().map(|&idx| batch.column(idx).clone()).collect();
-                        arrow::array::RecordBatch::try_new(
-                            Arc::clone(&projected_schema),
-                            columns,
-                        )
-                        .map_err(|e| {
+                        let columns: Vec<_> = indices
+                            .iter()
+                            .map(|&idx| batch.column(idx).clone())
+                            .collect();
+                        arrow::array::RecordBatch::try_new(Arc::clone(&projected_schema), columns)
+                            .map_err(|e| {
                             datafusion::error::DataFusionError::Execution(format!(
                                 "projection error in partition {}: {}",
                                 i, e

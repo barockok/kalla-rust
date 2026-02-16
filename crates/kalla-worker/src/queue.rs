@@ -43,6 +43,10 @@ pub enum JobMessage {
         /// Optional HTTP callback URL — worker POSTs results to `{url}/complete` on finish.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         callback_url: Option<String>,
+        /// Original source URIs for direct (non-staged) execution.
+        /// When present with BALLISTA_ENABLED, workers read directly from sources.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_uris: Option<Vec<SourceUri>>,
     },
 }
 
@@ -52,6 +56,13 @@ pub struct StagedSource {
     pub alias: String,
     pub s3_path: String,
     pub is_native: bool,
+}
+
+/// Original source URI for direct (non-staged) execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceUri {
+    pub alias: String,
+    pub uri: String,
 }
 
 /// NATS JetStream queue client.
@@ -271,6 +282,7 @@ mod tests {
                 },
             ],
             callback_url: None,
+            source_uris: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -319,6 +331,7 @@ mod tests {
             recipe_json: "{}".to_string(),
             staged_sources: vec![],
             callback_url: None,
+            source_uris: None,
         };
 
         let plan_json = serde_json::to_string(&plan).unwrap();
@@ -364,5 +377,45 @@ mod tests {
         assert_eq!(EXEC_STREAM, "KALLA_EXEC");
         assert_eq!(STAGE_SUBJECT, "kalla.stage");
         assert_eq!(EXEC_SUBJECT, "kalla.exec");
+    }
+
+    #[test]
+    fn exec_with_source_uris_roundtrip() {
+        let msg = JobMessage::Exec {
+            job_id: Uuid::nil(),
+            run_id: Uuid::nil(),
+            recipe_json: "{}".to_string(),
+            staged_sources: vec![],
+            callback_url: None,
+            source_uris: Some(vec![SourceUri {
+                alias: "invoices".to_string(),
+                uri: "postgres://localhost/db?table=invoices".to_string(),
+            }]),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("source_uris"));
+        let deserialized: JobMessage = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            JobMessage::Exec { source_uris, .. } => {
+                let uris = source_uris.unwrap();
+                assert_eq!(uris.len(), 1);
+                assert_eq!(uris[0].alias, "invoices");
+                assert_eq!(uris[0].uri, "postgres://localhost/db?table=invoices");
+            }
+            _ => panic!("Expected Exec"),
+        }
+    }
+
+    #[test]
+    fn exec_without_source_uris_backward_compat() {
+        // Old format without source_uris should deserialize fine
+        let json = r#"{"type":"Exec","job_id":"00000000-0000-0000-0000-000000000000","run_id":"00000000-0000-0000-0000-000000000000","recipe_json":"{}","staged_sources":[]}"#;
+        let msg: JobMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            JobMessage::Exec { source_uris, .. } => {
+                assert!(source_uris.is_none());
+            }
+            _ => panic!("Expected Exec"),
+        }
     }
 }
