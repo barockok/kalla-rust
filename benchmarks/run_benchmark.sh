@@ -7,36 +7,24 @@
 #
 # Environment:
 #   WORKER_URL    — worker base URL    (default: http://localhost:9090)
-#   CALLBACK_PORT — callback port      (default: 9099)
 #   PG_URL        — Postgres conn URL  (default: postgresql://postgres:postgres@localhost:5432/postgres)
 #   STAGING_PATH  — staging dir        (default: /tmp/kalla-staging)
+#   WORKER_LOG    — worker log file    (default: /tmp/kalla-worker-bench.log)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKER_URL="${WORKER_URL:-http://localhost:9090}"
-CALLBACK_PORT="${CALLBACK_PORT:-9099}"
-CALLBACK_URL="http://127.0.0.1:${CALLBACK_PORT}"
 PG_URL="${PG_URL:-postgresql://postgres:postgres@localhost:5432/postgres}"
 STAGING_PATH="${STAGING_PATH:-/tmp/kalla-staging}"
+WORKER_LOG="${WORKER_LOG:-/tmp/kalla-worker-bench.log}"
 TIMEOUT_SECS=300
 POLL_INTERVAL=1
 WORKER_PID=""
-CB_PID=""
 
 REPORT_DIR="${SCRIPT_DIR}/results"
 mkdir -p "${REPORT_DIR}"
 REPORT_FILE="${REPORT_DIR}/report-$(date +%Y%m%d-%H%M%S).md"
-
-# ---- Cleanup trap ----
-
-cleanup() {
-    if [ -n "$CB_PID" ] && kill -0 "$CB_PID" 2>/dev/null; then
-        kill "$CB_PID" 2>/dev/null || true
-        wait "$CB_PID" 2>/dev/null || true
-    fi
-}
-trap cleanup EXIT
 
 # ---- Collect scenario files ----
 
@@ -114,17 +102,12 @@ for scenario_file in "${SCENARIOS[@]}"; do
         python3 "${SCRIPT_DIR}/seed_postgres.py" --rows "$ROWS" --pg-url "$PG_URL"
     fi
 
-    # Step 2: Start callback server
-    CALLBACK_PORT="${CALLBACK_PORT}" python3 "${SCRIPT_DIR}/callback_server.py" &
-    CB_PID=$!
-    sleep 0.5
-
-    # Step 3: Record baseline
+    # Step 2: Record baseline
     WORKER_PID=$(get_worker_pid)
     BASELINE_RSS=$(get_rss_kb "$WORKER_PID")
     START_TIME=$(now_ns)
 
-    # Step 4: Build job request via python3 (stdin, no shell interpolation)
+    # Step 3: Build job request via python3 (stdin, no shell interpolation)
     RUN_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
     OUTPUT_PATH="${STAGING_PATH}/bench-${SCENARIO_NAME}"
     mkdir -p "$OUTPUT_PATH"
@@ -133,7 +116,6 @@ for scenario_file in "${SCENARIOS[@]}"; do
         _BENCH_DATA_DIR="$DATA_DIR" \
         _BENCH_PG_URL="$PG_URL" \
         _BENCH_RUN_ID="$RUN_ID" \
-        _BENCH_CALLBACK_URL="$CALLBACK_URL" \
         _BENCH_MATCH_SQL="$MATCH_SQL" \
         _BENCH_OUTPUT_PATH="$OUTPUT_PATH" \
         python3 - <<'PYEOF'
@@ -159,7 +141,6 @@ else:
 
 print(json.dumps({
     "run_id": os.environ["_BENCH_RUN_ID"],
-    "callback_url": os.environ["_BENCH_CALLBACK_URL"],
     "match_sql": os.environ["_BENCH_MATCH_SQL"],
     "sources": sources,
     "output_path": os.environ["_BENCH_OUTPUT_PATH"],
@@ -176,19 +157,15 @@ PYEOF
 
     if [ "$HTTP_CODE" != "202" ] && [ "$HTTP_CODE" != "200" ]; then
         echo "  ERROR: Worker returned HTTP $HTTP_CODE"
-        kill "$CB_PID" 2>/dev/null || true
-        wait "$CB_PID" 2>/dev/null || true
-        CB_PID=""
         SUMMARY_ROWS+="| ${SCENARIO_NAME} | ${ROWS} | - | - | - | FAILED (HTTP $HTTP_CODE) |\n"
         continue
     fi
 
-    # Step 5: Poll for completion via callback server OR worker log
+    # Step 4: Poll worker log for completion
     echo "  Waiting for completion (timeout ${TIMEOUT_SECS}s)..."
     ELAPSED=0
     PEAK_RSS=$BASELINE_RSS
     STATUS="timeout"
-    WORKER_LOG="/tmp/kalla-worker-bench.log"
 
     while [ "$ELAPSED" -lt "$TIMEOUT_SECS" ]; do
         sleep "$POLL_INTERVAL"
@@ -200,33 +177,19 @@ PYEOF
             PEAK_RSS=$CURRENT_RSS
         fi
 
-        # Method 1: Check callback server
-        CB_STATUS=$(curl -s --connect-timeout 1 "http://127.0.0.1:${CALLBACK_PORT}/status" 2>/dev/null || echo '{"status":"waiting"}')
-        CURRENT=$(echo "$CB_STATUS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','waiting'))" 2>/dev/null || echo "waiting")
-
-        if [ "$CURRENT" = "complete" ]; then
-            STATUS="complete"
-            break
-        elif [ "$CURRENT" = "error" ]; then
-            STATUS="error"
-            break
-        fi
-
-        # Method 2: Check worker log for run completion (fallback if callback unreachable)
+        # Check worker log for run completion
         if grep -q "Run ${RUN_ID} completed" "$WORKER_LOG" 2>/dev/null; then
             STATUS="complete"
-            echo "  (detected via worker log)"
             break
         elif grep -q "Run ${RUN_ID} failed" "$WORKER_LOG" 2>/dev/null; then
             STATUS="error"
-            echo "  (detected via worker log)"
             break
         fi
     done
 
     END_TIME=$(now_ns)
 
-    # Step 6: Compute metrics
+    # Step 5: Compute metrics
     DURATION_NS=$((END_TIME - START_TIME))
     DURATION_S=$(python3 -c "print(f'{${DURATION_NS} / 1e9:.2f}')")
     ROWS_PER_SEC=$(python3 -c "
@@ -238,11 +201,6 @@ print(f'{${ROWS} / d:.0f}' if d > 0 else 'N/A')
     echo "  Status: ${STATUS} | Duration: ${DURATION_S}s | Rows/sec: ${ROWS_PER_SEC} | Peak RSS: ${PEAK_RSS_MB} MB"
 
     SUMMARY_ROWS+="| ${SCENARIO_NAME} | ${ROWS} | ${DURATION_S} | ${ROWS_PER_SEC} | ${PEAK_RSS_MB} | ${STATUS} |\n"
-
-    # Step 7: Kill callback server
-    kill "$CB_PID" 2>/dev/null || true
-    wait "$CB_PID" 2>/dev/null || true
-    CB_PID=""
 done
 
 # ---- Write report ----
