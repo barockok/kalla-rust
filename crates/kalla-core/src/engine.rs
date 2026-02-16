@@ -25,6 +25,19 @@ impl ReconciliationEngine {
         Self { ctx }
     }
 
+    /// Create a distributed reconciliation engine using Ballista standalone mode.
+    /// Embeds scheduler + executor in-process for distributed query execution.
+    pub async fn new_distributed() -> anyhow::Result<Self> {
+        use ballista::prelude::SessionContextExt;
+
+        let ctx = SessionContext::standalone().await?;
+        udf::register_financial_udfs(&ctx);
+
+        info!("ReconciliationEngine (distributed/Ballista standalone) initialized");
+
+        Ok(Self { ctx })
+    }
+
     /// Get a reference to the underlying SessionContext
     pub fn context(&self) -> &SessionContext {
         &self.ctx
@@ -464,6 +477,33 @@ mod tests {
         let ro_count: usize = right_orphans.iter().map(|b| b.num_rows()).sum();
         assert_eq!(lo_count, 0);
         assert_eq!(ro_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_distributed_engine_creation() {
+        let engine = ReconciliationEngine::new_distributed().await.unwrap();
+        // Verify UDFs are registered
+        let result = engine.sql("SELECT tolerance_match(1.0, 1.005, 0.01)").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_distributed_engine_csv_query() {
+        let csv = "id,val\n1,10\n2,20\n3,30\n";
+        let (_f, path) = write_temp_csv(csv);
+
+        let engine = ReconciliationEngine::new_distributed().await.unwrap();
+        engine.register_csv("dist_t", &path).await.unwrap();
+
+        let df = engine.sql("SELECT COUNT(*) AS cnt FROM dist_t").await.unwrap();
+        let batches = df.collect().await.unwrap();
+        let cnt = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(cnt, 3);
     }
 
     #[tokio::test]
