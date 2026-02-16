@@ -4,18 +4,19 @@ import type { ChatSession, SourceInfo, SourcePreview } from './chat-types';
 // Agent Tool Implementations
 //
 // Each tool corresponds to one function the LLM agent can call via tool_use.
-// Network-bound tools call the Rust backend HTTP API. Pure-logic tools (like
-// propose_match, infer_rules, build_recipe) run locally in the Next.js process.
+// Network-bound tools call the Next.js API routes (which proxy to Postgres
+// and the Worker). Pure-logic tools (propose_match, infer_rules, build_recipe)
+// run locally in the Next.js process.
 // ---------------------------------------------------------------------------
 
-const RUST_API = process.env.SERVER_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+const API_BASE = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
 
 // ---------------------------------------------------------------------------
 // Tool: list_sources
 // ---------------------------------------------------------------------------
 
 export async function listSources(): Promise<SourceInfo[]> {
-  const res = await fetch(`${RUST_API}/api/sources`);
+  const res = await fetch(`${API_BASE}/api/sources`);
   if (!res.ok) throw new Error(`Failed to list sources: ${res.statusText}`);
   return res.json();
 }
@@ -31,8 +32,7 @@ export async function getSourcePreview(
 ): Promise<SourcePreview> {
   // When s3_uri is provided, use the upload preview endpoint (Next.js server-side)
   if (s3Uri) {
-    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
-    const res = await fetch(`${baseUrl}/api/uploads/preview`, {
+    const res = await fetch(`${API_BASE}/api/uploads/preview`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ s3_uri: s3Uri }),
@@ -60,7 +60,7 @@ export async function getSourcePreview(
 
   if (!alias) throw new Error('Either alias or s3_uri must be provided');
 
-  const res = await fetch(`${RUST_API}/api/sources/${encodeURIComponent(alias)}/preview?limit=${limit}`);
+  const res = await fetch(`${API_BASE}/api/sources/${encodeURIComponent(alias)}/preview?limit=${limit}`);
   if (!res.ok) throw new Error(`Failed to get preview for ${alias}: ${res.statusText}`);
   return res.json();
 }
@@ -90,7 +90,7 @@ export async function loadScoped(
   limit: number = 200,
 ): Promise<SourcePreview> {
   const res = await fetch(
-    `${RUST_API}/api/sources/${encodeURIComponent(alias)}/load-scoped`,
+    `${API_BASE}/api/sources/${encodeURIComponent(alias)}/load-scoped`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -196,57 +196,65 @@ export function inferRules(
 }
 
 // ---------------------------------------------------------------------------
-// Tool: build_recipe
+// Tool: build_recipe — accepts SQL instead of rules
 // ---------------------------------------------------------------------------
 
-interface RuleInput {
-  name: string;
-  pattern: string;
-  conditions: Array<{ left: string; op: string; right: string; threshold?: number }>;
-}
-
 export function buildRecipe(
+  name: string,
+  description: string,
+  matchSql: string,
+  matchDescription: string,
   leftAlias: string,
   rightAlias: string,
   leftUri: string,
   rightUri: string,
   leftPk: string[],
   rightPk: string[],
-  rules: RuleInput[],
+  leftSchema: string[],
+  rightSchema: string[],
 ): Record<string, unknown> {
   return {
-    version: '1.0',
     recipe_id: `recipe-${Date.now()}`,
+    name,
+    description,
+    match_sql: matchSql,
+    match_description: matchDescription,
     sources: {
-      left: { alias: leftAlias, uri: leftUri, primary_key: leftPk },
-      right: { alias: rightAlias, uri: rightUri, primary_key: rightPk },
-    },
-    match_rules: rules.map((r, i) => ({
-      ...r,
-      priority: i + 1,
-    })),
-    output: {
-      matched: 'evidence/matched.parquet',
-      unmatched_left: 'evidence/unmatched_left.parquet',
-      unmatched_right: 'evidence/unmatched_right.parquet',
+      left: { alias: leftAlias, type: 'csv_upload', uri: leftUri, schema: leftSchema, primary_key: leftPk },
+      right: { alias: rightAlias, type: 'csv_upload', uri: rightUri, schema: rightSchema, primary_key: rightPk },
     },
   };
 }
 
 // ---------------------------------------------------------------------------
-// Tool: validate_recipe
+// Tool: save_recipe — persist recipe to Postgres via API
 // ---------------------------------------------------------------------------
 
-export async function validateRecipe(
+export async function saveRecipe(
   recipe: Record<string, unknown>,
-): Promise<{ valid: boolean; errors: string[] }> {
-  const res = await fetch(`${RUST_API}/api/recipes/validate`, {
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API_BASE}/api/recipes`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(recipe),
   });
-  if (!res.ok) throw new Error(`Validation request failed: ${res.statusText}`);
+  if (!res.ok) throw new Error(`Failed to save recipe: ${res.statusText}`);
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Tool: validate_recipe — local validation (no HTTP)
+// ---------------------------------------------------------------------------
+
+export function validateRecipe(
+  recipe: Record<string, unknown>,
+): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  if (!recipe.recipe_id) errors.push('missing recipe_id');
+  if (!recipe.name) errors.push('missing name');
+  if (!recipe.match_sql) errors.push('missing match_sql');
+  if (!recipe.sources) errors.push('missing sources');
+  return { valid: errors.length === 0, errors };
 }
 
 // ---------------------------------------------------------------------------
@@ -254,27 +262,34 @@ export async function validateRecipe(
 // ---------------------------------------------------------------------------
 
 export async function runSample(
-  recipe: Record<string, unknown>,
-): Promise<{ run_id: string; status: string }> {
-  const res = await fetch(`${RUST_API}/api/runs`, {
+  recipeId: string,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API_BASE}/api/runs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ recipe }),
+    body: JSON.stringify({ recipe_id: recipeId }),
   });
   if (!res.ok) throw new Error(`Run creation failed: ${res.statusText}`);
-  return res.json();
+  const { run_id } = await res.json();
+  // Poll until the worker finishes so we can return full results
+  return pollRunStatus(run_id);
 }
 
 // ---------------------------------------------------------------------------
 // Tool: run_full — execute recipe on the full datasets
-// (Same endpoint as run_sample; the Rust backend always runs on the full
-//  registered source.)
+// Returns immediately with run_id so the UI can show a live progress card.
 // ---------------------------------------------------------------------------
 
 export async function runFull(
-  recipe: Record<string, unknown>,
+  recipeId: string,
 ): Promise<{ run_id: string; status: string }> {
-  return runSample(recipe);
+  const res = await fetch(`${API_BASE}/api/runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ recipe_id: recipeId }),
+  });
+  if (!res.ok) throw new Error(`Run creation failed: ${res.statusText}`);
+  return res.json();
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +304,7 @@ export async function pollRunStatus(
   const deadline = Date.now() + maxWaitMs;
 
   while (Date.now() < deadline) {
-    const res = await fetch(`${RUST_API}/api/runs/${encodeURIComponent(runId)}`);
+    const res = await fetch(`${API_BASE}/api/runs/${encodeURIComponent(runId)}`);
     if (!res.ok) throw new Error(`Failed to get run status: ${res.statusText}`);
 
     const run: Record<string, unknown> = await res.json();
@@ -343,23 +358,31 @@ export async function executeTool(
 
     case 'build_recipe':
       return buildRecipe(
+        args.name as string,
+        args.description as string,
+        args.match_sql as string,
+        args.match_description as string,
         args.left_alias as string,
         args.right_alias as string,
         args.left_uri as string,
         args.right_uri as string,
         args.left_pk as string[],
         args.right_pk as string[],
-        args.rules as RuleInput[],
+        args.left_schema as string[],
+        args.right_schema as string[],
       );
+
+    case 'save_recipe':
+      return saveRecipe(args.recipe as Record<string, unknown>);
 
     case 'validate_recipe':
       return validateRecipe(args.recipe as Record<string, unknown>);
 
     case 'run_sample':
-      return runSample(args.recipe as Record<string, unknown>);
+      return runSample(args.recipe_id as string);
 
     case 'run_full':
-      return runFull(args.recipe as Record<string, unknown>);
+      return runFull(args.recipe_id as string);
 
     default:
       throw new Error(`Unknown tool: ${toolName}`);

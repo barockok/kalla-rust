@@ -1,4 +1,4 @@
-export type SourceType = 'postgres' | 'bigquery' | 'elasticsearch' | 'file';
+export type SourceType = 'postgres' | 'bigquery' | 'elasticsearch' | 'file' | 'csv_upload';
 
 export interface RecipeSource {
   alias: string;

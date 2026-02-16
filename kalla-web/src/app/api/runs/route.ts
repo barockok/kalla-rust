@@ -51,14 +51,32 @@ export async function POST(request: Request) {
   const runId = uuidv4();
   const outputPath = `runs/${runId}`;
 
+  // Resolve real URIs from the sources table when the recipe only has aliases
+  async function resolveUri(aliasOrUri: string): Promise<string> {
+    if (aliasOrUri.includes('://')) return aliasOrUri;
+    const { rows } = await pool.query(
+      'SELECT uri FROM sources WHERE alias = $1',
+      [aliasOrUri],
+    );
+    return rows.length > 0 ? rows[0].uri : aliasOrUri;
+  }
+
+  const leftAlias = sources.left.alias;
+  const rightAlias = sources.right.alias;
+  const leftUri = await resolveUri(sources.left.uri || leftAlias);
+  const rightUri = await resolveUri(sources.right.uri || rightAlias);
+
+  // Recipe SQL uses left_src / right_src as table aliases.
+  // Map the real URIs to these fixed aliases so the worker registers
+  // the sources under names that match the SQL.
   const resolvedSources: ResolvedSource[] = body.resolved_sources || [
-    { alias: sources.left.alias, uri: sources.left.uri || '' },
-    { alias: sources.right.alias, uri: sources.right.uri || '' },
+    { alias: 'left_src', uri: leftUri },
+    { alias: 'right_src', uri: rightUri },
   ];
 
   const primaryKeys: Record<string, string[]> = {
-    [sources.left.alias]: sources.left.primary_key,
-    [sources.right.alias]: sources.right.primary_key,
+    left_src: sources.left.primary_key,
+    right_src: sources.right.primary_key,
   };
 
   const callbackUrl = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'}/api/worker`;

@@ -20,7 +20,8 @@ import { executeTool } from './agent-tools';
 function getClient(): Anthropic {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
-  return new Anthropic({ apiKey });
+  const baseURL = process.env.ANTHROPIC_BASE_URL || process.env.LLM_API_URL;
+  return new Anthropic({ apiKey, ...(baseURL ? { baseURL } : {}) });
 }
 
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514';
@@ -140,10 +141,20 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   {
     name: 'build_recipe',
     description:
-      'Build a complete MatchRecipe from the inferred rules and source configuration.',
+      'Build a reconciliation recipe with SQL matching logic. Write a SELECT that joins left_src and right_src (use these as table aliases in your SQL). The SQL should express the matching conditions derived from infer_rules output.',
     input_schema: {
       type: 'object' as const,
       properties: {
+        name: { type: 'string', description: 'Human-readable recipe name' },
+        description: { type: 'string', description: 'What this recipe reconciles' },
+        match_sql: {
+          type: 'string',
+          description: 'SQL SELECT joining left_src and right_src using matching conditions. Use left_src and right_src as table aliases.',
+        },
+        match_description: {
+          type: 'string',
+          description: 'Plain-language description of the matching logic',
+        },
         left_alias: { type: 'string' },
         right_alias: { type: 'string' },
         left_uri: { type: 'string' },
@@ -158,68 +169,57 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
           items: { type: 'string' },
           description: 'Primary key column(s) of the right source',
         },
-        rules: {
+        left_schema: {
           type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              name: { type: 'string' },
-              pattern: {
-                type: 'string',
-                enum: ['1:1', '1:N', 'M:1'],
-              },
-              conditions: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    left: { type: 'string' },
-                    op: {
-                      type: 'string',
-                      enum: [
-                        'eq',
-                        'tolerance',
-                        'gt',
-                        'lt',
-                        'gte',
-                        'lte',
-                        'contains',
-                        'startswith',
-                        'endswith',
-                      ],
-                    },
-                    right: { type: 'string' },
-                    threshold: { type: 'number' },
-                  },
-                  required: ['left', 'op', 'right'],
-                },
-              },
-            },
-            required: ['name', 'pattern', 'conditions'],
-          },
+          items: { type: 'string' },
+          description: 'Column names of the left source',
+        },
+        right_schema: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Column names of the right source',
         },
       },
       required: [
+        'name',
+        'match_sql',
+        'match_description',
         'left_alias',
         'right_alias',
         'left_uri',
         'right_uri',
         'left_pk',
         'right_pk',
-        'rules',
+        'left_schema',
+        'right_schema',
       ],
     },
   },
   {
-    name: 'validate_recipe',
+    name: 'save_recipe',
     description:
-      'Validate a recipe structure and field references against source schemas.',
+      'Save a built recipe to the database. Call this after build_recipe to persist the recipe.',
     input_schema: {
       type: 'object' as const,
       properties: {
         recipe: {
           type: 'object',
-          description: 'The complete MatchRecipe to validate',
+          description: 'The recipe object returned by build_recipe',
+        },
+      },
+      required: ['recipe'],
+    },
+  },
+  {
+    name: 'validate_recipe',
+    description:
+      'Validate a recipe structure locally. Checks that required fields (recipe_id, name, match_sql, sources) are present.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        recipe: {
+          type: 'object',
+          description: 'The recipe object to validate',
         },
       },
       required: ['recipe'],
@@ -228,31 +228,31 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   {
     name: 'run_sample',
     description:
-      'Execute the recipe against loaded sample data. Returns match statistics.',
+      'Execute a saved recipe against sample data. Returns match statistics. Requires a saved recipe_id.',
     input_schema: {
       type: 'object' as const,
       properties: {
-        recipe: {
-          type: 'object',
-          description: 'The MatchRecipe to run',
+        recipe_id: {
+          type: 'string',
+          description: 'The recipe_id of a saved recipe',
         },
       },
-      required: ['recipe'],
+      required: ['recipe_id'],
     },
   },
   {
     name: 'run_full',
     description:
-      'Execute the recipe against the full datasets. Returns a run_id for tracking progress.',
+      'Execute a saved recipe against the full datasets. Returns a run_id for tracking progress. Requires a saved recipe_id.',
     input_schema: {
       type: 'object' as const,
       properties: {
-        recipe: {
-          type: 'object',
-          description: 'The MatchRecipe to run on the full data',
+        recipe_id: {
+          type: 'string',
+          description: 'The recipe_id of a saved recipe',
         },
       },
-      required: ['recipe'],
+      required: ['recipe_id'],
     },
   },
   {
@@ -713,6 +713,8 @@ export async function runAgent(
             } else if (tu.name === 'build_recipe') {
               sessionUpdates.recipe_draft = result as Record<string, unknown>;
               workingSession.recipe_draft = result as Record<string, unknown>;
+            } else if (tu.name === 'save_recipe') {
+              // Recipe already stored in recipe_draft by build_recipe; no extra state needed
             } else if (tu.name === 'propose_match') {
               // Emit as match_proposal card segment
               segments.push({
@@ -732,6 +734,16 @@ export async function runAgent(
             } else if (tu.name === 'run_full') {
               sessionUpdates.status = 'running';
               workingSession.status = 'running';
+              // Emit a live progress card so the user can track execution
+              const runResult = result as Record<string, unknown>;
+              if (runResult.run_id) {
+                segments.push({
+                  type: 'card',
+                  card_type: 'progress',
+                  card_id: `progress-${Date.now()}`,
+                  data: runResult,
+                });
+              }
             } else if (tu.name === 'request_file_upload') {
               segments.push({
                 type: 'card',

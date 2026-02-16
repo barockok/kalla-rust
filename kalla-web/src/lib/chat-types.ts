@@ -125,6 +125,7 @@ export const AGENT_TOOLS = [
   'propose_match',
   'infer_rules',
   'build_recipe',
+  'save_recipe',
   'validate_recipe',
   'run_sample',
   'run_full',
@@ -195,7 +196,7 @@ export const PHASES: Record<ChatPhase, PhaseConfig> = {
   demonstration: {
     name: 'demonstration',
     tools: ['get_source_preview', 'propose_match'],
-    instructions: 'Examine the scoped data. Propose candidate matches using propose_match. Explain your reasoning for each match. The user will confirm or reject. Build up at least 3 confirmed pairs before moving on.',
+    instructions: 'You MUST use the propose_match tool to propose matches — do NOT describe matches in text. Each match needs user confirmation via the card UI. Propose at least 3 matches. Examine the scoped data, pick likely pairs, and call propose_match for each one.',
     prerequisites: { sessionFields: ['sample_left', 'sample_right'] },
     contextInjections: ['schema_left', 'schema_right', 'sample_left', 'sample_right', 'confirmed_pairs'],
     advancesWhen: (s) => s.confirmed_pairs.length >= 3,
@@ -203,8 +204,8 @@ export const PHASES: Record<ChatPhase, PhaseConfig> = {
   },
   inference: {
     name: 'inference',
-    tools: ['infer_rules', 'build_recipe', 'propose_match'],
-    instructions: 'Analyze the confirmed match pairs using infer_rules. Propose matching rules to the user in plain language. Once rules are agreed upon, build the recipe using build_recipe.',
+    tools: ['infer_rules', 'build_recipe', 'save_recipe', 'propose_match'],
+    instructions: 'You MUST call build_recipe to create the recipe — do NOT describe it in text. First call infer_rules with the confirmed pairs. Then write a SQL SELECT that joins left_src and right_src using the inferred rules (use left_src/right_src as table aliases in your SQL). Call build_recipe with the SQL and source details. After building, call save_recipe to persist it. Present the recipe summary to the user for approval.',
     prerequisites: { sessionFields: ['confirmed_pairs'] },
     contextInjections: ['schema_left', 'schema_right', 'confirmed_pairs'],
     advancesWhen: (s) => s.recipe_draft !== null,
@@ -212,8 +213,8 @@ export const PHASES: Record<ChatPhase, PhaseConfig> = {
   },
   validation: {
     name: 'validation',
-    tools: ['validate_recipe', 'run_sample', 'get_source_preview'],
-    instructions: 'Validate the recipe using validate_recipe. Run it on the scoped data using run_sample. Present the results to the user. Ask if they want to adjust the rules or approve.',
+    tools: ['validate_recipe', 'save_recipe', 'run_sample', 'get_source_preview'],
+    instructions: 'Validate the recipe using validate_recipe. Run it on the scoped data using run_sample with the recipe_id from the saved recipe. Present the results to the user. Ask if they want to adjust the rules or approve.',
     prerequisites: { sessionFields: ['recipe_draft'] },
     contextInjections: ['recipe_draft', 'schema_left', 'schema_right'],
     advancesWhen: (s) => s.validation_approved === true,
@@ -222,7 +223,7 @@ export const PHASES: Record<ChatPhase, PhaseConfig> = {
   execution: {
     name: 'execution',
     tools: ['run_full', 'validate_recipe'],
-    instructions: 'The user has approved the recipe. Run it on the full scoped dataset using run_full. Present the results summary.',
+    instructions: 'The user has approved the recipe. Run it on the full scoped dataset using run_full with the recipe_id from the recipe_draft. Present the results summary.',
     prerequisites: { sessionFields: ['recipe_draft', 'validation_approved'] },
     contextInjections: ['recipe_draft'],
     advancesWhen: () => false,

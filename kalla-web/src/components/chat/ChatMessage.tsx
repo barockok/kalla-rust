@@ -5,6 +5,8 @@ import { MatchProposalCard } from './MatchProposalCard';
 import { UploadRequestCard } from './UploadRequestCard';
 import { FileMessageCard } from './FileMessageCard';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { ResultSummary } from '@/components/ResultSummary';
+import { LiveProgressIndicator } from '@/components/LiveProgressIndicator';
 import { cn } from '@/lib/utils';
 
 interface ChatMessageProps {
@@ -90,6 +92,24 @@ function SegmentRenderer({ segment, isAgent, sessionId, onCardAction, onFileUplo
         onFileUploaded={onFileUploaded}
       />
     );
+  }
+  if (segment.type === 'card' && segment.card_type === 'result_summary' && segment.data) {
+    const d = segment.data;
+    const matched = Number(d.matched_count ?? 0);
+    const unmatchedLeft = Number(d.unmatched_left_count ?? 0);
+    const unmatchedRight = Number(d.unmatched_right_count ?? 0);
+    return (
+      <ResultSummary
+        matchedCount={matched}
+        unmatchedLeftCount={unmatchedLeft}
+        unmatchedRightCount={unmatchedRight}
+        totalLeftCount={matched + unmatchedLeft}
+        totalRightCount={matched + unmatchedRight}
+      />
+    );
+  }
+  if (segment.type === 'card' && segment.card_type === 'progress' && segment.data?.run_id) {
+    return <LiveProgressIndicator runId={segment.data.run_id as string} />;
   }
   return null;
 }

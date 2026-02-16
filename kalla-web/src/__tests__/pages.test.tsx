@@ -66,12 +66,6 @@ jest.mock('@/components/chat/ChatMessage', () => ({
   ),
 }));
 
-jest.mock('@/components/chat/RecipeCard', () => ({
-  RecipeCard: ({ recipe }: { recipe: unknown }) => (
-    <div data-testid="recipe-card">{recipe ? 'Has recipe' : 'No recipe'}</div>
-  ),
-}));
-
 // Mock fetch
 const mockFetch = jest.fn();
 global.fetch = mockFetch;

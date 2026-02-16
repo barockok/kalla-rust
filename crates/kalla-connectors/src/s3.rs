@@ -7,6 +7,7 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use datafusion::datasource::file_format::csv::CsvFormat;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
@@ -141,6 +142,38 @@ impl S3Connector {
             .context("failed to register table with SessionContext")?;
 
         info!("Registered S3 table '{}' from '{}'", table_name, s3_uri);
+        Ok(())
+    }
+
+    /// Register an S3 CSV file as a ListingTable.
+    pub async fn register_csv_listing_table(
+        &self,
+        ctx: &SessionContext,
+        table_name: &str,
+        s3_uri: &str,
+    ) -> Result<()> {
+        let (bucket, _key) = Self::parse_s3_uri(s3_uri)?;
+
+        self.register_store(ctx, &bucket)?;
+
+        let table_url =
+            ListingTableUrl::parse(s3_uri).context("failed to parse S3 URI as ListingTableUrl")?;
+
+        let format = CsvFormat::default().with_has_header(true);
+        let options = ListingOptions::new(Arc::new(format)).with_file_extension(".csv");
+
+        let config = ListingTableConfig::new(table_url)
+            .with_listing_options(options)
+            .infer_schema(&ctx.state())
+            .await
+            .context("failed to infer schema from S3 CSV file")?;
+
+        let table = ListingTable::try_new(config).context("failed to create ListingTable")?;
+
+        ctx.register_table(table_name, Arc::new(table))
+            .context("failed to register table with SessionContext")?;
+
+        info!("Registered S3 CSV table '{}' from '{}'", table_name, s3_uri);
         Ok(())
     }
 }

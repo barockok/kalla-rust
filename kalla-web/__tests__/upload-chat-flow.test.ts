@@ -173,22 +173,26 @@ describe('Upload + Chat Agent Flow', () => {
   });
 
   itIntegration('phase advances from greeting when files are previewed', async () => {
-    // Start chat
+    // Start chat — may already advance to intent if registered sources exist
     const greeting = await sendChat(undefined, 'Hello');
     const sessionId = greeting.session_id;
-    expect(greeting.phase).toBe('greeting');
+    const initialPhase = greeting.phase;
 
     // Upload files
     const paymentsAttachment = await uploadTestFile(sessionId, 'payments.csv', PAYMENTS_CSV);
     const invoicesAttachment = await uploadTestFile(sessionId, 'invoices.csv', INVOICES_CSV);
 
-    // Send with files — agent should preview them and advance past greeting
+    // Send with files — agent should preview them and advance past initial phase
     const response = await sendChat(sessionId, 'reconcile these', [
       paymentsAttachment,
       invoicesAttachment,
     ]);
 
+    // Should have advanced beyond greeting (at minimum to intent or further)
     expect(response.phase).not.toBe('greeting');
+    // Should be at scoping or beyond (both schemas loaded from file previews)
+    const advancedPhases = ['scoping', 'demonstration', 'inference', 'validation', 'execution'];
+    expect(advancedPhases).toContain(response.phase);
   });
 
   itIntegration('multiple files can be attached to single message', async () => {

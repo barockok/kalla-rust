@@ -2,7 +2,6 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ChatMessage } from '@/components/chat/ChatMessage';
 import { MatchProposalCard } from '@/components/chat/MatchProposalCard';
-import { RecipeCard } from '@/components/chat/RecipeCard';
 import { FieldPreview } from '@/components/FieldPreview';
 import { LiveProgressIndicator } from '@/components/LiveProgressIndicator';
 import type { ChatMessage as ChatMessageType } from '@/lib/chat-types';
@@ -203,96 +202,6 @@ describe('MatchProposalCard', () => {
     fireEvent.click(screen.getByText('No'));
     expect(screen.getByText('Rejected')).toBeInTheDocument();
     expect(screen.queryByText('Yes, match')).not.toBeInTheDocument();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// RecipeCard
-// ---------------------------------------------------------------------------
-describe('RecipeCard', () => {
-  const sampleRecipe: Record<string, unknown> = {
-    match_rules: [
-      {
-        name: 'Exact Name',
-        pattern: '1:1',
-        conditions: [
-          { left: 'name', op: 'eq', right: 'name' },
-        ],
-      },
-      {
-        name: 'Fuzzy Email',
-        pattern: '1:1',
-        conditions: [
-          { left: 'email', op: 'eq', right: 'email', threshold: 0.9 },
-        ],
-      },
-    ],
-    sources: {
-      left: { alias: 'customers' },
-      right: { alias: 'invoices' },
-    },
-  };
-
-  it('when recipe is null, shows "No rules defined yet" message', () => {
-    render(<RecipeCard recipe={null} />);
-    expect(screen.getByText(/No rules defined yet/)).toBeInTheDocument();
-  });
-
-  it('when recipe has data, shows rule count', () => {
-    render(<RecipeCard recipe={sampleRecipe} />);
-    expect(screen.getByText(/2 rules defined/)).toBeInTheDocument();
-  });
-
-  it('shows source aliases when available', () => {
-    render(<RecipeCard recipe={sampleRecipe} />);
-    expect(screen.getByText(/customers/)).toBeInTheDocument();
-    expect(screen.getByText(/invoices/)).toBeInTheDocument();
-  });
-
-  it('expand/collapse toggles the card content', () => {
-    render(<RecipeCard recipe={sampleRecipe} />);
-
-    // Initially collapsed -- rule names should not be visible
-    expect(screen.queryByText('Exact Name')).not.toBeInTheDocument();
-
-    // Click to expand
-    fireEvent.click(screen.getByText(/2 rules defined/));
-    expect(screen.getByText('Exact Name')).toBeInTheDocument();
-    expect(screen.getByText('Fuzzy Email')).toBeInTheDocument();
-
-    // Click to collapse
-    fireEvent.click(screen.getByText(/2 rules defined/));
-    expect(screen.queryByText('Exact Name')).not.toBeInTheDocument();
-  });
-
-  it('shows match rule details when expanded', () => {
-    render(<RecipeCard recipe={sampleRecipe} />);
-    fireEvent.click(screen.getByText(/2 rules defined/));
-    expect(screen.getByText('Exact Name')).toBeInTheDocument();
-    // Both rules have pattern "1:1" so there should be 2 badges
-    const badges = screen.getAllByText('1:1');
-    expect(badges).toHaveLength(2);
-    // Check a condition is rendered
-    expect(screen.getByText(/name eq name/)).toBeInTheDocument();
-  });
-
-  it('shows JSON toggle button when expanded', () => {
-    render(<RecipeCard recipe={sampleRecipe} />);
-    fireEvent.click(screen.getByText(/2 rules defined/));
-    expect(screen.getByText('Show JSON')).toBeInTheDocument();
-  });
-
-  it('shows JSON when "Show JSON" button is clicked', () => {
-    render(<RecipeCard recipe={sampleRecipe} />);
-    fireEvent.click(screen.getByText(/2 rules defined/));
-    fireEvent.click(screen.getByText('Show JSON'));
-
-    // JSON output should be in a <pre> element
-    const preEl = document.querySelector('pre');
-    expect(preEl).toBeInTheDocument();
-    expect(preEl?.textContent).toContain('"Exact Name"');
-    // The button label should change
-    expect(screen.getByText('Hide JSON')).toBeInTheDocument();
   });
 });
 

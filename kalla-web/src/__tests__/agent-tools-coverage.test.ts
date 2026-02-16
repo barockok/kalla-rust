@@ -5,6 +5,7 @@ import {
   proposeMatch,
   inferRules,
   buildRecipe,
+  saveRecipe,
   validateRecipe,
   runSample,
   runFull,
@@ -249,27 +250,29 @@ describe('agent-tools coverage', () => {
   // 6. buildRecipe
   // -------------------------------------------------------------------------
   describe('buildRecipe', () => {
-    test('returns correct structure', () => {
-      const rules = [
-        { name: 'rule1', pattern: 'exact', conditions: [{ left: 'id', op: 'eq', right: 'id' }] },
-      ];
-
+    test('returns correct structure with match_sql', () => {
       const now = Date.now();
       jest.spyOn(Date, 'now').mockReturnValue(now);
 
-      const recipe = buildRecipe('left_ds', 'right_ds', 'file://left.csv', 'file://right.csv', ['id'], ['id'], rules);
+      const recipe = buildRecipe(
+        'Invoice Match',
+        'Match invoices to payments',
+        'SELECT * FROM left_src JOIN right_src ON left_src.id = right_src.pay_id',
+        'Join on id = pay_id',
+        'left_ds', 'right_ds',
+        'file://left.csv', 'file://right.csv',
+        ['id'], ['pay_id'],
+        ['id', 'amount'], ['pay_id', 'total'],
+      );
 
-      expect(recipe.version).toBe('1.0');
       expect(recipe.recipe_id).toBe(`recipe-${now}`);
+      expect(recipe.name).toBe('Invoice Match');
+      expect(recipe.description).toBe('Match invoices to payments');
+      expect(recipe.match_sql).toBe('SELECT * FROM left_src JOIN right_src ON left_src.id = right_src.pay_id');
+      expect(recipe.match_description).toBe('Join on id = pay_id');
       expect(recipe.sources).toEqual({
-        left: { alias: 'left_ds', uri: 'file://left.csv', primary_key: ['id'] },
-        right: { alias: 'right_ds', uri: 'file://right.csv', primary_key: ['id'] },
-      });
-      expect(recipe.match_rules).toEqual([{ ...rules[0], priority: 1 }]);
-      expect(recipe.output).toEqual({
-        matched: 'evidence/matched.parquet',
-        unmatched_left: 'evidence/unmatched_left.parquet',
-        unmatched_right: 'evidence/unmatched_right.parquet',
+        left: { alias: 'left_ds', type: 'csv_upload', uri: 'file://left.csv', schema: ['id', 'amount'], primary_key: ['id'] },
+        right: { alias: 'right_ds', type: 'csv_upload', uri: 'file://right.csv', schema: ['pay_id', 'total'], primary_key: ['pay_id'] },
       });
 
       (Date.now as jest.Mock).mockRestore();
@@ -277,61 +280,92 @@ describe('agent-tools coverage', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 7. validateRecipe
+  // 7. saveRecipe
   // -------------------------------------------------------------------------
-  describe('validateRecipe', () => {
-    test('success – returns validation result', async () => {
-      const data = { valid: true, errors: [] };
+  describe('saveRecipe', () => {
+    test('success – returns saved recipe', async () => {
+      const data = { recipe_id: 'recipe-1', name: 'test' };
       mockFetch.mockResolvedValueOnce(okJson(data));
 
-      const result = await validateRecipe({ version: '1.0' });
+      const result = await saveRecipe({ recipe_id: 'recipe-1', name: 'test' });
       expect(result).toEqual(data);
       const [url, opts] = mockFetch.mock.calls[0];
-      expect(url).toContain('/api/recipes/validate');
+      expect(url).toContain('/api/recipes');
       expect(opts.method).toBe('POST');
     });
 
     test('error – throws on non-ok response', async () => {
       mockFetch.mockResolvedValueOnce(failRes('Unprocessable Entity'));
-      await expect(validateRecipe({})).rejects.toThrow('Validation request failed: Unprocessable Entity');
+      await expect(saveRecipe({})).rejects.toThrow('Failed to save recipe: Unprocessable Entity');
     });
   });
 
   // -------------------------------------------------------------------------
-  // 8. runSample
+  // 8. validateRecipe (local, no HTTP)
+  // -------------------------------------------------------------------------
+  describe('validateRecipe', () => {
+    test('valid recipe passes', () => {
+      const result = validateRecipe({
+        recipe_id: 'recipe-1',
+        name: 'test',
+        match_sql: 'SELECT * FROM left_src JOIN right_src ON left_src.id = right_src.id',
+        sources: { left: {}, right: {} },
+      });
+      expect(result).toEqual({ valid: true, errors: [] });
+    });
+
+    test('missing fields returns errors', () => {
+      const result = validateRecipe({});
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain('missing recipe_id');
+      expect(result.errors).toContain('missing name');
+      expect(result.errors).toContain('missing match_sql');
+      expect(result.errors).toContain('missing sources');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 9. runSample
   // -------------------------------------------------------------------------
   describe('runSample', () => {
-    test('success – returns run info', async () => {
-      const data = { run_id: 'run-1', status: 'Running' };
-      mockFetch.mockResolvedValueOnce(okJson(data));
+    test('success – creates run and polls until completion', async () => {
+      // First call: POST /api/runs → returns run_id
+      mockFetch.mockResolvedValueOnce(okJson({ run_id: 'run-1', status: 'submitted' }));
+      // Second call: GET /api/runs/run-1 → returns completed result
+      mockFetch.mockResolvedValueOnce(okJson({ run_id: 'run-1', status: 'Completed', matched_count: 5 }));
 
-      const result = await runSample({ version: '1.0' });
-      expect(result).toEqual(data);
+      const result = await runSample('recipe-123');
+      expect(result).toEqual({ run_id: 'run-1', status: 'Completed', matched_count: 5 });
+      // Verify POST was called first
       const [url, opts] = mockFetch.mock.calls[0];
       expect(url).toContain('/api/runs');
       expect(opts.method).toBe('POST');
-      expect(JSON.parse(opts.body)).toEqual({ recipe: { version: '1.0' } });
+      expect(JSON.parse(opts.body)).toEqual({ recipe_id: 'recipe-123' });
+      // Verify poll was called
+      expect(mockFetch.mock.calls[1][0]).toContain('/api/runs/run-1');
     });
 
-    test('error – throws on non-ok response', async () => {
+    test('error – throws on non-ok POST response', async () => {
       mockFetch.mockResolvedValueOnce(failRes('Service Unavailable'));
-      await expect(runSample({})).rejects.toThrow('Run creation failed: Service Unavailable');
+      await expect(runSample('recipe-bad')).rejects.toThrow('Run creation failed: Service Unavailable');
     });
   });
 
   // -------------------------------------------------------------------------
-  // 9. runFull – delegates to runSample
+  // 10. runFull – delegates to runSample
   // -------------------------------------------------------------------------
   describe('runFull', () => {
-    test('delegates to runSample and returns same result', async () => {
-      const data = { run_id: 'run-full-1', status: 'Running' };
+    test('success – returns run_id immediately without polling', async () => {
+      const data = { run_id: 'run-full-1', status: 'submitted' };
       mockFetch.mockResolvedValueOnce(okJson(data));
 
-      const result = await runFull({ version: '1.0' });
+      const result = await runFull('recipe-456');
       expect(result).toEqual(data);
       const [url, opts] = mockFetch.mock.calls[0];
       expect(url).toContain('/api/runs');
       expect(opts.method).toBe('POST');
+      // Should only call fetch once (no polling)
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -476,46 +510,61 @@ describe('agent-tools coverage', () => {
     });
 
     test('build_recipe', async () => {
-      const rules = [{ name: 'r1', pattern: 'exact', conditions: [{ left: 'id', op: 'eq', right: 'id' }] }];
-
       const result = await executeTool(
         'build_recipe',
         {
+          name: 'Test Recipe',
+          description: 'Test',
+          match_sql: 'SELECT * FROM left_src JOIN right_src ON left_src.id = right_src.id',
+          match_description: 'Join on id',
           left_alias: 'L',
           right_alias: 'R',
           left_uri: 'file://l.csv',
           right_uri: 'file://r.csv',
           left_pk: ['id'],
           right_pk: ['id'],
-          rules,
+          left_schema: ['id', 'amount'],
+          right_schema: ['id', 'total'],
         },
         makeSession(),
       );
-      expect((result as any).version).toBe('1.0');
+      expect((result as any).match_sql).toContain('SELECT');
       expect((result as any).sources.left.alias).toBe('L');
     });
 
-    test('validate_recipe', async () => {
-      const data = { valid: true, errors: [] };
+    test('save_recipe', async () => {
+      const data = { recipe_id: 'recipe-1', name: 'test' };
       mockFetch.mockResolvedValueOnce(okJson(data));
 
-      const result = await executeTool('validate_recipe', { recipe: { v: 1 } }, makeSession());
+      const result = await executeTool('save_recipe', { recipe: data }, makeSession());
       expect(result).toEqual(data);
     });
 
-    test('run_sample', async () => {
-      const data = { run_id: 'run-x', status: 'Running' };
-      mockFetch.mockResolvedValueOnce(okJson(data));
+    test('validate_recipe', async () => {
+      const result = await executeTool(
+        'validate_recipe',
+        { recipe: { recipe_id: 'r1', name: 'test', match_sql: 'SELECT 1', sources: {} } },
+        makeSession(),
+      );
+      expect((result as any).valid).toBe(true);
+    });
 
-      const result = await executeTool('run_sample', { recipe: {} }, makeSession());
-      expect(result).toEqual(data);
+    test('run_sample', async () => {
+      // POST /api/runs
+      mockFetch.mockResolvedValueOnce(okJson({ run_id: 'run-x', status: 'submitted' }));
+      // GET /api/runs/run-x (poll)
+      mockFetch.mockResolvedValueOnce(okJson({ run_id: 'run-x', status: 'Completed', matched_count: 3 }));
+
+      const result = await executeTool('run_sample', { recipe_id: 'recipe-1' }, makeSession());
+      expect((result as any).run_id).toBe('run-x');
+      expect((result as any).status).toBe('Completed');
     });
 
     test('run_full', async () => {
       const data = { run_id: 'run-y', status: 'Running' };
       mockFetch.mockResolvedValueOnce(okJson(data));
 
-      const result = await executeTool('run_full', { recipe: {} }, makeSession());
+      const result = await executeTool('run_full', { recipe_id: 'recipe-2' }, makeSession());
       expect(result).toEqual(data);
     });
   });

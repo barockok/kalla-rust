@@ -17,7 +17,7 @@ import {
 const mockFetch = jest.fn();
 global.fetch = mockFetch;
 
-const API_BASE = 'http://localhost:3001';
+const API_BASE = 'http://localhost:3000';
 
 // Reusable fixture for a minimal MatchRecipe
 const sampleRecipe: MatchRecipe = {

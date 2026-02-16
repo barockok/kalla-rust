@@ -5,7 +5,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Loader2, Send, RotateCcw, Paperclip } from 'lucide-react';
 import { ChatMessage } from '@/components/chat/ChatMessage';
-import { RecipeCard } from '@/components/chat/RecipeCard';
 import { FileUploadPill } from '@/components/chat/FileUploadPill';
 import { uploadFile } from '@/lib/upload-client';
 import type { UploadProgress } from '@/lib/upload-client';
@@ -18,7 +17,6 @@ export default function ReconcilePage() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [phase, setPhase] = useState('greeting');
-  const [recipeDraft, setRecipeDraft] = useState<Record<string, unknown> | null>(null);
   const [started, setStarted] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -139,7 +137,6 @@ export default function ReconcilePage() {
       const data = await res.json();
       setSessionId(data.session_id);
       setPhase(data.phase);
-      if (data.recipe_draft) setRecipeDraft(data.recipe_draft);
       if (data.message) setMessages(prev => [...prev, data.message]);
     } catch (err) {
       const errMsg: ChatMessageType = {
@@ -172,7 +169,6 @@ export default function ReconcilePage() {
     setMessages([]);
     setInput('');
     setPhase('greeting');
-    setRecipeDraft(null);
     setStarted(false);
     handleRemoveFile(); // clears all
   };
@@ -302,7 +298,6 @@ export default function ReconcilePage() {
           </form>
         </div>
       </div>
-      <RecipeCard recipe={recipeDraft} />
     </div>
   );
 }

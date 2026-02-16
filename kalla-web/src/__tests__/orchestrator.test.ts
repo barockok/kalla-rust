@@ -377,17 +377,18 @@ describe('runAgent integration', () => {
         content: [
           { type: 'text', text: 'I found matching rules. Building recipe.' },
           { type: 'tool_use', id: 'tu-2', name: 'build_recipe', input: {
+            name: 'Invoice-Payment Match',
+            description: 'Match invoices to payments by amount',
+            match_sql: 'SELECT * FROM left_src JOIN right_src ON left_src.amount = right_src.total',
+            match_description: 'Join on amount = total',
             left_alias: 'invoices',
             right_alias: 'payments',
             left_uri: 'file://inv.csv',
             right_uri: 'file://pay.csv',
             left_pk: ['id'],
             right_pk: ['pay_id'],
-            rules: [{
-              name: 'amount_match',
-              pattern: '1:1',
-              conditions: [{ left: 'amount', op: 'eq', right: 'total' }],
-            }],
+            left_schema: ['id', 'amount'],
+            right_schema: ['pay_id', 'total'],
           }},
         ],
       })
@@ -416,7 +417,7 @@ describe('runAgent integration', () => {
     const result = await runAgent(session, 'Build the matching rules');
 
     expect(result.sessionUpdates?.recipe_draft).toBeDefined();
-    expect(result.sessionUpdates?.recipe_draft).toHaveProperty('version', '1.0');
+    expect(result.sessionUpdates?.recipe_draft).toHaveProperty('match_sql');
     expect(result.phaseTransition).toBe('validation');
   });
 
@@ -426,13 +427,15 @@ describe('runAgent integration', () => {
     mockCreate
       .mockResolvedValueOnce({
         content: [
-          { type: 'tool_use', id: 'tu-1', name: 'validate_recipe', input: { recipe: { version: '1.0' } } },
+          { type: 'tool_use', id: 'tu-1', name: 'validate_recipe', input: {
+            recipe: { recipe_id: 'recipe-1', name: 'test', match_sql: 'SELECT 1', sources: {} },
+          }},
         ],
       })
       .mockResolvedValueOnce({
         content: [
           { type: 'text', text: 'Recipe is valid. Running sample...' },
-          { type: 'tool_use', id: 'tu-2', name: 'run_sample', input: { recipe: { version: '1.0' } } },
+          { type: 'tool_use', id: 'tu-2', name: 'run_sample', input: { recipe_id: 'recipe-1' } },
         ],
       })
       .mockResolvedValueOnce({
@@ -441,20 +444,20 @@ describe('runAgent integration', () => {
         ],
       });
 
-    // validate_recipe
+    // run_sample: POST /api/runs (validate_recipe is local, no fetch needed)
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ valid: true, errors: [] }),
+      json: async () => ({ run_id: 'run-1', status: 'submitted' }),
     });
-    // run_sample
+    // run_sample: poll GET /api/runs/run-1
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ run_id: 'run-1', status: 'Completed', matched: 5, unmatched: 2 }),
+      json: async () => ({ run_id: 'run-1', status: 'Completed', matched_count: 5, unmatched_left_count: 1, unmatched_right_count: 1 }),
     });
 
     const session = makeSession({
       phase: 'validation',
-      recipe_draft: { version: '1.0' },
+      recipe_draft: { recipe_id: 'recipe-1', name: 'test', match_sql: 'SELECT 1', sources: {} },
       schema_left: [{ name: 'id', data_type: 'Int64', nullable: false }],
       schema_right: [{ name: 'pay_id', data_type: 'Int64', nullable: false }],
     });
@@ -470,7 +473,7 @@ describe('runAgent integration', () => {
     mockCreate
       .mockResolvedValueOnce({
         content: [
-          { type: 'tool_use', id: 'tu-1', name: 'run_full', input: { recipe: { version: '1.0' } } },
+          { type: 'tool_use', id: 'tu-1', name: 'run_full', input: { recipe_id: 'recipe-1' } },
         ],
       })
       .mockResolvedValueOnce({
@@ -486,7 +489,7 @@ describe('runAgent integration', () => {
 
     const session = makeSession({
       phase: 'execution',
-      recipe_draft: { version: '1.0' },
+      recipe_draft: { recipe_id: 'recipe-1', match_sql: 'SELECT 1' },
       validation_approved: true,
     });
     const result = await runAgent(session, 'Run on all data');
@@ -665,7 +668,7 @@ describe('runAgent integration', () => {
 
     const session = makeSession({
       phase: 'validation',
-      recipe_draft: { version: '1.0', match_rules: [] },
+      recipe_draft: { recipe_id: 'recipe-1', match_sql: 'SELECT 1', sources: {} },
       schema_left: [{ name: 'id', data_type: 'Int64', nullable: false }],
       schema_right: [{ name: 'pay_id', data_type: 'Int64', nullable: false }],
     });

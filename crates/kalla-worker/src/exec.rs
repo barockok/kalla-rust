@@ -188,9 +188,16 @@ async fn register_source(
     uri: &str,
     _config: &WorkerConfig,
 ) -> Result<()> {
-    if uri.ends_with(".parquet") || uri.contains("/staging/") {
+    if uri.starts_with("s3://") && uri.ends_with(".csv") {
+        // S3 CSV files (uploaded via presigned URL)
+        let connector = kalla_connectors::S3Connector::from_env()?;
+        connector
+            .register_csv_listing_table(engine.context(), alias, uri)
+            .await?;
+    } else if uri.starts_with("s3://") || uri.ends_with(".parquet") || uri.contains("/staging/") {
         engine.register_parquet(alias, uri).await?;
     } else if uri.ends_with(".csv") {
+        // Local CSV files
         engine.register_csv(alias, uri).await?;
     } else if uri.starts_with("postgres://") {
         // For Postgres data sources, use the connector to register as a table
@@ -314,9 +321,14 @@ pub async fn handle_exec(
 
     let engine = ReconciliationEngine::new();
 
-    // Register all sources (staged Parquet or native)
+    // Register all sources (staged Parquet, S3 CSV, or local CSV)
     for source in staged_sources {
-        if source.s3_path.ends_with(".parquet") || source.s3_path.contains("/staging/") {
+        if source.s3_path.starts_with("s3://") && source.s3_path.ends_with(".csv") {
+            let connector = kalla_connectors::S3Connector::from_env()?;
+            connector
+                .register_csv_listing_table(engine.context(), &source.alias, &source.s3_path)
+                .await?;
+        } else if source.s3_path.ends_with(".parquet") || source.s3_path.contains("/staging/") {
             engine
                 .register_parquet(&source.alias, &source.s3_path)
                 .await?;

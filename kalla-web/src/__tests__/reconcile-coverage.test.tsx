@@ -50,13 +50,6 @@ jest.mock('@/components/chat/ChatMessage', () => ({
   ),
 }));
 
-// Mock RecipeCard to display recipe data
-jest.mock('@/components/chat/RecipeCard', () => ({
-  RecipeCard: ({ recipe }: { recipe: unknown }) => (
-    <div data-testid="recipe-card">{recipe ? JSON.stringify(recipe) : 'No recipe'}</div>
-  ),
-}));
-
 // Mock fetch
 const mockFetch = jest.fn();
 global.fetch = mockFetch;
@@ -183,26 +176,3 @@ describe('ReconcilePage - handleCardAction', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Test 3: Recipe draft display (covers line 163 with recipe_draft)
-// ---------------------------------------------------------------------------
-describe('ReconcilePage - recipe draft display', () => {
-  it('displays the recipe draft in RecipeCard when API returns recipe_draft', async () => {
-    const recipeDraft = { version: '1.0', recipe_id: 'test' };
-
-    // handleStart's sendMessage returns a recipe_draft
-    mockFetch.mockResolvedValueOnce(makeChatResponse({
-      recipe_draft: recipeDraft,
-    }));
-
-    render(<ReconcilePage />);
-    await startConversation();
-
-    // The RecipeCard mock renders JSON.stringify(recipe) when recipe is truthy
-    await waitFor(() => {
-      const recipeCard = screen.getByTestId('recipe-card');
-      expect(recipeCard.textContent).toContain('"version":"1.0"');
-      expect(recipeCard.textContent).toContain('"recipe_id":"test"');
-    });
-  });
-});
