@@ -168,6 +168,7 @@ async fn handle_job(
             run_id,
             ref recipe_json,
             ref staged_sources,
+            ref callback_url,
         } => {
             claim_job(pool, job_id, &config.worker_id).await?;
             let _heartbeat = spawn_heartbeat(
@@ -176,7 +177,15 @@ async fn handle_job(
                 config.heartbeat_interval_secs,
             );
 
-            exec::handle_exec(pool, run_id, job_id, recipe_json, staged_sources).await?;
+            exec::handle_exec(
+                pool,
+                run_id,
+                job_id,
+                recipe_json,
+                staged_sources,
+                callback_url.as_deref(),
+            )
+            .await?;
 
             metrics
                 .jobs_completed

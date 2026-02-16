@@ -3,11 +3,14 @@
 use anyhow::Result;
 use arrow::record_batch::RecordBatch;
 use futures::StreamExt;
-use kalla_connectors::PostgresConnector;
+use kalla_connectors::{PostgresConnector, S3Config, S3Connector};
 use kalla_core::ReconciliationEngine;
+use object_store::aws::AmazonS3Builder;
+use object_store::path::Path as ObjectPath;
+use object_store::ObjectStore;
 use parquet::arrow::ArrowWriter;
 use sqlx::PgPool;
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::config::WorkerConfig;
@@ -171,8 +174,32 @@ pub async fn handle_stage_chunk(
             writer.close()?;
         }
 
-        // TODO: Upload `buf` to `output_path` via object_store
-        info!("Would upload {} bytes to {}", buf.len(), output_path);
+        if std::env::var("AWS_ACCESS_KEY_ID").is_ok() {
+            let (bucket, key) = S3Connector::parse_s3_uri(output_path)?;
+            let s3_config = S3Config::from_env()?;
+            let mut builder = AmazonS3Builder::new()
+                .with_region(&s3_config.region)
+                .with_bucket_name(&bucket)
+                .with_access_key_id(&s3_config.access_key_id)
+                .with_secret_access_key(&s3_config.secret_access_key);
+            if let Some(ref endpoint) = s3_config.endpoint_url {
+                builder = builder.with_endpoint(endpoint);
+            }
+            if s3_config.allow_http {
+                builder = builder.with_allow_http(true);
+            }
+            let store = builder.build()?;
+            let path = ObjectPath::from(key.as_str());
+            let buf_len = buf.len();
+            store.put(&path, buf.into()).await?;
+            info!("Uploaded {} bytes to {}", buf_len, output_path);
+        } else {
+            warn!(
+                "AWS_ACCESS_KEY_ID not set, skipping S3 upload ({} bytes to {})",
+                buf.len(),
+                output_path
+            );
+        }
     }
 
     // Mark job completed

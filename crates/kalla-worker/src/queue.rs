@@ -40,6 +40,9 @@ pub enum JobMessage {
         run_id: Uuid,
         recipe_json: String,
         staged_sources: Vec<StagedSource>,
+        /// Optional HTTP callback URL — worker POSTs results to `{url}/complete` on finish.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        callback_url: Option<String>,
     },
 }
 
@@ -267,6 +270,7 @@ mod tests {
                     is_native: true,
                 },
             ],
+            callback_url: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -314,6 +318,7 @@ mod tests {
             run_id: Uuid::nil(),
             recipe_json: "{}".to_string(),
             staged_sources: vec![],
+            callback_url: None,
         };
 
         let plan_json = serde_json::to_string(&plan).unwrap();

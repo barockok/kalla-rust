@@ -375,12 +375,15 @@ fn extract_first_key(
 // ---------------------------------------------------------------------------
 
 /// Execute the reconciliation run (scaled mode — NATS).
+///
+/// If `callback_url` is provided, POSTs completion results to `{callback_url}/complete`.
 pub async fn handle_exec(
     pool: &PgPool,
     run_id: Uuid,
     job_id: Uuid,
     recipe_json: &str,
     staged_sources: &[StagedSource],
+    callback_url: Option<&str>,
 ) -> Result<ExecResult> {
     let recipe: Recipe = serde_json::from_str(recipe_json)?;
 
@@ -501,6 +504,22 @@ pub async fn handle_exec(
     .bind(run_id)
     .execute(pool)
     .await?;
+
+    // POST results to callback URL if provided
+    if let Some(url) = callback_url {
+        let callback = CallbackClient::new();
+        let _ = callback
+            .report_complete(
+                url,
+                &serde_json::json!({
+                    "run_id": run_id,
+                    "matched_count": total_matched,
+                    "unmatched_left_count": unmatched_left,
+                    "unmatched_right_count": unmatched_right,
+                }),
+            )
+            .await;
+    }
 
     Ok(ExecResult {
         matched: total_matched,
