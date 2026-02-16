@@ -141,6 +141,7 @@ else:
 
 print(json.dumps({
     "run_id": os.environ["_BENCH_RUN_ID"],
+    "callback_url": "http://127.0.0.1:0/noop",
     "match_sql": os.environ["_BENCH_MATCH_SQL"],
     "sources": sources,
     "output_path": os.environ["_BENCH_OUTPUT_PATH"],
