@@ -75,11 +75,36 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Scheduler { .. } => {
-            todo!("scheduler subcommand")
+        Commands::Scheduler {
+            grpc_port,
+            bind_host,
+            ..
+        } => {
+            kalla_ballista::start_scheduler(kalla_ballista::SchedulerOpts {
+                bind_host,
+                grpc_port,
+            })
+            .await?;
         }
-        Commands::Executor { .. } => {
-            todo!("executor subcommand")
+        Commands::Executor {
+            scheduler_host,
+            scheduler_port,
+            flight_port,
+            grpc_port,
+            bind_host,
+            external_host,
+        } => {
+            kalla_ballista::start_executor(kalla_ballista::ExecutorOpts {
+                bind_host,
+                flight_port,
+                grpc_port,
+                scheduler_host,
+                scheduler_port,
+                external_host,
+            })
+            .await?;
         }
     }
+
+    Ok(())
 }
