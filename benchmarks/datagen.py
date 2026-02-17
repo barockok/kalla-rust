@@ -318,3 +318,52 @@ def generate_batch_payments(
         pay_idx += 1
 
     return payments
+
+
+def generate_cross_match_payments(n: int, pay_offset: int = 0) -> list[dict]:
+    """Generate *n* payments for the M:N cross-match pattern.
+
+    Unlike ``generate_payments``, these are **not** derived from specific
+    invoices.  Instead they share the same customer-id pool
+    (CUST-000001 ... CUST-000020), currency list, and 2024 date range used
+    by ``generate_invoices`` so that joins on
+    ``(customer_id, currency, month)`` produce cross-product matches.
+
+    Distribution:
+      - 80 % use the shared customer pool  ->  joinable with invoices
+      - 20 % are orphans with unique CUST-500+ IDs  ->  no invoice match
+    """
+    payments: list[dict] = []
+    pay_idx = pay_offset + 1
+    orphan_boundary = int(n * 0.80)
+
+    for i in range(n):
+        if i < orphan_boundary:
+            # --- Shared-pool payment (joinable) ---
+            cust_idx = (i % 20) + 1
+            cust_id = _pad_id("CUST", cust_idx)
+            cust_name = CUSTOMER_NAMES[i % len(CUSTOMER_NAMES)]
+            ref = f"XREF-{pay_idx:06d}"
+            notes = f"Cross-match payment {pay_idx}"
+        else:
+            # --- Orphan payment (no matching invoice) ---
+            cust_id = _pad_id("CUST", 500 + (i - orphan_boundary))
+            cust_name = f"Orphan Payer {i - orphan_boundary + 1}"
+            ref = f"ORPHAN-CROSS-{pay_idx:06d}"
+            notes = f"Orphan cross-match payment {pay_idx}"
+
+        payments.append({
+            "payment_id": _pad_id("PAY", pay_idx),
+            "payer_id": cust_id,
+            "payer_name": cust_name,
+            "payment_date": _random_date(2024),
+            "paid_amount": _random_amount(),
+            "currency": CURRENCIES[i % len(CURRENCIES)],
+            "payment_method": PAYMENT_METHODS[i % len(PAYMENT_METHODS)],
+            "reference_number": ref,
+            "bank_reference": f"BR-XPAY-{pay_idx:06d}",
+            "notes": notes,
+        })
+        pay_idx += 1
+
+    return payments
