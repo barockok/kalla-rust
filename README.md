@@ -8,37 +8,39 @@ Kalla is a high-performance data reconciliation engine built with Rust and power
 graph TB
     Browser([Browser]) -->|:3000| App
 
-    subgraph App["Kalla App (Next.js)"]
+    subgraph App["Kalla App · Next.js"]
         WebUI[Web UI]
         REST[REST API]
         Agent[Agentic Builder]
         CRUD[Postgres CRUD]
     end
 
-    App -->|SQL| AppDB[(PostgreSQL<br/>App State<br/>Recipes / Runs)]
+    App -->|SQL| AppDB[(PostgreSQL · App State\nRecipes / Runs)]
     App -->|HTTP| Scheduler
 
-    subgraph Scheduler["kallad scheduler (Rust / Ballista)"]
-        HTTP[HTTP API :8080]
-        GRPC[Ballista gRPC :50050]
+    subgraph Scheduler["kallad scheduler · Rust / Ballista"]
+        HTTP[HTTP API · 8080]
+        GRPC[Ballista gRPC · 50050]
         DF[DataFusion SQL]
         Evidence[Evidence Store]
     end
 
-    Scheduler --> Exec1[kallad executor 1<br/>Arrow Flight]
-    Scheduler --> Exec2[kallad executor 2<br/>Arrow Flight]
+    Scheduler --> Exec1[kallad executor 1\nArrow Flight]
+    Scheduler --> Exec2[kallad executor 2\nArrow Flight]
 
-    subgraph Sources["Data Sources (user-configured)"]
+    subgraph Sources["Data Sources · user-configured"]
         SrcPG[(PostgreSQL)]
         SrcCSV[(S3 / CSV)]
-        SrcOther[(Elasticsearch<br/>Trino / etc.)]
+        SrcOther[(Elasticsearch\nTrino / etc.)]
     end
 
     Exec1 -->|partitioned reads| Sources
     Exec2 -->|partitioned reads| Sources
 
-    Scheduler -->|callback| App
+    Scheduler -.->|callback| App
 ```
+
+> Editable version: open [`docs/architecture.excalidraw`](docs/architecture.excalidraw) in [excalidraw.com](https://excalidraw.com)
 
 ### Deployable Components
 
