@@ -76,13 +76,18 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Scheduler {
+            http_port,
             grpc_port,
             bind_host,
-            ..
+            partitions,
+            staging_path,
         } => {
             kalla_ballista::start_scheduler(kalla_ballista::SchedulerOpts {
                 bind_host,
                 grpc_port,
+                http_port,
+                partitions,
+                staging_path,
             })
             .await?;
         }

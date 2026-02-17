@@ -18,27 +18,46 @@ use codec::KallaPhysicalCodec;
 // Scheduler
 // ---------------------------------------------------------------------------
 
-/// Options for starting the Ballista scheduler.
+/// Options for starting the Ballista scheduler with the embedded HTTP runner.
 pub struct SchedulerOpts {
     pub bind_host: String,
     pub grpc_port: u16,
+    pub http_port: u16,
+    pub partitions: usize,
+    pub staging_path: String,
 }
 
-/// Start the Ballista scheduler with the Kalla physical codec.
+/// Start the Ballista scheduler with the Kalla physical codec **and** the
+/// embedded HTTP runner.  Both services run concurrently via `tokio::select!`.
 ///
-/// Blocks until the scheduler shuts down.
+/// Blocks until either service shuts down.
 #[allow(clippy::field_reassign_with_default)]
 pub async fn start_scheduler(opts: SchedulerOpts) -> anyhow::Result<()> {
     let mut config = SchedulerConfig::default();
     config.override_physical_codec = Some(Arc::new(KallaPhysicalCodec::new()));
-    config.bind_host = opts.bind_host;
+    config.bind_host = opts.bind_host.clone();
     config.bind_port = opts.grpc_port;
 
     let addr: SocketAddr = format!("{}:{}", config.bind_host, config.bind_port).parse()?;
     let cluster = BallistaCluster::new_from_config(&config).await?;
 
-    tracing::info!("Starting kalla-scheduler on {addr}");
-    start_server(cluster, addr, Arc::new(config)).await?;
+    tracing::info!("Starting kalla-scheduler (gRPC) on {addr}");
+
+    let runner_config = runner::RunnerConfig {
+        grpc_port: opts.grpc_port,
+        partitions: opts.partitions,
+        staging_path: opts.staging_path,
+    };
+    let http_addr = format!("{}:{}", opts.bind_host, opts.http_port);
+
+    tokio::select! {
+        res = start_server(cluster, addr, Arc::new(config)) => {
+            res?;
+        }
+        res = runner::start_runner(&http_addr, runner_config) => {
+            res?;
+        }
+    }
 
     Ok(())
 }
