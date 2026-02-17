@@ -1,19 +1,10 @@
-# Kalla — Ballista Cluster Deployment
+# Kalla Cluster Deployment
 #
-# Usage:
-#   docker compose -f docker-compose.cluster.yml up -d
-#
-# Requirements:
-#   - Set ANTHROPIC_API_KEY in environment or .env file
+# Usage: docker compose -f docker-compose.cluster.yml up -d
 #
 # Architecture:
-#   App --NATS JetStream--> Worker --Ballista DF--> Scheduler --> Executors
-#   App --SQL--> Postgres
-#   Worker --callback--> App /api/worker/*
+#   App --HTTP--> Scheduler (HTTP :8080 + gRPC :50050) --> Executors
 #   Executors read from Postgres directly via PostgresScanExec
-#
-# Worker detects cluster mode via BALLISTA_SCHEDULER_URL presence.
-# The Ballista scheduler coordinates query execution across executors.
 
 services:
   app:
@@ -24,30 +15,11 @@ services:
       - "3000:3000"
     environment:
       DATABASE_URL: postgres://kalla:kalla_secret@postgres:5432/kalla
-      NATS_URL: nats://nats:4222
+      WORKER_URL: http://scheduler:8080
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     depends_on:
       postgres:
         condition: service_healthy
-      nats:
-        condition: service_started
-    restart: unless-stopped
-
-  worker:
-    build:
-      context: .
-      dockerfile: crates/kalla-worker/Dockerfile
-    environment:
-      NATS_URL: nats://nats:4222
-      DATABASE_URL: postgresql://kalla:kalla_secret@postgres:5432/kalla
-      BALLISTA_SCHEDULER_URL: df://scheduler:50050
-      BALLISTA_PARTITIONS: "8"
-      RUST_LOG: ${RUST_LOG:-info}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      nats:
-        condition: service_started
       scheduler:
         condition: service_started
     restart: unless-stopped
@@ -55,30 +27,22 @@ services:
   scheduler:
     build:
       context: .
-      dockerfile: crates/kalla-ballista/Dockerfile
-      args:
-        BINARY: kalla-scheduler
+      dockerfile: Dockerfile
+    command: ["scheduler", "--http-port", "8080", "--grpc-port", "50050"]
     ports:
+      - "8080:8080"
       - "50050:50050"
     environment:
-      BIND_HOST: "0.0.0.0"
-      BIND_PORT: "50050"
       RUST_LOG: ${RUST_LOG:-info}
+      BALLISTA_PARTITIONS: "8"
     restart: unless-stopped
 
   executor-1:
     build:
       context: .
-      dockerfile: crates/kalla-ballista/Dockerfile
-      args:
-        BINARY: kalla-executor
+      dockerfile: Dockerfile
+    command: ["executor", "--scheduler-host", "scheduler", "--scheduler-port", "50050", "--flight-port", "50051", "--grpc-port", "50052", "--external-host", "executor-1"]
     environment:
-      SCHEDULER_HOST: scheduler
-      SCHEDULER_PORT: "50050"
-      BIND_HOST: "0.0.0.0"
-      BIND_PORT: "50051"
-      BIND_GRPC_PORT: "50052"
-      EXTERNAL_HOST: executor-1
       RUST_LOG: ${RUST_LOG:-info}
     depends_on:
       scheduler:
@@ -88,16 +52,9 @@ services:
   executor-2:
     build:
       context: .
-      dockerfile: crates/kalla-ballista/Dockerfile
-      args:
-        BINARY: kalla-executor
+      dockerfile: Dockerfile
+    command: ["executor", "--scheduler-host", "scheduler", "--scheduler-port", "50050", "--flight-port", "50051", "--grpc-port", "50052", "--external-host", "executor-2"]
     environment:
-      SCHEDULER_HOST: scheduler
-      SCHEDULER_PORT: "50050"
-      BIND_HOST: "0.0.0.0"
-      BIND_PORT: "50051"
-      BIND_GRPC_PORT: "50052"
-      EXTERNAL_HOST: executor-2
       RUST_LOG: ${RUST_LOG:-info}
     depends_on:
       scheduler:
@@ -122,15 +79,5 @@ services:
       retries: 5
     restart: unless-stopped
 
-  nats:
-    image: nats:2-alpine
-    command: ["--jetstream", "--store_dir=/data"]
-    ports:
-      - "4222:4222"
-    volumes:
-      - nats_data:/data
-    restart: unless-stopped
-
 volumes:
   postgres_data:
-  nats_data:
