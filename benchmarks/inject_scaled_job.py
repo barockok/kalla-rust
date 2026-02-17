@@ -30,12 +30,7 @@ import psycopg2
 # Allow importing datagen from the benchmarks directory
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
-from datagen import generate_invoices, generate_payments
-from seed_postgres import (
-    CREATE_INVOICES, CREATE_PAYMENTS,
-    INVOICE_COLUMNS, PAYMENT_COLUMNS,
-    _rows_to_tsv,
-)
+from seed_postgres import seed_chunked
 
 DEFAULT_MATCH_SQL = (
     "SELECT i.*, p.* FROM left_src i JOIN right_src p "
@@ -46,24 +41,10 @@ DEFAULT_MATCH_SQL = (
 
 def seed_data(pg_url: str, rows: int, match_rate: float):
     """Seed bench_invoices and bench_payments into Postgres."""
-    invoices = generate_invoices(rows)
-    payments = generate_payments(rows, invoices, match_rate=match_rate)
-
     conn = psycopg2.connect(pg_url)
     try:
-        with conn.cursor() as cur:
-            cur.execute(CREATE_INVOICES)
-            cur.execute(CREATE_PAYMENTS)
-            conn.commit()
-
-            inv_buf = _rows_to_tsv(invoices, INVOICE_COLUMNS)
-            cur.copy_from(inv_buf, "bench_invoices", columns=INVOICE_COLUMNS)
-
-            pay_buf = _rows_to_tsv(payments, PAYMENT_COLUMNS)
-            cur.copy_from(pay_buf, "bench_payments", columns=PAYMENT_COLUMNS)
-
-            conn.commit()
-        print(f"Seeded {len(invoices)} invoices, {len(payments)} payments")
+        total_inv, total_pay = seed_chunked(conn, rows, match_rate)
+        print(f"Seeded {total_inv} invoices, {total_pay} payments")
     finally:
         conn.close()
 

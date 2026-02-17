@@ -32,15 +32,15 @@ def _random_date(year: int) -> str:
     return f"{year}-{month:02d}-{day:02d}"
 
 
-def generate_invoices(n: int) -> list[dict]:
-    """Generate *n* invoice rows.
+def generate_invoices(n: int, offset: int = 0) -> list[dict]:
+    """Generate *n* invoice rows starting at *offset*.
 
     The returned list is later consumed by ``generate_payments`` which
     creates matching / non-matching payment rows according to the
     configured distribution.
     """
     invoices: list[dict] = []
-    for i in range(1, n + 1):
+    for i in range(offset + 1, offset + n + 1):
         cust_id = _pad_id("CUST", (i % 20) + 1)
         invoices.append({
             "invoice_id": _pad_id("INV", i),
@@ -56,7 +56,8 @@ def generate_invoices(n: int) -> list[dict]:
     return invoices
 
 
-def generate_payments(n: int, invoices: list[dict], match_rate: float = 0.75) -> list[dict]:
+def generate_payments(n: int, invoices: list[dict], match_rate: float = 0.75,
+                      pay_offset: int = 0, orphan_offset: int = 0) -> list[dict]:
     """Generate payment rows for *invoices*.
 
     *match_rate* controls the fraction of invoices that get a matching payment
@@ -89,7 +90,7 @@ def generate_payments(n: int, invoices: list[dict], match_rate: float = 0.75) ->
         orphan_right_count = int(n * 0.10)
 
     payments: list[dict] = []
-    pay_idx = 1
+    pay_idx = pay_offset + 1
 
     # --- Exact matches ---
     for i in range(exact_count):
@@ -150,18 +151,18 @@ def generate_payments(n: int, invoices: list[dict], match_rate: float = 0.75) ->
 
     # --- Right-side orphans (payments with no invoice) ---
     for i in range(orphan_right_count):
-        cust_id = _pad_id("CUST", 200 + i)
+        cust_id = _pad_id("CUST", 200 + orphan_offset + i)
         payments.append({
             "payment_id": _pad_id("PAY", pay_idx),
             "payer_id": cust_id,
-            "payer_name": f"Unknown Payer {i + 1}",
+            "payer_name": f"Unknown Payer {orphan_offset + i + 1}",
             "payment_date": _random_date(2024),
             "paid_amount": _random_amount(),
             "currency": "USD",
             "payment_method": PAYMENT_METHODS[i % len(PAYMENT_METHODS)],
-            "reference_number": f"UNKNOWN-{i + 1}",
+            "reference_number": f"UNKNOWN-{orphan_offset + i + 1}",
             "bank_reference": f"BR-PAY-{pay_idx:06d}",
-            "notes": f"Orphan payment {i + 1}",
+            "notes": f"Orphan payment {orphan_offset + i + 1}",
         })
         pay_idx += 1
 

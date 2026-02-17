@@ -65,23 +65,30 @@ def _rows_to_tsv(rows: list[dict], columns: list[str]) -> io.StringIO:
     return buf
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Seed Postgres with benchmark data")
-    parser.add_argument("--rows", type=int, required=True, help="Number of invoice rows")
-    parser.add_argument("--pg-url", required=True, help="PostgreSQL connection URL")
-    parser.add_argument("--match-rate", type=float, default=0.75, help="Match rate 0.0-1.0 (default 0.75)")
-    args = parser.parse_args()
+CHUNK_SIZE = 500_000
 
-    invoices = generate_invoices(args.rows)
-    payments = generate_payments(args.rows, invoices, match_rate=args.match_rate)
 
-    conn = psycopg2.connect(args.pg_url)
-    try:
+def seed_chunked(conn, total_rows: int, match_rate: float):
+    """Seed bench data in chunks to limit memory usage."""
+    with conn.cursor() as cur:
+        cur.execute(CREATE_INVOICES)
+        cur.execute(CREATE_PAYMENTS)
+        conn.commit()
+
+    total_invoices = 0
+    total_payments = 0
+    pay_offset = 0
+    orphan_offset = 0
+
+    for chunk_start in range(0, total_rows, CHUNK_SIZE):
+        chunk_size = min(CHUNK_SIZE, total_rows - chunk_start)
+        invoices = generate_invoices(chunk_size, offset=chunk_start)
+        payments = generate_payments(
+            chunk_size, invoices, match_rate=match_rate,
+            pay_offset=pay_offset, orphan_offset=orphan_offset,
+        )
+
         with conn.cursor() as cur:
-            cur.execute(CREATE_INVOICES)
-            cur.execute(CREATE_PAYMENTS)
-            conn.commit()
-
             inv_buf = _rows_to_tsv(invoices, INVOICE_COLUMNS)
             cur.copy_from(inv_buf, "bench_invoices", columns=INVOICE_COLUMNS)
 
@@ -90,8 +97,27 @@ def main():
 
             conn.commit()
 
-        print(f"Seeded {len(invoices)} invoices into bench_invoices")
-        print(f"Seeded {len(payments)} payments into bench_payments")
+        total_invoices += len(invoices)
+        pay_offset += len(payments)
+        orphan_offset += int(chunk_size * 0.10) if match_rate == 0.75 else 0
+        total_payments += len(payments)
+        del invoices, payments
+
+    return total_invoices, total_payments
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Seed Postgres with benchmark data")
+    parser.add_argument("--rows", type=int, required=True, help="Number of invoice rows")
+    parser.add_argument("--pg-url", required=True, help="PostgreSQL connection URL")
+    parser.add_argument("--match-rate", type=float, default=0.75, help="Match rate 0.0-1.0 (default 0.75)")
+    args = parser.parse_args()
+
+    conn = psycopg2.connect(args.pg_url)
+    try:
+        total_inv, total_pay = seed_chunked(conn, args.rows, args.match_rate)
+        print(f"Seeded {total_inv} invoices into bench_invoices")
+        print(f"Seeded {total_pay} payments into bench_payments")
     finally:
         conn.close()
 
