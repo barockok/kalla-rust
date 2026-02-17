@@ -215,7 +215,7 @@ pub(crate) fn pg_type_to_arrow(pg_type: &str) -> DataType {
 }
 
 /// Convert PostgreSQL rows to Arrow RecordBatch
-pub(crate) fn rows_to_record_batch(rows: &[PgRow], schema: Arc<Schema>) -> Result<RecordBatch> {
+pub fn rows_to_record_batch(rows: &[PgRow], schema: Arc<Schema>) -> Result<RecordBatch> {
     use arrow::array::*;
 
     let mut columns: Vec<ArrayRef> = Vec::new();
