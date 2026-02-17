@@ -15,7 +15,7 @@ graph TB
         CRUD[Postgres CRUD]
     end
 
-    App -->|SQL| PG[(PostgreSQL<br/>App state / Sources<br/>Recipes / Runs)]
+    App -->|SQL| AppDB[(PostgreSQL<br/>App State<br/>Recipes / Runs)]
     App -->|HTTP| Scheduler
 
     subgraph Scheduler["kallad scheduler (Rust / Ballista)"]
@@ -28,8 +28,14 @@ graph TB
     Scheduler --> Exec1[kallad executor 1<br/>Arrow Flight]
     Scheduler --> Exec2[kallad executor 2<br/>Arrow Flight]
 
-    Exec1 -->|PostgresScanExec| PG
-    Exec2 -->|PostgresScanExec| PG
+    subgraph Sources["Data Sources (user-configured)"]
+        SrcPG[(PostgreSQL)]
+        SrcCSV[(S3 / CSV)]
+        SrcOther[(Elasticsearch<br/>Trino / etc.)]
+    end
+
+    Exec1 -->|partitioned reads| Sources
+    Exec2 -->|partitioned reads| Sources
 
     Scheduler -->|callback| App
 ```
