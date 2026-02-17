@@ -1,0 +1,8 @@
+{
+    "name": "cross_match_1m",
+    "mode": "cluster",
+    "source_type": "postgres",
+    "pattern": "cross",
+    "rows": 1000000,
+    "match_sql": "SELECT l.invoice_id, r.payment_id, l.customer_id, l.amount AS invoice_amount, r.paid_amount AS payment_amount FROM left_src l JOIN right_src r ON l.customer_id = r.payer_id AND l.currency = r.currency AND SUBSTRING(l.invoice_date, 1, 7) = SUBSTRING(r.payment_date, 1, 7)"
+}

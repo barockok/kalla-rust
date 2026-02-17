@@ -1,0 +1,8 @@
+{
+    "name": "batch_payments_1m",
+    "mode": "cluster",
+    "source_type": "postgres",
+    "pattern": "batch",
+    "rows": 1000000,
+    "match_sql": "SELECT l.invoice_id, r.payment_id, l.batch_ref, l.amount AS invoice_amount, r.paid_amount AS batch_total FROM left_src l JOIN right_src r ON l.batch_ref = r.reference_number"
+}

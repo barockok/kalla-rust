@@ -1,0 +1,8 @@
+{
+    "name": "split_payments_1m",
+    "mode": "cluster",
+    "source_type": "postgres",
+    "pattern": "split",
+    "rows": 1000000,
+    "match_sql": "SELECT l.invoice_id, r.payment_id, l.amount AS invoice_amount, r.paid_amount AS payment_amount FROM left_src l JOIN right_src r ON l.invoice_id = r.reference_number"
+}
