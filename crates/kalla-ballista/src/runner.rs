@@ -444,7 +444,10 @@ async fn execute_job(job: JobRequest, config: &RunnerConfig, metrics: &RunnerMet
             metrics.jobs_completed.inc();
             info!(
                 "Run {} completed: {} matched, {} unmatched_left, {} unmatched_right",
-                run_id, exec_result.matched, exec_result.unmatched_left, exec_result.unmatched_right
+                run_id,
+                exec_result.matched,
+                exec_result.unmatched_left,
+                exec_result.unmatched_right
             );
         }
         Err(e) => {
@@ -510,8 +513,7 @@ async fn execute_job_inner(
     // Register all sources
     let staging_start = Instant::now();
     for (i, source) in job.sources.iter().enumerate() {
-        register_source_partitioned(&engine, &source.alias, &source.uri, config.partitions)
-            .await?;
+        register_source_partitioned(&engine, &source.alias, &source.uri, config.partitions).await?;
         info!("Registered source '{}' from {}", source.alias, source.uri);
 
         let progress = (i + 1) as f64 / job.sources.len() as f64;
@@ -552,16 +554,10 @@ async fn execute_job_inner(
             while let Some(batch_result) = stream.next().await {
                 let batch = batch_result?;
                 for row_idx in 0..batch.num_rows() {
-                    let left_key =
-                        extract_first_key(&batch, &job.primary_keys, row_idx, true)
-                            .unwrap_or_else(|| {
-                                format!("row_{}", matched_count + row_idx as u64)
-                            });
-                    let right_key =
-                        extract_first_key(&batch, &job.primary_keys, row_idx, false)
-                            .unwrap_or_else(|| {
-                                format!("row_{}", matched_count + row_idx as u64)
-                            });
+                    let left_key = extract_first_key(&batch, &job.primary_keys, row_idx, true)
+                        .unwrap_or_else(|| format!("row_{}", matched_count + row_idx as u64));
+                    let right_key = extract_first_key(&batch, &job.primary_keys, row_idx, false)
+                        .unwrap_or_else(|| format!("row_{}", matched_count + row_idx as u64));
 
                     matched_records.push(MatchedRecord::new(
                         left_key,
@@ -659,10 +655,7 @@ async fn execute_job_inner(
 ///
 /// Binds an Axum HTTP server on the given address and spawns a job processor
 /// that executes jobs concurrently as separate tokio tasks.
-pub async fn start_runner(
-    bind_addr: &str,
-    config: RunnerConfig,
-) -> anyhow::Result<()> {
+pub async fn start_runner(bind_addr: &str, config: RunnerConfig) -> anyhow::Result<()> {
     let runner_metrics = RunnerMetrics::new();
 
     let (job_tx, mut job_rx) = mpsc::channel::<JobRequest>(64);
