@@ -279,7 +279,7 @@ async fn register_source_partitioned(
             conn_url.as_str(),
             &table_name,
             num_partitions,
-            None,
+            Some("ctid".to_string()),
         )
         .await?;
     } else if uri.starts_with("s3://") && uri.ends_with(".csv") {
