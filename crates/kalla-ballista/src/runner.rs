@@ -388,20 +388,14 @@ async fn run_count_query(engine: &ReconciliationEngine, sql: &str) -> anyhow::Re
 // Key extraction helpers
 // ---------------------------------------------------------------------------
 
-/// Extract the first primary key value from a record batch for left or right source.
+/// Extract the first primary key value from a record batch for a given source alias.
 fn extract_first_key(
     batch: &arrow::record_batch::RecordBatch,
     primary_keys: &HashMap<String, Vec<String>>,
     row_idx: usize,
-    is_left: bool,
+    alias: &str,
 ) -> Option<String> {
-    let aliases: Vec<&String> = primary_keys.keys().collect();
-    let alias = if is_left {
-        aliases.first()?
-    } else {
-        aliases.get(1)?
-    };
-    let pks = &primary_keys[*alias];
+    let pks = primary_keys.get(alias)?;
     let pk = pks.first()?;
 
     let qualified = format!("{}.{}", alias, pk);
@@ -601,14 +595,17 @@ async fn execute_job_inner(
     let mut matched_count = 0u64;
     let mut matched_records: Vec<MatchedRecord> = Vec::new();
 
+    let left_alias = job.sources.first().map(|s| s.alias.as_str()).unwrap_or("left_src");
+    let right_alias = job.sources.get(1).map(|s| s.alias.as_str()).unwrap_or("right_src");
+
     match engine.sql_stream(&job.match_sql).await {
         Ok(mut stream) => {
             while let Some(batch_result) = stream.next().await {
                 let batch = batch_result?;
                 for row_idx in 0..batch.num_rows() {
-                    let left_key = extract_first_key(&batch, &job.primary_keys, row_idx, true)
+                    let left_key = extract_first_key(&batch, &job.primary_keys, row_idx, left_alias)
                         .unwrap_or_else(|| format!("row_{}", matched_count + row_idx as u64));
-                    let right_key = extract_first_key(&batch, &job.primary_keys, row_idx, false)
+                    let right_key = extract_first_key(&batch, &job.primary_keys, row_idx, right_alias)
                         .unwrap_or_else(|| format!("row_{}", matched_count + row_idx as u64));
 
                     matched_records.push(MatchedRecord::new(
