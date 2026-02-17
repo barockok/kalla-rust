@@ -142,6 +142,11 @@ impl PostgresPartitionedTable {
     pub fn order_column(&self) -> Option<&str> {
         self.order_column.as_deref()
     }
+
+    /// Access the inferred Arrow schema.
+    pub fn arrow_schema(&self) -> &SchemaRef {
+        &self.schema
+    }
 }
 
 #[async_trait]
