@@ -595,18 +595,28 @@ async fn execute_job_inner(
     let mut matched_count = 0u64;
     let mut matched_records: Vec<MatchedRecord> = Vec::new();
 
-    let left_alias = job.sources.first().map(|s| s.alias.as_str()).unwrap_or("left_src");
-    let right_alias = job.sources.get(1).map(|s| s.alias.as_str()).unwrap_or("right_src");
+    let left_alias = job
+        .sources
+        .first()
+        .map(|s| s.alias.as_str())
+        .unwrap_or("left_src");
+    let right_alias = job
+        .sources
+        .get(1)
+        .map(|s| s.alias.as_str())
+        .unwrap_or("right_src");
 
     match engine.sql_stream(&job.match_sql).await {
         Ok(mut stream) => {
             while let Some(batch_result) = stream.next().await {
                 let batch = batch_result?;
                 for row_idx in 0..batch.num_rows() {
-                    let left_key = extract_first_key(&batch, &job.primary_keys, row_idx, left_alias)
-                        .unwrap_or_else(|| format!("row_{}", matched_count + row_idx as u64));
-                    let right_key = extract_first_key(&batch, &job.primary_keys, row_idx, right_alias)
-                        .unwrap_or_else(|| format!("row_{}", matched_count + row_idx as u64));
+                    let left_key =
+                        extract_first_key(&batch, &job.primary_keys, row_idx, left_alias)
+                            .unwrap_or_else(|| format!("row_{}", matched_count + row_idx as u64));
+                    let right_key =
+                        extract_first_key(&batch, &job.primary_keys, row_idx, right_alias)
+                            .unwrap_or_else(|| format!("row_{}", matched_count + row_idx as u64));
 
                     matched_records.push(MatchedRecord::new(
                         left_key,
