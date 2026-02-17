@@ -469,43 +469,20 @@ pub async fn handle_exec(
         run_id, total_matched, matching_ms
     );
 
-    // Derive unmatched using primary keys via LEFT ANTI JOIN
-    let mut unmatched_left = 0u64;
-    let mut unmatched_right = 0u64;
-
+    // Derive unmatched using NOT IN (match_sql) — same approach as single-mode
     let left_alias = &recipe.sources.left.alias;
     let right_alias = &recipe.sources.right.alias;
 
-    if !recipe.sources.left.primary_key.is_empty() && !recipe.sources.right.primary_key.is_empty() {
-        let lpk = &recipe.sources.left.primary_key[0];
-        let rpk = &recipe.sources.right.primary_key[0];
+    let mut primary_keys = HashMap::new();
+    primary_keys.insert(left_alias.clone(), recipe.sources.left.primary_key.clone());
+    primary_keys.insert(
+        right_alias.clone(),
+        recipe.sources.right.primary_key.clone(),
+    );
+    let source_aliases: Vec<&str> = vec![left_alias.as_str(), right_alias.as_str()];
 
-        let left_orphan_sql = format!(
-            "SELECT {l}.* FROM {l} LEFT JOIN {r} ON {l}.{lpk} = {r}.{rpk} WHERE {r}.{rpk} IS NULL",
-            l = left_alias,
-            r = right_alias,
-            lpk = lpk,
-            rpk = rpk
-        );
-        if let Ok(mut stream) = engine.sql_stream(&left_orphan_sql).await {
-            while let Some(Ok(batch)) = stream.next().await {
-                unmatched_left += batch.num_rows() as u64;
-            }
-        }
-
-        let right_orphan_sql = format!(
-            "SELECT {r}.* FROM {r} LEFT JOIN {l} ON {r}.{rpk} = {l}.{lpk} WHERE {l}.{lpk} IS NULL",
-            l = left_alias,
-            r = right_alias,
-            lpk = lpk,
-            rpk = rpk
-        );
-        if let Ok(mut stream) = engine.sql_stream(&right_orphan_sql).await {
-            while let Some(Ok(batch)) = stream.next().await {
-                unmatched_right += batch.num_rows() as u64;
-            }
-        }
-    }
+    let (unmatched_left, unmatched_right) =
+        count_unmatched(&engine, &recipe.match_sql, &primary_keys, &source_aliases).await?;
 
     info!(
         "Run {}: {} unmatched_left, {} unmatched_right",
