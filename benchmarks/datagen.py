@@ -52,6 +52,7 @@ def generate_invoices(n: int, offset: int = 0) -> list[dict]:
             "currency": CURRENCIES[i % len(CURRENCIES)],
             "status": "pending",
             "description": f"Service {i}",
+            "batch_ref": None,
         })
     return invoices
 

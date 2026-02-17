@@ -16,6 +16,7 @@ from datagen import generate_invoices, generate_payments
 INVOICE_COLUMNS = [
     "invoice_id", "customer_id", "customer_name", "invoice_date",
     "due_date", "amount", "currency", "status", "description",
+    "batch_ref",
 ]
 
 PAYMENT_COLUMNS = [
@@ -35,7 +36,8 @@ CREATE TABLE bench_invoices (
     amount        DOUBLE PRECISION,
     currency      TEXT,
     status        TEXT,
-    description   TEXT
+    description   TEXT,
+    batch_ref     TEXT
 );
 """
 
@@ -59,7 +61,7 @@ CREATE TABLE bench_payments (
 def _rows_to_tsv(rows: list[dict], columns: list[str]) -> io.StringIO:
     buf = io.StringIO()
     for row in rows:
-        line = "\t".join(str(row[c]) for c in columns)
+        line = "\t".join("\\N" if row[c] is None else str(row[c]) for c in columns)
         buf.write(line + "\n")
     buf.seek(0)
     return buf
