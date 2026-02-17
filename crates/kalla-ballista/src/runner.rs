@@ -420,6 +420,27 @@ fn extract_string_value(
 }
 
 // ---------------------------------------------------------------------------
+// SQL rewriting for cluster mode
+// ---------------------------------------------------------------------------
+
+/// Replace the SELECT clause with `SELECT *` to work around Ballista's
+/// distributed planner limitation where column projections in JOINs cause
+/// "missing columns on join" errors.
+///
+/// Input:  `SELECT l.invoice_id, r.payment_id FROM left_src l JOIN ...`
+/// Output: `SELECT * FROM left_src l JOIN ...`
+fn rewrite_select_star(sql: &str) -> String {
+    // Find the first ` FROM ` (case-insensitive). Everything before it is the
+    // SELECT clause which we replace with `SELECT *`.
+    let upper = sql.to_uppercase();
+    if let Some(pos) = upper.find(" FROM ") {
+        format!("SELECT *{}", &sql[pos..])
+    } else {
+        sql.to_string()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Job execution
 // ---------------------------------------------------------------------------
 
@@ -541,11 +562,11 @@ async fn execute_job_inner(
     // The co-located Ballista gRPC scheduler always accepts connections, so new_cluster()
     // succeeds even without executors. We probe with SELECT 1 to verify executors are present.
     let scheduler_url = format!("df://localhost:{}", config.grpc_port);
-    let engine = match create_engine(&scheduler_url, run_id).await {
-        Some(e) => e,
+    let (engine, is_cluster) = match create_engine(&scheduler_url, run_id).await {
+        Some(e) => (e, true),
         None => {
             info!("Run {}: using local DataFusion engine", run_id);
-            ReconciliationEngine::new()
+            (ReconciliationEngine::new(), false)
         }
     };
 
@@ -606,7 +627,18 @@ async fn execute_job_inner(
         .map(|s| s.alias.as_str())
         .unwrap_or("right_src");
 
-    match engine.sql_stream(&job.match_sql).await {
+    // Ballista's distributed planner cannot handle column projections in JOIN
+    // queries — it loses track of join-key columns when they are not in the
+    // SELECT list. Work around by replacing the SELECT clause with `SELECT *`
+    // in cluster mode. The downstream key-extraction code finds columns by
+    // name so extra columns are harmless.
+    let match_sql = if is_cluster {
+        rewrite_select_star(&job.match_sql)
+    } else {
+        job.match_sql.clone()
+    };
+
+    match engine.sql_stream(&match_sql).await {
         Ok(mut stream) => {
             while let Some(batch_result) = stream.next().await {
                 let batch = batch_result?;
@@ -755,4 +787,58 @@ pub async fn start_runner(bind_addr: &str, config: RunnerConfig) -> anyhow::Resu
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rewrite_select_star_specific_columns() {
+        let sql =
+            "SELECT l.invoice_id, r.payment_id FROM left_src l JOIN right_src r ON l.id = r.id";
+        let result = rewrite_select_star(sql);
+        assert_eq!(
+            result,
+            "SELECT * FROM left_src l JOIN right_src r ON l.id = r.id"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_select_star_already_star() {
+        let sql = "SELECT * FROM left_src l JOIN right_src r ON l.id = r.id";
+        let result = rewrite_select_star(sql);
+        assert_eq!(result, sql);
+    }
+
+    #[test]
+    fn test_rewrite_select_star_aliased_columns() {
+        let sql = "SELECT l.amount AS invoice_amount, r.paid_amount AS payment_amount FROM left_src l JOIN right_src r ON l.batch_ref = r.reference_number";
+        let result = rewrite_select_star(sql);
+        assert_eq!(
+            result,
+            "SELECT * FROM left_src l JOIN right_src r ON l.batch_ref = r.reference_number"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_select_star_case_insensitive() {
+        let sql = "select l.id from left_src l join right_src r on l.id = r.id";
+        let result = rewrite_select_star(sql);
+        assert_eq!(
+            result,
+            "SELECT * from left_src l join right_src r on l.id = r.id"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_select_star_no_from() {
+        let sql = "SELECT 1";
+        let result = rewrite_select_star(sql);
+        assert_eq!(result, "SELECT 1");
+    }
 }
