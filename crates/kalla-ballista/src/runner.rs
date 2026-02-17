@@ -469,10 +469,13 @@ async fn execute_job(job: JobRequest, config: &RunnerConfig, metrics: &RunnerMet
 /// Try to create a cluster engine and verify executors are present.
 /// Returns Some(engine) if cluster mode works, None to fall back to local.
 async fn create_engine(scheduler_url: &str, run_id: Uuid) -> Option<ReconciliationEngine> {
-    let engine =
-        match ReconciliationEngine::new_cluster(scheduler_url, Arc::new(KallaPhysicalCodec::new()))
-            .await
-        {
+    let engine = match ReconciliationEngine::new_cluster(
+        scheduler_url,
+        Arc::new(KallaPhysicalCodec::new()),
+        Arc::new(crate::codec::KallaLogicalCodec::new()),
+    )
+    .await
+    {
             Ok(e) => e,
             Err(e) => {
                 warn!(

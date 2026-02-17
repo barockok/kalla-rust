@@ -50,23 +50,26 @@ impl ReconciliationEngine {
     /// # Example
     ///
     /// ```ignore
-    /// use kalla_ballista::codec::KallaPhysicalCodec;
+    /// use kalla_ballista::codec::{KallaPhysicalCodec, KallaLogicalCodec};
     /// use std::sync::Arc;
     ///
     /// let engine = kalla_core::engine::ReconciliationEngine::new_cluster(
     ///     "df://scheduler-host:50050",
     ///     Arc::new(KallaPhysicalCodec::new()),
+    ///     Arc::new(KallaLogicalCodec::new()),
     /// ).await?;
     /// ```
     pub async fn new_cluster(
         scheduler_url: &str,
         codec: std::sync::Arc<dyn datafusion_proto::physical_plan::PhysicalExtensionCodec>,
+        logical_codec: std::sync::Arc<dyn datafusion_proto::logical_plan::LogicalExtensionCodec>,
     ) -> anyhow::Result<Self> {
         use ballista::prelude::{SessionConfigExt as _, SessionContextExt as _};
         use datafusion::execution::session_state::SessionStateBuilder;
 
         let config = datafusion::prelude::SessionConfig::new()
             .with_information_schema(true)
+            .with_ballista_logical_extension_codec(logical_codec)
             .with_ballista_physical_extension_codec(codec);
 
         let state = SessionStateBuilder::new()
@@ -585,11 +588,14 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires running Ballista scheduler
     async fn test_cluster_engine_creation() {
+        use datafusion_proto::logical_plan::DefaultLogicalExtensionCodec;
         use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
         use std::sync::Arc;
 
         let codec = Arc::new(DefaultPhysicalExtensionCodec {});
-        let result = ReconciliationEngine::new_cluster("df://localhost:50050", codec).await;
+        let logical_codec = Arc::new(DefaultLogicalExtensionCodec {});
+        let result =
+            ReconciliationEngine::new_cluster("df://localhost:50050", codec, logical_codec).await;
         // Will fail without a scheduler, just verify it compiles
         assert!(result.is_err());
     }

@@ -190,6 +190,34 @@ impl CsvByteRangeTable {
         })
     }
 
+    /// Reconstruct from pre-computed parts (no S3 connection required).
+    /// Used by the logical codec to deserialize a table provider on remote executors.
+    pub fn from_parts(
+        s3_uri: String,
+        schema: SchemaRef,
+        total_size: u64,
+        num_partitions: usize,
+        _header_line: String,
+        s3_config: S3Config,
+    ) -> Self {
+        let (bucket, key) = S3Connector::parse_s3_uri(&s3_uri)
+            .unwrap_or_else(|_| ("unknown".to_string(), "unknown".to_string()));
+        Self {
+            s3_uri,
+            bucket,
+            key,
+            schema,
+            file_size: total_size,
+            num_partitions,
+            s3_config,
+        }
+    }
+
+    /// Access the total file size (alias for file_size, used by codec).
+    pub fn total_size(&self) -> u64 {
+        self.file_size
+    }
+
     /// Access the S3 URI.
     pub fn s3_uri(&self) -> &str {
         &self.s3_uri

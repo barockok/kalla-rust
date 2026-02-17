@@ -11,6 +11,7 @@ use ballista_executor::executor_process::{start_executor_process, ExecutorProces
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::SchedulerConfig;
 use ballista_scheduler::scheduler_process::start_server;
+use datafusion::execution::FunctionRegistry;
 
 use codec::KallaPhysicalCodec;
 
@@ -34,7 +35,13 @@ pub struct SchedulerOpts {
 #[allow(clippy::field_reassign_with_default)]
 pub async fn start_scheduler(opts: SchedulerOpts) -> anyhow::Result<()> {
     let mut config = SchedulerConfig::default();
+    config.override_logical_codec = Some(Arc::new(codec::KallaLogicalCodec::new()));
     config.override_physical_codec = Some(Arc::new(KallaPhysicalCodec::new()));
+    config.override_session_builder = Some(Arc::new(|session_config| {
+        let mut state = ballista_core::utils::default_session_builder(session_config)?;
+        state.register_udf(Arc::new(kalla_core::udf::tolerance_match_udf()))?;
+        Ok(state)
+    }));
     config.bind_host = opts.bind_host.clone();
     config.bind_port = opts.grpc_port;
 
@@ -82,7 +89,18 @@ pub struct ExecutorOpts {
 #[allow(clippy::field_reassign_with_default)]
 pub async fn start_executor(opts: ExecutorOpts) -> anyhow::Result<()> {
     let mut config = ExecutorProcessConfig::default();
+    config.override_logical_codec = Some(Arc::new(codec::KallaLogicalCodec::new()));
     config.override_physical_codec = Some(Arc::new(KallaPhysicalCodec::new()));
+
+    // Register Kalla UDFs in the executor's function registry so they are
+    // available in the TaskContext when deserializing physical plans.
+    let mut fn_registry = ballista_core::registry::BallistaFunctionRegistry::default();
+    fn_registry.scalar_functions.insert(
+        "tolerance_match".to_string(),
+        Arc::new(kalla_core::udf::tolerance_match_udf()),
+    );
+    config.override_function_registry = Some(Arc::new(fn_registry));
+
     config.bind_host = opts.bind_host;
     config.port = opts.flight_port;
     config.grpc_port = opts.grpc_port;

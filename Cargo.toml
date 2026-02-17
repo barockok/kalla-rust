@@ -19,6 +19,7 @@ repository = "https://github.com/your-org/kalla"
 # DataFusion ecosystem
 datafusion = "44"
 ballista = { version = "44", default-features = false, features = ["standalone"] }
+ballista-core = "44"
 ballista-scheduler = "44"
 ballista-executor = "44"
 datafusion-proto = "44"

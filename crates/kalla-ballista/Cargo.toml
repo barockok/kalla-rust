@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 datafusion.workspace = true
 ballista.workspace = true
+ballista-core.workspace = true
 ballista-scheduler.workspace = true
 ballista-executor.workspace = true
 datafusion-proto.workspace = true

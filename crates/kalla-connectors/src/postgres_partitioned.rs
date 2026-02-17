@@ -118,6 +118,26 @@ impl PostgresPartitionedTable {
         })
     }
 
+    /// Reconstruct from pre-computed parts (no database connection required).
+    /// Used by the logical codec to deserialize a table provider on remote executors.
+    pub fn from_parts(
+        conn_string: String,
+        pg_table: String,
+        schema: SchemaRef,
+        total_rows: u64,
+        num_partitions: usize,
+        order_column: Option<String>,
+    ) -> Self {
+        Self {
+            conn_string,
+            pg_table,
+            schema,
+            total_rows,
+            num_partitions,
+            order_column,
+        }
+    }
+
     /// Access the connection string (e.g. for serializing partition metadata).
     pub fn conn_string(&self) -> &str {
         &self.conn_string
