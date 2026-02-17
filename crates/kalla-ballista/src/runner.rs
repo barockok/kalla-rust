@@ -256,13 +256,13 @@ async fn metrics_handler(State(state): State<Arc<RunnerState>>) -> String {
 // ---------------------------------------------------------------------------
 
 /// Register a source with the engine, choosing partitioned registration when
-/// a partition count > 1 is provided.
+/// a partition count > 1 is provided. Returns the total row count of the source.
 async fn register_source_partitioned(
     engine: &ReconciliationEngine,
     alias: &str,
     uri: &str,
     num_partitions: usize,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<u64> {
     if uri.starts_with("postgres://") || uri.starts_with("postgresql://") {
         let parsed = url::Url::parse(uri)?;
         let table_name = parsed
@@ -273,15 +273,20 @@ async fn register_source_partitioned(
         let mut conn_url = parsed.clone();
         conn_url.set_query(None);
 
-        kalla_connectors::postgres_partitioned::register(
-            engine.context(),
-            alias,
+        let table = kalla_connectors::postgres_partitioned::PostgresPartitionedTable::new(
             conn_url.as_str(),
             &table_name,
             num_partitions,
             Some("ctid".to_string()),
         )
         .await?;
+        let total_rows = table.total_rows();
+        engine.context().register_table(alias, Arc::new(table))?;
+        info!(
+            "Registered PostgresPartitionedTable '{}' -> '{}'",
+            table_name, alias
+        );
+        return Ok(total_rows);
     } else if uri.starts_with("s3://") && uri.ends_with(".csv") {
         let s3_config = kalla_connectors::S3Config::from_env()?;
         kalla_connectors::csv_partitioned::register(
@@ -305,22 +310,35 @@ async fn register_source_partitioned(
     } else {
         anyhow::bail!("Unsupported source URI format: {}", uri);
     }
-    Ok(())
+
+    // For non-Postgres sources, count rows after registration.
+    let count = run_count_query(
+        engine,
+        &format!("SELECT COUNT(*) AS cnt FROM \"{}\"", alias),
+    )
+    .await
+    .unwrap_or(0);
+    Ok(count)
 }
 
 // ---------------------------------------------------------------------------
 // Unmatched counting
 // ---------------------------------------------------------------------------
 
-/// Count unmatched records for left and right sources using NOT IN subqueries.
-async fn count_unmatched(
-    engine: &ReconciliationEngine,
-    match_sql: &str,
+/// Count unmatched records by subtracting distinct matched keys from source totals.
+///
+/// Uses the already-collected matched records and pre-computed source row counts,
+/// avoiding any additional queries. This works reliably in both local and Ballista
+/// cluster modes (the previous `NOT IN (subquery)` approach failed in Ballista's
+/// distributed planner).
+fn count_unmatched_from_matched(
+    matched_records: &[MatchedRecord],
     primary_keys: &HashMap<String, Vec<String>>,
     source_aliases: &[&str],
-) -> anyhow::Result<(u64, u64)> {
+    source_row_counts: &HashMap<String, u64>,
+) -> (u64, u64) {
     if source_aliases.len() < 2 {
-        return Ok((0, 0));
+        return (0, 0);
     }
 
     let left_alias = source_aliases[0];
@@ -329,39 +347,26 @@ async fn count_unmatched(
     let right_pks = &primary_keys[right_alias];
 
     if left_pks.is_empty() || right_pks.is_empty() {
-        return Ok((0, 0));
+        return (0, 0);
     }
 
-    let left_pk = &left_pks[0];
-    let unmatched_left_sql = format!(
-        "SELECT COUNT(*) AS cnt FROM \"{left_alias}\" \
-         WHERE \"{left_pk}\" NOT IN \
-         (SELECT \"{left_pk}\" FROM ({match_sql}) AS _matched)"
-    );
+    // Count distinct matched keys from the already-collected results.
+    let distinct_left: std::collections::HashSet<&str> = matched_records
+        .iter()
+        .map(|r| r.left_key.as_str())
+        .collect();
+    let distinct_right: std::collections::HashSet<&str> = matched_records
+        .iter()
+        .map(|r| r.right_key.as_str())
+        .collect();
 
-    let right_pk = &right_pks[0];
-    let unmatched_right_sql = format!(
-        "SELECT COUNT(*) AS cnt FROM \"{right_alias}\" \
-         WHERE \"{right_pk}\" NOT IN \
-         (SELECT \"{right_pk}\" FROM ({match_sql}) AS _matched)"
-    );
+    let left_total = source_row_counts.get(left_alias).copied().unwrap_or(0);
+    let right_total = source_row_counts.get(right_alias).copied().unwrap_or(0);
 
-    let unmatched_left = match run_count_query(engine, &unmatched_left_sql).await {
-        Ok(count) => count,
-        Err(e) => {
-            warn!("Unmatched left query failed: {}", e);
-            0
-        }
-    };
-    let unmatched_right = match run_count_query(engine, &unmatched_right_sql).await {
-        Ok(count) => count,
-        Err(e) => {
-            warn!("Unmatched right query failed: {}", e);
-            0
-        }
-    };
+    let unmatched_left = left_total.saturating_sub(distinct_left.len() as u64);
+    let unmatched_right = right_total.saturating_sub(distinct_right.len() as u64);
 
-    Ok((unmatched_left, unmatched_right))
+    (unmatched_left, unmatched_right)
 }
 
 async fn run_count_query(engine: &ReconciliationEngine, sql: &str) -> anyhow::Result<u64> {
@@ -550,11 +555,18 @@ async fn execute_job_inner(
         }
     };
 
-    // Register all sources
+    // Register all sources and collect row counts for unmatched calculation.
     let staging_start = Instant::now();
+    let mut source_row_counts: HashMap<String, u64> = HashMap::new();
     for (i, source) in job.sources.iter().enumerate() {
-        register_source_partitioned(&engine, &source.alias, &source.uri, config.partitions).await?;
-        info!("Registered source '{}' from {}", source.alias, source.uri);
+        let row_count =
+            register_source_partitioned(&engine, &source.alias, &source.uri, config.partitions)
+                .await?;
+        source_row_counts.insert(source.alias.clone(), row_count);
+        info!(
+            "Registered source '{}' from {} ({} rows)",
+            source.alias, source.uri, row_count
+        );
 
         let progress = (i + 1) as f64 / job.sources.len() as f64;
         let _ = callback
@@ -643,11 +655,16 @@ async fn execute_job_inner(
         run_id, matched_count, matching_ms
     );
 
-    // Count unmatched records
+    // Count unmatched records by subtracting distinct matched keys from total rows.
+    // This avoids complex NOT IN subqueries that fail in Ballista's distributed planner.
     let source_aliases: Vec<&str> = job.sources.iter().map(|s| s.alias.as_str()).collect();
     let unmatched_start = Instant::now();
-    let (unmatched_left, unmatched_right) =
-        count_unmatched(&engine, &job.match_sql, &job.primary_keys, &source_aliases).await?;
+    let (unmatched_left, unmatched_right) = count_unmatched_from_matched(
+        &matched_records,
+        &job.primary_keys,
+        &source_aliases,
+        &source_row_counts,
+    );
     let unmatched_ms = unmatched_start.elapsed().as_millis();
 
     info!(
