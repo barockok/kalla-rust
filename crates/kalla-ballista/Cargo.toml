@@ -24,3 +24,11 @@ url.workspace = true
 
 kalla-connectors.workspace = true
 kalla-core.workspace = true
+
+[[bin]]
+name = "kalla-scheduler"
+path = "src/bin/kalla-scheduler.rs"
+
+[[bin]]
+name = "kalla-executor"
+path = "src/bin/kalla-executor.rs"
