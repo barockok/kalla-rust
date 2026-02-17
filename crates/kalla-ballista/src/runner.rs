@@ -487,28 +487,31 @@ async fn create_engine(scheduler_url: &str, run_id: Uuid) -> Option<Reconciliati
     };
 
     // Probe: run a trivial query to verify executors can handle work.
-    // Without executors, Ballista scheduler returns an error.
-    match engine.sql("SELECT 1").await {
-        Ok(df) => match df.collect().await {
-            Ok(_) => {
-                info!(
-                    "Run {}: using cluster engine (scheduler={})",
-                    run_id, scheduler_url
-                );
-                Some(engine)
-            }
-            Err(e) => {
-                warn!(
-                    "Run {}: cluster probe failed ({}), falling back to local",
-                    run_id, e
-                );
-                None
-            }
-        },
-        Err(e) => {
+    // Without executors the job stays queued forever, so we add a timeout.
+    let probe = async {
+        let df = engine.sql("SELECT 1").await?;
+        df.collect().await
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(10), probe).await {
+        Ok(Ok(_)) => {
+            info!(
+                "Run {}: using cluster engine (scheduler={})",
+                run_id, scheduler_url
+            );
+            Some(engine)
+        }
+        Ok(Err(e)) => {
             warn!(
                 "Run {}: cluster probe failed ({}), falling back to local",
                 run_id, e
+            );
+            None
+        }
+        Err(_) => {
+            warn!(
+                "Run {}: cluster probe timed out (no executors?), falling back to local",
+                run_id
             );
             None
         }
