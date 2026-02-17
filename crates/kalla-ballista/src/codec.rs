@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::execution::FunctionRegistry;
+use datafusion::logical_expr::ScalarUDF;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 
@@ -110,6 +111,20 @@ impl PhysicalExtensionCodec for KallaPhysicalCodec {
                 node.name()
             )))
         }
+    }
+
+    fn try_decode_udf(&self, name: &str, _buf: &[u8]) -> DFResult<Arc<ScalarUDF>> {
+        match name {
+            "tolerance_match" => Ok(Arc::new(kalla_core::udf::tolerance_match_udf())),
+            _ => Err(DataFusionError::Internal(format!(
+                "KallaPhysicalCodec: unknown UDF: {name}"
+            ))),
+        }
+    }
+
+    fn try_encode_udf(&self, _node: &ScalarUDF, _buf: &mut Vec<u8>) -> DFResult<()> {
+        // No payload needed — the UDF is identified by name alone
+        Ok(())
     }
 }
 
@@ -294,5 +309,34 @@ mod tests {
             err_msg.contains("failed to deserialize PostgresScanExec"),
             "unexpected error: {err_msg}"
         );
+    }
+
+    #[test]
+    fn test_codec_udf_roundtrip() {
+        let codec = KallaPhysicalCodec::new();
+        let udf = codec.try_decode_udf("tolerance_match", &[]).unwrap();
+        assert_eq!(udf.name(), "tolerance_match");
+    }
+
+    #[test]
+    fn test_codec_udf_unknown() {
+        let codec = KallaPhysicalCodec::new();
+        let result = codec.try_decode_udf("nonexistent_udf", &[]);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("unknown UDF: nonexistent_udf"),
+            "unexpected error: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_codec_udf_encode_noop() {
+        let codec = KallaPhysicalCodec::new();
+        let udf = kalla_core::udf::tolerance_match_udf();
+        let mut buf = Vec::new();
+        codec.try_encode_udf(&udf, &mut buf).unwrap();
+        // Encoding writes no payload for name-only UDFs
+        assert!(buf.is_empty());
     }
 }
