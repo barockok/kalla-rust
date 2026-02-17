@@ -353,17 +353,13 @@ pub async fn handle_exec(
     // Use standard DataFusion engine — the partitioned table providers
     // already handle parallelism internally.
     let engine = ReconciliationEngine::new();
-    info!(
-        "Run {}: engine created (partitioned sources)",
-        run_id
-    );
+    info!("Run {}: engine created (partitioned sources)", run_id);
 
     // Register sources directly from source URIs
     let num_partitions = config.ballista_partitions;
 
     for source_uri in source_uris {
-        if source_uri.uri.starts_with("postgres://")
-            || source_uri.uri.starts_with("postgresql://")
+        if source_uri.uri.starts_with("postgres://") || source_uri.uri.starts_with("postgresql://")
         {
             let parsed = url::Url::parse(&source_uri.uri)?;
             let table_name = parsed

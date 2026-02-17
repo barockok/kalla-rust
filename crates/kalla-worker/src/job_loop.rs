@@ -8,10 +8,10 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::config::WorkerConfig;
+use crate::exec;
 use crate::heartbeat::spawn_heartbeat;
 use crate::metrics::{JobTypeLabel, WorkerMetrics};
 use crate::queue::{JobMessage, QueueClient};
-use crate::exec;
 
 /// Run the main job loop. Pulls from the exec queue.
 pub async fn run_job_loop(
