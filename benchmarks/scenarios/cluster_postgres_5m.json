@@ -1,0 +1,7 @@
+{
+    "name": "cluster_postgres_5m",
+    "mode": "cluster",
+    "source_type": "postgres",
+    "rows": 5000000,
+    "match_sql": "SELECT i.*, p.* FROM left_src i JOIN right_src p ON i.invoice_id = p.reference_number AND tolerance_match(i.amount, p.paid_amount, 0.02)"
+}
