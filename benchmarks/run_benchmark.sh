@@ -8,7 +8,6 @@
 # Environment:
 #   WORKER_URL    — worker base URL    (default: http://localhost:9090)
 #   PG_URL        — Postgres conn URL  (default: postgresql://postgres:postgres@localhost:5432/postgres)
-#   STAGING_PATH  — staging dir        (default: /tmp/kalla-staging)
 #   WORKER_LOG    — worker log file    (default: /tmp/kalla-worker-bench.log)
 
 set -euo pipefail
@@ -16,7 +15,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKER_URL="${WORKER_URL:-http://localhost:9090}"
 PG_URL="${PG_URL:-postgresql://postgres:postgres@localhost:5432/postgres}"
-STAGING_PATH="${STAGING_PATH:-/tmp/kalla-staging}"
 WORKER_LOG="${WORKER_LOG:-/tmp/kalla-worker-bench.log}"
 TIMEOUT_SECS=300
 POLL_INTERVAL=1
@@ -98,7 +96,6 @@ for scenario_file in "${SCENARIOS[@]}"; do
     SOURCE_TYPE=$(json_field "source_type" "$scenario_file")
     ROWS=$(json_field "rows" "$scenario_file")
     MATCH_SQL=$(json_field "match_sql" "$scenario_file")
-    STAGE_TO_PARQUET=$(json_field "stage_to_parquet" "$scenario_file")
     MATCH_RATE=$(json_field "match_rate" "$scenario_file")
 
     echo "=== Scenario: ${SCENARIO_NAME} (${ROWS} rows, ${SOURCE_TYPE}) ==="
@@ -127,7 +124,7 @@ for scenario_file in "${SCENARIOS[@]}"; do
 
     # Step 3: Build job request via python3 (stdin, no shell interpolation)
     RUN_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
-    OUTPUT_PATH="${STAGING_PATH}/bench-${SCENARIO_NAME}"
+    OUTPUT_PATH="/tmp/kalla-bench-output-${SCENARIO_NAME}"
     mkdir -p "$OUTPUT_PATH"
 
     JOB_JSON=$(_BENCH_SOURCE_TYPE="$SOURCE_TYPE" \
@@ -136,7 +133,6 @@ for scenario_file in "${SCENARIOS[@]}"; do
         _BENCH_RUN_ID="$RUN_ID" \
         _BENCH_MATCH_SQL="$MATCH_SQL" \
         _BENCH_OUTPUT_PATH="$OUTPUT_PATH" \
-        _BENCH_STAGE_TO_PARQUET="$STAGE_TO_PARQUET" \
         python3 - <<'PYEOF'
 import json, os
 
@@ -166,9 +162,6 @@ job = {
     "output_path": os.environ["_BENCH_OUTPUT_PATH"],
     "primary_keys": {"left_src": ["invoice_id"], "right_src": ["payment_id"]},
 }
-
-if os.environ.get("_BENCH_STAGE_TO_PARQUET", "").lower() == "true":
-    job["stage_to_parquet"] = True
 
 print(json.dumps(job))
 PYEOF
@@ -237,7 +230,6 @@ printf '%b' "$SUMMARY_ROWS" >> "${REPORT_FILE}"
     echo "## Environment"
     echo ""
     echo "- Worker: ${WORKER_URL}"
-    echo "- Staging: ${STAGING_PATH}"
     echo "- Host: $(uname -n)"
     echo "- OS: $(uname -s) $(uname -r)"
 } >> "${REPORT_FILE}"

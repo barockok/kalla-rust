@@ -152,7 +152,7 @@ mod tests {
         let metrics = WorkerMetrics::new();
         metrics
             .jobs_completed
-            .get_or_create(&JobTypeLabel("stage_plan".to_string()))
+            .get_or_create(&JobTypeLabel("import".to_string()))
             .inc();
         metrics
             .jobs_completed
@@ -165,8 +165,8 @@ mod tests {
 
         let output = metrics.encode();
         assert!(
-            output.contains("type=\"stage_plan\""),
-            "Expected stage_plan label in output: {output}"
+            output.contains("type=\"import\""),
+            "Expected import label in output: {output}"
         );
         assert!(
             output.contains("type=\"exec\""),

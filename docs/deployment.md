@@ -179,7 +179,6 @@ The MinIO web console is available at `http://localhost:9001` (default credentia
 | `AWS_SECRET_ACCESS_KEY` | — | Required | — | S3 secret key |
 | `AWS_REGION` | — | Optional | `us-east-1` | S3 region |
 | `AWS_ALLOW_HTTP` | — | Optional | `false` | Allow HTTP (non-TLS) S3 connections |
-| `STAGING_BUCKET` | — | Required | — | S3 bucket for staging data |
 | `GCS_BUCKET` | — | Alternative | — | GCS bucket (alternative to S3) |
 | `RUST_LOG` | Optional | Optional | `info` | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
 
@@ -210,7 +209,6 @@ The worker uses `object_store` with an S3 or GCS backend.
 AWS_ENDPOINT_URL=http://minio:9000
 AWS_ACCESS_KEY_ID=minioadmin
 AWS_SECRET_ACCESS_KEY=minioadmin
-STAGING_BUCKET=kalla-staging
 ```
 
 **GCS:**
