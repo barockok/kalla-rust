@@ -6,16 +6,16 @@
 #   (defaults to all scenarios in benchmarks/scenarios/)
 #
 # Environment:
-#   WORKER_URL    — worker base URL    (default: http://localhost:9090)
-#   PG_URL        — Postgres conn URL  (default: postgresql://postgres:postgres@localhost:5432/postgres)
-#   WORKER_LOG    — worker log file    (default: /tmp/kalla-worker-bench.log)
+#   WORKER_URL    — scheduler base URL  (default: http://localhost:9090)
+#   PG_URL        — Postgres conn URL   (default: postgresql://postgres:postgres@localhost:5432/postgres)
+#   WORKER_LOG    — scheduler log file  (default: /tmp/kalla-scheduler-bench.log)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKER_URL="${WORKER_URL:-http://localhost:9090}"
 PG_URL="${PG_URL:-postgresql://postgres:postgres@localhost:5432/postgres}"
-WORKER_LOG="${WORKER_LOG:-/tmp/kalla-worker-bench.log}"
+WORKER_LOG="${WORKER_LOG:-/tmp/kalla-scheduler-bench.log}"
 TIMEOUT_SECS=300
 POLL_INTERVAL=1
 WORKER_PID=""
@@ -58,8 +58,8 @@ now_ns() {
 }
 
 get_worker_pid() {
-    # Find the kalla-worker process
-    pgrep -f 'kalla-worker' | head -1 || true
+    # Find the kallad process
+    pgrep -f 'kallad' | head -1 || true
 }
 
 get_rss_kb() {
@@ -174,12 +174,12 @@ PYEOF
         -d "$JOB_JSON")
 
     if [ "$HTTP_CODE" != "202" ] && [ "$HTTP_CODE" != "200" ]; then
-        echo "  ERROR: Worker returned HTTP $HTTP_CODE"
+        echo "  ERROR: Scheduler returned HTTP $HTTP_CODE"
         SUMMARY_ROWS+="| ${SCENARIO_NAME} | ${ROWS} | - | - | - | FAILED (HTTP $HTTP_CODE) |\n"
         continue
     fi
 
-    # Step 4: Poll worker log for completion
+    # Step 4: Poll scheduler log for completion
     echo "  Waiting for completion (timeout ${TIMEOUT_SECS}s)..."
     ELAPSED=0
     PEAK_RSS=$BASELINE_RSS
@@ -195,7 +195,7 @@ PYEOF
             PEAK_RSS=$CURRENT_RSS
         fi
 
-        # Check worker log for run completion
+        # Check scheduler log for run completion
         if grep -q "Run ${RUN_ID} completed" "$WORKER_LOG" 2>/dev/null; then
             STATUS="complete"
             break
@@ -229,7 +229,7 @@ printf '%b' "$SUMMARY_ROWS" >> "${REPORT_FILE}"
     echo ""
     echo "## Environment"
     echo ""
-    echo "- Worker: ${WORKER_URL}"
+    echo "- Scheduler: ${WORKER_URL}"
     echo "- Host: $(uname -n)"
     echo "- OS: $(uname -s) $(uname -r)"
 } >> "${REPORT_FILE}"
