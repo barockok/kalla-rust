@@ -476,15 +476,15 @@ async fn create_engine(scheduler_url: &str, run_id: Uuid) -> Option<Reconciliati
     )
     .await
     {
-            Ok(e) => e,
-            Err(e) => {
-                warn!(
-                    "Run {}: cluster connection failed ({}), falling back to local",
-                    run_id, e
-                );
-                return None;
-            }
-        };
+        Ok(e) => e,
+        Err(e) => {
+            warn!(
+                "Run {}: cluster connection failed ({}), falling back to local",
+                run_id, e
+            );
+            return None;
+        }
+    };
 
     // Probe: run a trivial query to verify executors can handle work.
     // Without executors, Ballista scheduler returns an error.

@@ -283,12 +283,11 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
 
         match tag {
             LOGICAL_TAG_POSTGRES => {
-                let info: serde_json::Value =
-                    serde_json::from_slice(payload).map_err(|e| {
-                        DataFusionError::Internal(format!(
-                            "KallaLogicalCodec: failed to deserialize PostgresPartitionedTable: {e}"
-                        ))
-                    })?;
+                let info: serde_json::Value = serde_json::from_slice(payload).map_err(|e| {
+                    DataFusionError::Internal(format!(
+                        "KallaLogicalCodec: failed to deserialize PostgresPartitionedTable: {e}"
+                    ))
+                })?;
 
                 let conn_string = info["conn_string"]
                     .as_str()
@@ -305,23 +304,23 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
                 // Reconstruct without connecting — schema and row count are provided.
                 // Wrap in LazyPostgresTable so scan() returns serializable
                 // PostgresScanExec nodes for distribution to remote executors.
-                let table = kalla_connectors::postgres_partitioned::PostgresPartitionedTable::from_parts(
-                    conn_string,
-                    pg_table,
-                    schema,
-                    total_rows,
-                    num_partitions,
-                    order_column,
-                );
+                let table =
+                    kalla_connectors::postgres_partitioned::PostgresPartitionedTable::from_parts(
+                        conn_string,
+                        pg_table,
+                        schema,
+                        total_rows,
+                        num_partitions,
+                        order_column,
+                    );
                 Ok(Arc::new(LazyPostgresTable(table)))
             }
             LOGICAL_TAG_CSV_BYTE_RANGE => {
-                let info: serde_json::Value =
-                    serde_json::from_slice(payload).map_err(|e| {
-                        DataFusionError::Internal(format!(
-                            "KallaLogicalCodec: failed to deserialize CsvByteRangeTable: {e}"
-                        ))
-                    })?;
+                let info: serde_json::Value = serde_json::from_slice(payload).map_err(|e| {
+                    DataFusionError::Internal(format!(
+                        "KallaLogicalCodec: failed to deserialize CsvByteRangeTable: {e}"
+                    ))
+                })?;
 
                 let s3_uri = info["s3_uri"]
                     .as_str()
@@ -364,9 +363,9 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
         node: Arc<dyn datafusion::catalog::TableProvider>,
         buf: &mut Vec<u8>,
     ) -> DFResult<()> {
-        if let Some(pg) = node
-            .as_any()
-            .downcast_ref::<kalla_connectors::postgres_partitioned::PostgresPartitionedTable>()
+        if let Some(pg) =
+            node.as_any()
+                .downcast_ref::<kalla_connectors::postgres_partitioned::PostgresPartitionedTable>()
         {
             buf.push(LOGICAL_TAG_POSTGRES);
             let info = serde_json::json!({
@@ -406,11 +405,7 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
         }
     }
 
-    fn try_decode_udf(
-        &self,
-        name: &str,
-        buf: &[u8],
-    ) -> DFResult<Arc<ScalarUDF>> {
+    fn try_decode_udf(&self, name: &str, buf: &[u8]) -> DFResult<Arc<ScalarUDF>> {
         match name {
             "tolerance_match" => Ok(Arc::new(kalla_core::udf::tolerance_match_udf())),
             _ => self.inner.try_decode_udf(name, buf),
