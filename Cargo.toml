@@ -5,7 +5,6 @@ members = [
     "crates/kalla-connectors",
     "crates/kalla-recipe",
     "crates/kalla-evidence",
-    "crates/kalla-worker",
     "crates/kalla-ballista",
     "crates/kallad",
 ]
@@ -57,9 +56,6 @@ url = "2"
 # Logging/tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# Message queue
-async-nats = "0.38"
 
 # Metrics
 prometheus-client = "0.23"
