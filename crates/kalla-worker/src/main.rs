@@ -12,7 +12,6 @@ mod job_loop;
 mod metrics;
 mod queue;
 mod reaper;
-mod stage;
 
 use anyhow::Result;
 use sqlx::postgres::PgPoolOptions;

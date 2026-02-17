@@ -110,7 +110,7 @@ mod tests {
     #[tokio::test]
     async fn metrics_returns_prometheus_text() {
         let state = test_state(true);
-        state.metrics.stage_queue_depth.set(10);
+        state.metrics.exec_queue_depth.set(10);
         let app = health_router(state);
 
         let resp = app
@@ -128,7 +128,7 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let text = std::str::from_utf8(&body).unwrap();
         assert!(
-            text.contains("kalla_stage_queue_depth"),
+            text.contains("kalla_exec_queue_depth"),
             "Expected metric name in output: {text}"
         );
         assert!(text.contains("# HELP"), "Expected HELP lines: {text}");

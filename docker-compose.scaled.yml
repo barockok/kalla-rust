@@ -43,7 +43,6 @@ services:
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       AWS_REGION: us-east-1
       AWS_ALLOW_HTTP: "true"
-      STAGING_BUCKET: kalla-staging
       RUST_LOG: ${RUST_LOG:-info}
     depends_on:
       - nats

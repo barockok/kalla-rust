@@ -1,20 +1,16 @@
-//! Exec handler — runs reconciliation after all sources are staged.
+//! Exec handler — runs reconciliation directly from source URIs.
 //!
-//! Three execution paths:
+//! Two execution paths:
 //! - `handle_http_job`: Single mode — receives a self-contained JobRequest via HTTP,
 //!   runs match_sql directly, reports progress via HTTP callbacks.
-//! - `handle_exec` (staged): Scaled mode — receives job via NATS, runs match_sql
-//!   using local DataFusion against staged Parquet/CSV sources.
-//! - `handle_exec` (distributed): Scaled mode with Ballista — same NATS interface
-//!   but uses `ReconciliationEngine::new_distributed()` for distributed query execution.
-//!   Enabled via `config.ballista_enabled` (set by `BALLISTA_ENABLED` env var).
+//! - `handle_exec`: Scaled mode — receives job via NATS, registers partitioned sources
+//!   and executes match_sql via DataFusion.
 
 use anyhow::Result;
 use futures::StreamExt;
 use kalla_core::ReconciliationEngine;
 use kalla_evidence::{EvidenceStore, MatchedRecord};
 use kalla_recipe::Recipe;
-use parquet::arrow::ArrowWriter;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use tracing::{info, warn};
@@ -24,7 +20,7 @@ use std::time::Instant;
 
 use crate::config::WorkerConfig;
 use crate::http_api::{CallbackClient, JobRequest};
-use crate::queue::{SourceUri, StagedSource};
+use crate::queue::SourceUri;
 
 pub struct ExecResult {
     pub matched: u64,
@@ -81,47 +77,6 @@ pub async fn handle_http_job(
     }
     let staging_ms = staging_start.elapsed().as_millis();
     info!("Run {}: staging completed in {}ms", run_id, staging_ms);
-
-    // Parquet staging phase: write sources to local Parquet, then re-register
-    if job.stage_to_parquet {
-        let parquet_staging_start = Instant::now();
-        let parquet_dir = format!("{}/{}", config.staging_path, run_id);
-        std::fs::create_dir_all(&parquet_dir)?;
-
-        for source in &job.sources {
-            let alias = &source.alias;
-            let parquet_path = format!("{}/{}.parquet", parquet_dir, alias);
-
-            // Read all data from the registered table
-            let df = engine.sql(&format!("SELECT * FROM \"{}\"", alias)).await?;
-            let batches = df.collect().await?;
-
-            // Write to local Parquet file
-            if !batches.is_empty() {
-                let schema = batches[0].schema();
-                let file = std::fs::File::create(&parquet_path)?;
-                let mut writer = ArrowWriter::try_new(file, schema, None)?;
-                for batch in &batches {
-                    writer.write(batch)?;
-                }
-                writer.close()?;
-            }
-
-            // Deregister original table and re-register from Parquet
-            engine.context().deregister_table(alias)?;
-            engine.register_parquet(alias, &parquet_path).await?;
-            info!(
-                "Run {}: staged '{}' to Parquet ({})",
-                run_id, alias, parquet_path
-            );
-        }
-
-        let parquet_staging_ms = parquet_staging_start.elapsed().as_millis();
-        info!(
-            "Run {}: parquet staging completed in {}ms",
-            run_id, parquet_staging_ms
-        );
-    }
 
     // Report matching started
     let _ = callback
@@ -375,13 +330,12 @@ fn extract_first_key(
 }
 
 // ---------------------------------------------------------------------------
-// Scaled mode: NATS job execution — dispatches to staged or distributed path
+// Scaled mode: NATS job execution — direct from source URIs
 // ---------------------------------------------------------------------------
 
 /// Execute the reconciliation run (scaled mode — NATS).
 ///
-/// Dispatches to the distributed (Ballista) path when `config.ballista_enabled`,
-/// otherwise falls back to the staged (local DataFusion) path.
+/// Registers partitioned sources directly and executes match_sql via DataFusion.
 ///
 /// If `callback_url` is provided, POSTs completion results to `{callback_url}/complete`.
 #[allow(clippy::too_many_arguments)]
@@ -391,311 +345,87 @@ pub async fn handle_exec(
     run_id: Uuid,
     job_id: Uuid,
     recipe_json: &str,
-    staged_sources: &[StagedSource],
-    callback_url: Option<&str>,
-    source_uris: Option<&[SourceUri]>,
-) -> Result<ExecResult> {
-    if config.ballista_enabled {
-        info!(
-            "Run {}: using distributed (Ballista) execution path",
-            run_id
-        );
-        handle_exec_distributed(
-            config,
-            pool,
-            run_id,
-            job_id,
-            recipe_json,
-            staged_sources,
-            callback_url,
-            source_uris,
-        )
-        .await
-    } else {
-        handle_exec_staged(
-            pool,
-            run_id,
-            job_id,
-            recipe_json,
-            staged_sources,
-            callback_url,
-        )
-        .await
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Staged path: local DataFusion execution (original implementation)
-// ---------------------------------------------------------------------------
-
-async fn handle_exec_staged(
-    pool: &PgPool,
-    run_id: Uuid,
-    job_id: Uuid,
-    recipe_json: &str,
-    staged_sources: &[StagedSource],
+    source_uris: &[SourceUri],
     callback_url: Option<&str>,
 ) -> Result<ExecResult> {
     let recipe: Recipe = serde_json::from_str(recipe_json)?;
 
-    let engine = ReconciliationEngine::new();
-
-    // Register all sources (staged Parquet, S3 CSV, or local CSV)
-    for source in staged_sources {
-        if source.s3_path.starts_with("s3://") && source.s3_path.ends_with(".csv") {
-            let connector = kalla_connectors::S3Connector::from_env()?;
-            connector
-                .register_csv_listing_table(engine.context(), &source.alias, &source.s3_path)
-                .await?;
-        } else if source.s3_path.ends_with(".parquet") || source.s3_path.contains("/staging/") {
-            engine
-                .register_parquet(&source.alias, &source.s3_path)
-                .await?;
-        } else if source.s3_path.ends_with(".csv") {
-            engine.register_csv(&source.alias, &source.s3_path).await?;
-        }
-        info!(
-            "Registered source '{}' from {}",
-            source.alias, source.s3_path
-        );
-    }
-
-    // Execute match SQL directly
-    let mut total_matched = 0u64;
-    let mut matched_records: Vec<MatchedRecord> = Vec::new();
-
-    let left_pk = recipe
-        .sources
-        .left
-        .primary_key
-        .first()
-        .map(|s| s.as_str())
-        .unwrap_or("id");
-    let right_pk = recipe
-        .sources
-        .right
-        .primary_key
-        .first()
-        .map(|s| s.as_str())
-        .unwrap_or("id");
-
-    match engine.sql_stream(&recipe.match_sql).await {
-        Ok(mut stream) => {
-            while let Some(batch_result) = stream.next().await {
-                let batch = batch_result?;
-                for row_idx in 0..batch.num_rows() {
-                    let left_key = extract_string_value(&batch, left_pk, row_idx)
-                        .unwrap_or_else(|| format!("row_{}", row_idx));
-                    let right_key = extract_string_value(&batch, right_pk, row_idx)
-                        .unwrap_or_else(|| format!("row_{}", row_idx));
-                    matched_records.push(MatchedRecord::new(
-                        left_key,
-                        right_key,
-                        "match_sql".to_string(),
-                        1.0,
-                    ));
-                }
-                total_matched += batch.num_rows() as u64;
-            }
-        }
-        Err(e) => warn!("Match SQL failed: {}", e),
-    }
-
-    // Derive unmatched using primary keys via LEFT ANTI JOIN
-    let mut unmatched_left = 0u64;
-    let mut unmatched_right = 0u64;
-
-    let left_alias = &recipe.sources.left.alias;
-    let right_alias = &recipe.sources.right.alias;
-
-    if !recipe.sources.left.primary_key.is_empty() && !recipe.sources.right.primary_key.is_empty() {
-        let lpk = &recipe.sources.left.primary_key[0];
-        let rpk = &recipe.sources.right.primary_key[0];
-
-        let left_orphan_sql =
-            format!(
-            "SELECT {l}.* FROM {l} LEFT JOIN {r} ON {l}.{lpk} = {r}.{rpk} WHERE {r}.{rpk} IS NULL",
-            l = left_alias, r = right_alias, lpk = lpk, rpk = rpk
-        );
-        if let Ok(mut stream) = engine.sql_stream(&left_orphan_sql).await {
-            while let Some(Ok(batch)) = stream.next().await {
-                unmatched_left += batch.num_rows() as u64;
-            }
-        }
-
-        let right_orphan_sql =
-            format!(
-            "SELECT {r}.* FROM {r} LEFT JOIN {l} ON {r}.{rpk} = {l}.{lpk} WHERE {l}.{lpk} IS NULL",
-            l = left_alias, r = right_alias, lpk = lpk, rpk = rpk
-        );
-        if let Ok(mut stream) = engine.sql_stream(&right_orphan_sql).await {
-            while let Some(Ok(batch)) = stream.next().await {
-                unmatched_right += batch.num_rows() as u64;
-            }
-        }
-    }
-
-    // Write evidence
-    let evidence_store = EvidenceStore::new("./evidence")?;
-    if !matched_records.is_empty() {
-        let _ = evidence_store.write_matched(&run_id, &matched_records);
-    }
-
-    // Mark job completed
-    sqlx::query("UPDATE jobs SET status = 'completed' WHERE job_id = $1")
-        .bind(job_id)
-        .execute(pool)
-        .await?;
-
-    // Mark run completed
-    sqlx::query(
-        "UPDATE run_staging_tracker SET status = 'completed', updated_at = now()
-         WHERE run_id = $1",
-    )
-    .bind(run_id)
-    .execute(pool)
-    .await?;
-
-    // POST results to callback URL if provided
-    if let Some(url) = callback_url {
-        let callback = CallbackClient::new();
-        let _ = callback
-            .report_complete(
-                url,
-                &serde_json::json!({
-                    "run_id": run_id,
-                    "matched_count": total_matched,
-                    "unmatched_left_count": unmatched_left,
-                    "unmatched_right_count": unmatched_right,
-                }),
-            )
-            .await;
-    }
-
-    Ok(ExecResult {
-        matched: total_matched,
-        unmatched_left,
-        unmatched_right,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Distributed path: Ballista standalone execution
-// ---------------------------------------------------------------------------
-
-#[allow(clippy::too_many_arguments)]
-async fn handle_exec_distributed(
-    config: &WorkerConfig,
-    pool: &PgPool,
-    run_id: Uuid,
-    job_id: Uuid,
-    recipe_json: &str,
-    staged_sources: &[StagedSource],
-    callback_url: Option<&str>,
-    source_uris: Option<&[SourceUri]>,
-) -> Result<ExecResult> {
-    let recipe: Recipe = serde_json::from_str(recipe_json)?;
-
-    // Use standard DataFusion engine — Ballista standalone cannot serialize
-    // custom TableProviders (LogicalExtensionCodec not implemented).
-    // The partitioned table providers already handle parallelism internally.
+    // Use standard DataFusion engine — the partitioned table providers
+    // already handle parallelism internally.
     let engine = ReconciliationEngine::new();
     info!(
-        "Run {}: distributed engine created (partitioned sources)",
+        "Run {}: engine created (partitioned sources)",
         run_id
     );
 
-    // Register sources: prefer direct source URIs when available,
-    // otherwise fall back to staged Parquet/CSV files.
-    if let Some(uris) = source_uris {
-        let num_partitions = config.ballista_partitions;
+    // Register sources directly from source URIs
+    let num_partitions = config.ballista_partitions;
 
-        for source_uri in uris {
-            if source_uri.uri.starts_with("postgres://")
-                || source_uri.uri.starts_with("postgresql://")
-            {
-                let parsed = url::Url::parse(&source_uri.uri)?;
-                let table_name = parsed
-                    .query_pairs()
-                    .find(|(k, _)| k == "table")
-                    .map(|(_, v)| v.to_string())
-                    .ok_or_else(|| anyhow::anyhow!("Missing 'table' query parameter"))?;
-                let mut conn_url = parsed.clone();
-                conn_url.set_query(None);
+    for source_uri in source_uris {
+        if source_uri.uri.starts_with("postgres://")
+            || source_uri.uri.starts_with("postgresql://")
+        {
+            let parsed = url::Url::parse(&source_uri.uri)?;
+            let table_name = parsed
+                .query_pairs()
+                .find(|(k, _)| k == "table")
+                .map(|(_, v)| v.to_string())
+                .ok_or_else(|| anyhow::anyhow!("Missing 'table' query parameter"))?;
+            let mut conn_url = parsed.clone();
+            conn_url.set_query(None);
 
-                kalla_connectors::postgres_partitioned::register(
-                    engine.context(),
-                    &source_uri.alias,
-                    conn_url.as_str(),
-                    &table_name,
-                    num_partitions,
-                    None,
-                )
-                .await?;
-                info!(
-                    "Run {}: registered partitioned Postgres table '{}' ({} partitions)",
-                    run_id, source_uri.alias, num_partitions
-                );
-            } else if source_uri.uri.starts_with("s3://") && source_uri.uri.ends_with(".csv") {
-                let s3_config = kalla_connectors::S3Config::from_env()?;
-                kalla_connectors::csv_partitioned::register(
-                    engine.context(),
-                    &source_uri.alias,
-                    &source_uri.uri,
-                    num_partitions,
-                    s3_config,
-                )
-                .await?;
-                info!(
-                    "Run {}: registered byte-range CSV table '{}' ({} partitions)",
-                    run_id, source_uri.alias, num_partitions
-                );
-            } else if source_uri.uri.ends_with(".parquet") || source_uri.uri.contains("/staging/") {
-                engine
-                    .register_parquet(&source_uri.alias, &source_uri.uri)
-                    .await?;
-                info!(
-                    "Run {}: registered source '{}' from {} (distributed)",
-                    run_id, source_uri.alias, source_uri.uri
-                );
-            } else if source_uri.uri.ends_with(".csv") {
-                engine
-                    .register_csv(&source_uri.alias, &source_uri.uri)
-                    .await?;
-                info!(
-                    "Run {}: registered source '{}' from {} (distributed)",
-                    run_id, source_uri.alias, source_uri.uri
-                );
-            } else {
-                anyhow::bail!(
-                    "Unsupported source URI format for direct exec: {}",
-                    source_uri.uri
-                );
-            }
-        }
-    } else {
-        // No source_uris — use staged_sources (existing logic)
-        for source in staged_sources {
-            if source.s3_path.starts_with("s3://") && source.s3_path.ends_with(".csv") {
-                let connector = kalla_connectors::S3Connector::from_env()?;
-                connector
-                    .register_csv_listing_table(engine.context(), &source.alias, &source.s3_path)
-                    .await?;
-            } else if source.s3_path.ends_with(".parquet") || source.s3_path.contains("/staging/") {
-                engine
-                    .register_parquet(&source.alias, &source.s3_path)
-                    .await?;
-            } else if source.s3_path.ends_with(".csv") {
-                engine.register_csv(&source.alias, &source.s3_path).await?;
-            }
+            kalla_connectors::postgres_partitioned::register(
+                engine.context(),
+                &source_uri.alias,
+                conn_url.as_str(),
+                &table_name,
+                num_partitions,
+                None,
+            )
+            .await?;
             info!(
-                "Run {}: registered source '{}' from {} (distributed)",
-                run_id, source.alias, source.s3_path
+                "Run {}: registered partitioned Postgres table '{}' ({} partitions)",
+                run_id, source_uri.alias, num_partitions
+            );
+        } else if source_uri.uri.starts_with("s3://") && source_uri.uri.ends_with(".csv") {
+            let s3_config = kalla_connectors::S3Config::from_env()?;
+            kalla_connectors::csv_partitioned::register(
+                engine.context(),
+                &source_uri.alias,
+                &source_uri.uri,
+                num_partitions,
+                s3_config,
+            )
+            .await?;
+            info!(
+                "Run {}: registered byte-range CSV table '{}' ({} partitions)",
+                run_id, source_uri.alias, num_partitions
+            );
+        } else if source_uri.uri.ends_with(".parquet") || source_uri.uri.contains("/staging/") {
+            engine
+                .register_parquet(&source_uri.alias, &source_uri.uri)
+                .await?;
+            info!(
+                "Run {}: registered source '{}' from {}",
+                run_id, source_uri.alias, source_uri.uri
+            );
+        } else if source_uri.uri.ends_with(".csv") {
+            engine
+                .register_csv(&source_uri.alias, &source_uri.uri)
+                .await?;
+            info!(
+                "Run {}: registered source '{}' from {}",
+                run_id, source_uri.alias, source_uri.uri
+            );
+        } else {
+            anyhow::bail!(
+                "Unsupported source URI format for direct exec: {}",
+                source_uri.uri
             );
         }
     }
 
-    // Execute match SQL via the distributed engine
+    // Execute match SQL
     let matching_start = Instant::now();
     let mut total_matched = 0u64;
     let mut matched_records: Vec<MatchedRecord> = Vec::new();
@@ -734,12 +464,12 @@ async fn handle_exec_distributed(
                 total_matched += batch.num_rows() as u64;
             }
         }
-        Err(e) => warn!("Run {}: distributed match SQL failed: {}", run_id, e),
+        Err(e) => warn!("Run {}: match SQL failed: {}", run_id, e),
     }
 
     let matching_ms = matching_start.elapsed().as_millis();
     info!(
-        "Run {}: {} matched records in {}ms (distributed)",
+        "Run {}: {} matched records in {}ms",
         run_id, total_matched, matching_ms
     );
 
@@ -782,7 +512,7 @@ async fn handle_exec_distributed(
     }
 
     info!(
-        "Run {}: {} unmatched_left, {} unmatched_right (distributed)",
+        "Run {}: {} unmatched_left, {} unmatched_right",
         run_id, unmatched_left, unmatched_right
     );
 
@@ -797,15 +527,6 @@ async fn handle_exec_distributed(
         .bind(job_id)
         .execute(pool)
         .await?;
-
-    // Mark run completed
-    sqlx::query(
-        "UPDATE run_staging_tracker SET status = 'completed', updated_at = now()
-         WHERE run_id = $1",
-    )
-    .bind(run_id)
-    .execute(pool)
-    .await?;
 
     // POST results to callback URL if provided
     if let Some(url) = callback_url {

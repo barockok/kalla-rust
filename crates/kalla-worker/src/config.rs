@@ -18,19 +18,12 @@ pub struct WorkerConfig {
     pub nats_url: Option<String>,
     /// App database URL — only used in scaled mode for job tracking.
     pub database_url: Option<String>,
-    /// Enable Ballista distributed execution (skips staging when source_uris available).
-    pub ballista_enabled: bool,
     /// Number of partitions per source for distributed reads.
     pub ballista_partitions: usize,
     pub metrics_port: u16,
-    // Staging config
-    pub max_parallel_chunks: usize,
-    pub chunk_threshold_rows: u64,
     // Job health (scaled mode only)
     pub heartbeat_interval_secs: u64,
     pub reaper_interval_secs: u64,
-    // Storage
-    pub staging_bucket: String,
     /// Local directory for staging files (single mode).
     pub staging_path: String,
 }
@@ -42,9 +35,6 @@ impl WorkerConfig {
                 .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string()),
             nats_url: std::env::var("NATS_URL").ok(),
             database_url: std::env::var("DATABASE_URL").ok(),
-            ballista_enabled: std::env::var("BALLISTA_ENABLED")
-                .map(|v| v == "true" || v == "1")
-                .unwrap_or(false),
             ballista_partitions: std::env::var("BALLISTA_PARTITIONS")
                 .unwrap_or_else(|_| "4".to_string())
                 .parse()
@@ -53,14 +43,6 @@ impl WorkerConfig {
                 .unwrap_or_else(|_| "9090".to_string())
                 .parse()
                 .context("Invalid METRICS_PORT")?,
-            max_parallel_chunks: std::env::var("MAX_PARALLEL_CHUNKS")
-                .unwrap_or_else(|_| "10".to_string())
-                .parse()
-                .context("Invalid MAX_PARALLEL_CHUNKS")?,
-            chunk_threshold_rows: std::env::var("CHUNK_THRESHOLD_ROWS")
-                .unwrap_or_else(|_| "1000000".to_string())
-                .parse()
-                .context("Invalid CHUNK_THRESHOLD_ROWS")?,
             heartbeat_interval_secs: std::env::var("HEARTBEAT_INTERVAL_SECS")
                 .unwrap_or_else(|_| "30".to_string())
                 .parse()
@@ -69,8 +51,6 @@ impl WorkerConfig {
                 .unwrap_or_else(|_| "60".to_string())
                 .parse()
                 .context("Invalid REAPER_INTERVAL_SECS")?,
-            staging_bucket: std::env::var("STAGING_BUCKET")
-                .unwrap_or_else(|_| "kalla-staging".to_string()),
             staging_path: std::env::var("STAGING_PATH").unwrap_or_else(|_| "./staging".to_string()),
         })
     }
@@ -98,14 +78,10 @@ mod tests {
             "WORKER_ID",
             "NATS_URL",
             "DATABASE_URL",
-            "BALLISTA_ENABLED",
             "BALLISTA_PARTITIONS",
             "METRICS_PORT",
-            "MAX_PARALLEL_CHUNKS",
-            "CHUNK_THRESHOLD_ROWS",
             "HEARTBEAT_INTERVAL_SECS",
             "REAPER_INTERVAL_SECS",
-            "STAGING_BUCKET",
             "STAGING_PATH",
         ] {
             unsafe { std::env::remove_var(key) };
@@ -122,11 +98,8 @@ mod tests {
             std::env::set_var("NATS_URL", "nats://localhost:4222");
             std::env::set_var("DATABASE_URL", "postgres://localhost/test");
             std::env::set_var("METRICS_PORT", "8080");
-            std::env::set_var("MAX_PARALLEL_CHUNKS", "5");
-            std::env::set_var("CHUNK_THRESHOLD_ROWS", "500000");
             std::env::set_var("HEARTBEAT_INTERVAL_SECS", "15");
             std::env::set_var("REAPER_INTERVAL_SECS", "45");
-            std::env::set_var("STAGING_BUCKET", "my-bucket");
             std::env::set_var("STAGING_PATH", "/data/staging");
         }
 
@@ -138,11 +111,8 @@ mod tests {
             Some("postgres://localhost/test".to_string())
         );
         assert_eq!(config.metrics_port, 8080);
-        assert_eq!(config.max_parallel_chunks, 5);
-        assert_eq!(config.chunk_threshold_rows, 500000);
         assert_eq!(config.heartbeat_interval_secs, 15);
         assert_eq!(config.reaper_interval_secs, 45);
-        assert_eq!(config.staging_bucket, "my-bucket");
         assert_eq!(config.staging_path, "/data/staging");
         assert_eq!(config.mode(), WorkerMode::Scaled);
 
@@ -160,10 +130,7 @@ mod tests {
         assert_eq!(config.nats_url, None);
         assert_eq!(config.database_url, None);
         assert_eq!(config.metrics_port, 9090);
-        assert_eq!(config.max_parallel_chunks, 10);
-        assert_eq!(config.chunk_threshold_rows, 1_000_000);
         assert_eq!(config.staging_path, "./staging");
-        assert!(!config.ballista_enabled);
         assert_eq!(config.ballista_partitions, 4);
         assert_eq!(config.mode(), WorkerMode::Single);
 
@@ -171,30 +138,12 @@ mod tests {
     }
 
     #[test]
-    fn from_env_ballista_defaults() {
+    fn from_env_ballista_partitions() {
         let _lock = ENV_LOCK.lock().unwrap();
         clear_env();
 
         let config = WorkerConfig::from_env().unwrap();
-        assert!(!config.ballista_enabled);
         assert_eq!(config.ballista_partitions, 4);
-
-        clear_env();
-    }
-
-    #[test]
-    fn from_env_ballista_enabled() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        clear_env();
-
-        unsafe {
-            std::env::set_var("BALLISTA_ENABLED", "true");
-            std::env::set_var("BALLISTA_PARTITIONS", "8");
-        }
-
-        let config = WorkerConfig::from_env().unwrap();
-        assert!(config.ballista_enabled);
-        assert_eq!(config.ballista_partitions, 8);
 
         clear_env();
     }

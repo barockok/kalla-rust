@@ -44,28 +44,19 @@ async fn reap_stale_jobs(pool: &PgPool, metrics: &WorkerMetrics) -> anyhow::Resu
     }
 
     // Fail jobs that exceeded max attempts
-    let failed: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
+    let failed: Vec<(uuid::Uuid,)> = sqlx::query_as(
         "UPDATE jobs SET status = 'failed'
          WHERE status = 'claimed'
            AND last_heartbeat < now() - (timeout_seconds || ' seconds')::interval
            AND attempts >= max_attempts
-         RETURNING job_id, run_id",
+         RETURNING job_id",
     )
     .fetch_all(pool)
     .await?;
 
-    for (job_id, run_id) in &failed {
-        warn!("Reaper failed job {} (run {})", job_id, run_id);
+    for (job_id,) in &failed {
+        warn!("Reaper failed job {}", job_id);
         metrics.reaper_failed.inc();
-
-        // Mark entire run as failed
-        sqlx::query(
-            "UPDATE run_staging_tracker SET status = 'failed', updated_at = now()
-             WHERE run_id = $1 AND status != 'failed'",
-        )
-        .bind(run_id)
-        .execute(pool)
-        .await?;
     }
 
     Ok(())

@@ -8,12 +8,6 @@
 # Environment:
 #   PG_URL          — Postgres conn URL    (default: postgresql://kalla:kalla_secret@localhost:5432/kalla)
 #   NATS_URL        — NATS server URL      (default: nats://localhost:4222)
-#   STAGING_BUCKET  — S3 bucket for staging (default: kalla-staging)
-#   AWS_ENDPOINT_URL — S3/MinIO endpoint   (default: http://localhost:9000)
-#   AWS_ACCESS_KEY_ID     — S3 access key  (default: minioadmin)
-#   AWS_SECRET_ACCESS_KEY — S3 secret key  (default: minioadmin)
-#   AWS_REGION      — S3 region            (default: us-east-1)
-#   AWS_ALLOW_HTTP  — Allow HTTP for S3    (default: true)
 #   WORKER_BINARY   — path to kalla-worker (default: ./target/release/kalla-worker)
 #   NUM_WORKERS     — number of workers    (default: 2)
 
@@ -22,12 +16,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PG_URL="${PG_URL:-postgresql://kalla:kalla_secret@localhost:5432/kalla}"
 NATS_URL="${NATS_URL:-nats://localhost:4222}"
-STAGING_BUCKET="${STAGING_BUCKET:-kalla-staging}"
-AWS_ENDPOINT_URL="${AWS_ENDPOINT_URL:-http://localhost:9000}"
-AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-minioadmin}"
-AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-minioadmin}"
-AWS_REGION="${AWS_REGION:-us-east-1}"
-AWS_ALLOW_HTTP="${AWS_ALLOW_HTTP:-true}"
 WORKER_BINARY="${WORKER_BINARY:-./target/release/kalla-worker}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 TIMEOUT_SECS=300
@@ -95,13 +83,6 @@ start_workers() {
         local log_file="/tmp/kalla-scaled-worker-${i}.log"
         NATS_URL="${NATS_URL}" \
         DATABASE_URL="${PG_URL}" \
-        AWS_ENDPOINT_URL="${AWS_ENDPOINT_URL}" \
-        AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
-        AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
-        AWS_REGION="${AWS_REGION}" \
-        AWS_ALLOW_HTTP="${AWS_ALLOW_HTTP}" \
-        STAGING_BUCKET="${STAGING_BUCKET}" \
-        BALLISTA_ENABLED="true" \
         BALLISTA_PARTITIONS="4" \
         WORKER_ID="bench-worker-${i}" \
         METRICS_PORT=$((9090 + i)) \
@@ -163,19 +144,13 @@ for scenario_file in "${SCENARIOS[@]}"; do
     MATCH_SQL=$(json_field "match_sql" "$scenario_file")
     SCENARIO_WORKERS=$(json_field "workers" "$scenario_file")
     SCENARIO_WORKERS="${SCENARIO_WORKERS:-${NUM_WORKERS}}"
-    DIRECT_EXEC=$(json_field "direct_exec" "$scenario_file")
-
     echo ""
     echo "=== Scenario: ${SCENARIO_NAME} (${ROWS} rows, ${SOURCE_TYPE}, ${SCENARIO_WORKERS} workers) ==="
 
     START_TIME=$(now_ns)
 
     # Build injector arguments as array to preserve quoting
-    INJECT_ARGS=(--rows "$ROWS" --pg-url "$PG_URL" --nats-url "$NATS_URL" --staging-bucket "$STAGING_BUCKET" --match-sql "$MATCH_SQL" --timeout "$TIMEOUT_SECS" --json-output)
-    if [ "$DIRECT_EXEC" = "True" ] || [ "$DIRECT_EXEC" = "true" ]; then
-        INJECT_ARGS+=(--direct-exec)
-        echo "  (direct exec mode — skipping staging, Ballista enabled)"
-    fi
+    INJECT_ARGS=(--rows "$ROWS" --pg-url "$PG_URL" --nats-url "$NATS_URL" --match-sql "$MATCH_SQL" --timeout "$TIMEOUT_SECS" --json-output)
 
     # Run the injector script
     RESULT=$(python3 "${SCRIPT_DIR}/inject_scaled_job.py" \
@@ -207,8 +182,6 @@ printf '%b' "$SUMMARY_ROWS" >> "${REPORT_FILE}"
     echo ""
     echo "- NATS: ${NATS_URL}"
     echo "- Postgres: ${PG_URL}"
-    echo "- S3 Endpoint: ${AWS_ENDPOINT_URL}"
-    echo "- Staging Bucket: ${STAGING_BUCKET}"
     echo "- Workers: ${NUM_WORKERS}"
     echo "- Host: $(uname -n)"
     echo "- OS: $(uname -s) $(uname -r)"

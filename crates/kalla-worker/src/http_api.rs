@@ -20,8 +20,6 @@ pub struct JobRequest {
     pub sources: Vec<ResolvedSource>,
     pub output_path: String,
     pub primary_keys: HashMap<String, Vec<String>>,
-    #[serde(default)]
-    pub stage_to_parquet: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

@@ -23,26 +23,17 @@ impl prometheus_client::encoding::EncodeLabelSet for JobTypeLabel {
 
 #[derive(Clone)]
 pub struct WorkerMetrics {
-    pub stage_queue_depth: Gauge,
     pub exec_queue_depth: Gauge,
     pub active_jobs: Gauge,
     pub jobs_completed: Family<JobTypeLabel, Counter>,
     pub reaper_reclaimed: Counter,
     pub reaper_failed: Counter,
-    pub rows_processed: Counter,
     pub registry: Arc<Registry>,
 }
 
 impl WorkerMetrics {
     pub fn new() -> Self {
         let mut registry = Registry::default();
-
-        let stage_queue_depth = Gauge::default();
-        registry.register(
-            "kalla_stage_queue_depth",
-            "Number of pending stage jobs",
-            stage_queue_depth.clone(),
-        );
 
         let exec_queue_depth = Gauge::default();
         registry.register(
@@ -79,21 +70,12 @@ impl WorkerMetrics {
             reaper_failed.clone(),
         );
 
-        let rows_processed = Counter::default();
-        registry.register(
-            "kalla_worker_rows_processed_total",
-            "Total rows processed across all jobs",
-            rows_processed.clone(),
-        );
-
         Self {
-            stage_queue_depth,
             exec_queue_depth,
             active_jobs,
             jobs_completed,
             reaper_reclaimed,
             reaper_failed,
-            rows_processed,
             registry: Arc::new(registry),
         }
     }
@@ -116,13 +98,11 @@ mod tests {
         let output = metrics.encode();
 
         // Verify all registered metric names appear in output
-        assert!(output.contains("kalla_stage_queue_depth"));
         assert!(output.contains("kalla_exec_queue_depth"));
         assert!(output.contains("kalla_worker_active_jobs"));
         assert!(output.contains("kalla_worker_jobs_completed_total"));
         assert!(output.contains("kalla_reaper_jobs_reclaimed_total"));
         assert!(output.contains("kalla_reaper_jobs_failed_total"));
-        assert!(output.contains("kalla_worker_rows_processed_total"));
     }
 
     #[test]
@@ -134,7 +114,7 @@ mod tests {
         assert!(output.contains("# HELP"));
         assert!(output.contains("# TYPE"));
         // Gauges should be typed as gauge
-        assert!(output.contains("# TYPE kalla_stage_queue_depth gauge"));
+        assert!(output.contains("# TYPE kalla_exec_queue_depth gauge"));
         // Counters should be typed as counter
         assert!(output.contains("# TYPE kalla_reaper_jobs_reclaimed_total counter"));
     }
@@ -142,14 +122,9 @@ mod tests {
     #[test]
     fn gauge_set_reflected_in_encode() {
         let metrics = WorkerMetrics::new();
-        metrics.stage_queue_depth.set(42);
         metrics.exec_queue_depth.set(7);
 
         let output = metrics.encode();
-        assert!(
-            output.contains("kalla_stage_queue_depth 42"),
-            "Expected gauge value 42 in output: {output}"
-        );
         assert!(
             output.contains("kalla_exec_queue_depth 7"),
             "Expected gauge value 7 in output: {output}"
@@ -161,7 +136,6 @@ mod tests {
         let metrics = WorkerMetrics::new();
         metrics.reaper_reclaimed.inc();
         metrics.reaper_reclaimed.inc();
-        metrics.rows_processed.inc_by(100);
 
         let output = metrics.encode();
         // prometheus-client appends _total to counter names per OpenMetrics spec,
@@ -170,10 +144,6 @@ mod tests {
         assert!(
             output.contains("kalla_reaper_jobs_reclaimed_total_total 2"),
             "Expected counter value 2 in output: {output}"
-        );
-        assert!(
-            output.contains("kalla_worker_rows_processed_total_total 100"),
-            "Expected counter value 100 in output: {output}"
         );
     }
 

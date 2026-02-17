@@ -13,8 +13,8 @@ env:
 
 jobs:
   # ===== Rust =====
-  rust-lint:
-    name: Rust Lint
+  rust:
+    name: Rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,9 +31,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-lint-
+            ${{ runner.os }}-cargo-
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -41,28 +41,18 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-  rust-test:
-    name: Rust Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry & build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-test-
-
-      - name: Run unit tests
+      - name: Run tests
         run: cargo test --workspace
+
+      - name: Build worker (release)
+        run: cargo build --release --bin kalla-worker
+
+      - name: Upload worker binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: kalla-worker-binary
+          path: target/release/kalla-worker
+          retention-days: 1
 
   # ===== Frontend =====
   frontend-lint:
@@ -130,7 +120,7 @@ jobs:
   docker-build:
     name: Docker Build
     runs-on: ubuntu-latest
-    needs: [rust-lint, rust-test, frontend-lint, frontend-test]
+    needs: [rust, frontend-lint, frontend-test]
     if: startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[build-release]')
     steps:
       - uses: actions/checkout@v4
@@ -160,30 +150,22 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
-    needs: [rust-test, frontend-test]
+    needs: [rust, frontend-test]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry & build
-        uses: actions/cache@v4
+      - name: Download worker binary
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-integration-
+          name: kalla-worker-binary
+          path: target/release/
 
-      - name: Build and start worker in single mode
+      - name: Start worker in single mode
         env:
           RUST_LOG: info
           STAGING_PATH: /tmp/kalla-staging
         run: |
-          cargo build --release --bin kalla-worker
+          chmod +x target/release/kalla-worker
           mkdir -p /tmp/kalla-staging
           ./target/release/kalla-worker &
           # Wait for worker health endpoint
@@ -198,44 +180,12 @@ jobs:
           # Verify the worker is running in single mode
           curl -sf http://localhost:9090/health
 
-  # ===== Benchmark Build (shared) =====
-  benchmark-build:
-    name: Benchmark Build
-    runs-on: ubuntu-latest
-    if: contains(github.event.head_commit.message, '[perform-benchmark]')
-    needs: [rust-test]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry & build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-bench-
-
-      - name: Build worker (release)
-        run: cargo build --release --bin kalla-worker
-
-      - name: Upload worker binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: kalla-worker-binary
-          path: target/release/kalla-worker
-          retention-days: 1
-
   # ===== Benchmarks =====
   benchmark:
     name: Benchmark
     runs-on: ubuntu-latest
-    needs: [benchmark-build]
+    if: contains(github.event.head_commit.message, '[perform-benchmark]')
+    needs: [rust]
     services:
       postgres:
         image: postgres:16
@@ -306,7 +256,8 @@ jobs:
   benchmark-scaled:
     name: Benchmark (Scaled)
     runs-on: ubuntu-latest
-    needs: [benchmark-build]
+    if: contains(github.event.head_commit.message, '[perform-benchmark]')
+    needs: [rust]
     services:
       postgres:
         image: postgres:16
@@ -329,7 +280,6 @@ jobs:
       AWS_SECRET_ACCESS_KEY: minioadmin
       AWS_REGION: us-east-1
       AWS_ALLOW_HTTP: "true"
-      STAGING_BUCKET: kalla-staging
     steps:
       - uses: actions/checkout@v4
 
@@ -383,7 +333,6 @@ jobs:
           PG_URL: postgresql://kalla:kalla_secret@localhost:5432/kalla
           WORKER_BINARY: ./target/release/kalla-worker
           NUM_WORKERS: "2"
-          BALLISTA_ENABLED: "true"
           BALLISTA_PARTITIONS: "4"
         run: bash benchmarks/run_scaled_benchmark.sh
 

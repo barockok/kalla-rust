@@ -323,15 +323,6 @@ CREATE INDEX IF NOT EXISTS idx_chat_sessions_status ON chat_sessions(status);
 -- JOB QUEUE TRACKING
 -- ============================================
 
-CREATE TABLE IF NOT EXISTS run_staging_tracker (
-    run_id          UUID PRIMARY KEY,
-    status          TEXT NOT NULL DEFAULT 'staging',
-    total_chunks    INTEGER NOT NULL,
-    completed_chunks INTEGER NOT NULL DEFAULT 0,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
 CREATE TABLE IF NOT EXISTS jobs (
     job_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     run_id          UUID NOT NULL,
