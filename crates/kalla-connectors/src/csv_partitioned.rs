@@ -205,8 +205,13 @@ impl CsvByteRangeTable {
         self.num_partitions
     }
 
+    /// Access the S3 configuration.
+    pub fn s3_config(&self) -> &S3Config {
+        &self.s3_config
+    }
+
     /// Extract the header line from the schema (reconstructed from field names).
-    fn header_line(&self) -> String {
+    pub fn header_line(&self) -> String {
         self.schema
             .fields()
             .iter()

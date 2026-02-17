@@ -7,14 +7,17 @@
 
 use std::sync::Arc;
 
+use datafusion::datasource::TableProvider;
 use datafusion::error::Result as DFResult;
 use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::ExecutionPlan;
 
+use kalla_connectors::csv_partitioned::{compute_byte_ranges, CsvByteRangeTable};
 use kalla_connectors::postgres_partitioned::{
     compute_partition_ranges, PostgresPartitionedTable,
 };
 
+use crate::csv_range_scan_exec::CsvRangeScanExec;
 use crate::postgres_scan_exec::PostgresScanExec;
 
 /// Extension trait that adds `scan_lazy()` to connector table types.
@@ -44,6 +47,31 @@ impl ScanLazy for PostgresPartitionedTable {
                 *offset,
                 *limit,
                 self.order_column().map(|s| s.to_string()),
+            )));
+        }
+
+        if plans.len() == 1 {
+            Ok(plans.into_iter().next().unwrap())
+        } else {
+            Ok(Arc::new(UnionExec::new(plans)))
+        }
+    }
+}
+
+impl ScanLazy for CsvByteRangeTable {
+    fn scan_lazy(&self) -> DFResult<Arc<dyn ExecutionPlan>> {
+        let ranges = compute_byte_ranges(self.file_size(), self.num_partitions());
+        let mut plans: Vec<Arc<dyn ExecutionPlan>> = Vec::with_capacity(ranges.len());
+
+        for (i, (start, end)) in ranges.iter().enumerate() {
+            plans.push(Arc::new(CsvRangeScanExec::new(
+                self.s3_uri().to_string(),
+                self.schema(),
+                *start,
+                *end,
+                i == 0,
+                self.header_line(),
+                self.s3_config().clone(),
             )));
         }
 
