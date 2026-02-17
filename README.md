@@ -4,32 +4,34 @@ Kalla is a high-performance data reconciliation engine built with Rust and power
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                           Kalla System                               │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  ┌──────────────────────┐     ┌──────────────────────────────────┐  │
-│  │     Kalla App        │     │    kallad scheduler               │  │
-│  │     (Next.js)        │────▶│    (Rust / Ballista)              │  │
-│  │                      │ HTTP│                                    │  │
-│  │  • Web UI            │     │  • HTTP API (:8080)               │  │
-│  │  • REST API          │     │  • Ballista gRPC (:50050)         │  │
-│  │  • Agentic builder   │     │  • Source registration            │  │
-│  │  • Postgres CRUD     │     │  • DataFusion SQL execution       │  │
-│  │  Port 3000           │     │  • Evidence store (Parquet)       │  │
-│  └──────┬───────────────┘     └──────────┬───────────────────────┘  │
-│         │                                │                           │
-│         ▼                     ┌──────────┴───────────┐              │
-│  ┌────────────┐               │                      │              │
-│  │ PostgreSQL │          ┌────▼─────┐          ┌─────▼────┐        │
-│  │ App state  │          │ executor │          │ executor │        │
-│  │ Sources    │          │    1     │          │    2     │        │
-│  │ Recipes    │          │ (flight) │          │ (flight) │        │
-│  │ Runs       │          └──────────┘          └──────────┘        │
-│  └────────────┘           Reads from Postgres via PostgresScanExec  │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    Browser([Browser]) -->|:3000| App
+
+    subgraph App["Kalla App (Next.js)"]
+        WebUI[Web UI]
+        REST[REST API]
+        Agent[Agentic Builder]
+        CRUD[Postgres CRUD]
+    end
+
+    App -->|SQL| PG[(PostgreSQL<br/>App state / Sources<br/>Recipes / Runs)]
+    App -->|HTTP| Scheduler
+
+    subgraph Scheduler["kallad scheduler (Rust / Ballista)"]
+        HTTP[HTTP API :8080]
+        GRPC[Ballista gRPC :50050]
+        DF[DataFusion SQL]
+        Evidence[Evidence Store]
+    end
+
+    Scheduler --> Exec1[kallad executor 1<br/>Arrow Flight]
+    Scheduler --> Exec2[kallad executor 2<br/>Arrow Flight]
+
+    Exec1 -->|PostgresScanExec| PG
+    Exec2 -->|PostgresScanExec| PG
+
+    Scheduler -->|callback| App
 ```
 
 ### Deployable Components
@@ -80,8 +82,9 @@ The `kallad` binary is the same in both modes. In single mode the scheduler runs
 
 The core of Kalla is a 7-phase conversational agent that guides users from raw data to a working reconciliation recipe:
 
-```
-greeting → intent → scoping → demonstration → inference → validation → execution
+```mermaid
+graph LR
+    Greeting --> Intent --> Scoping --> Demonstration --> Inference --> Validation --> Execution
 ```
 
 | Phase | What happens | Agent tools |
