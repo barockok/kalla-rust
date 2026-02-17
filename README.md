@@ -1,6 +1,6 @@
 # Kalla - Universal Reconciliation Engine
 
-Kalla is a high-performance data reconciliation engine built with Rust and powered by Apache DataFusion. It matches data across sources using raw SQL — built through conversation with an AI assistant, never written by hand.
+Kalla is a high-performance data reconciliation engine built with Rust and powered by Apache DataFusion and Apache Ballista. It matches data across sources using raw SQL — built through conversation with an AI assistant, never written by hand.
 
 ## Architecture
 
@@ -9,58 +9,72 @@ Kalla is a high-performance data reconciliation engine built with Rust and power
 │                           Kalla System                               │
 ├──────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  ┌──────────────────────┐          ┌──────────────────────┐         │
-│  │     Kalla App        │          │    Kalla Worker       │         │
-│  │     (Next.js)        │─────────▶│    (Rust)             │         │
-│  │                      │  HTTP    │                       │         │
-│  │  • Web UI            │  (single │  • S3 CSV/Parquet     │         │
-│  │  • REST API          │   mode)  │  • DataFusion SQL     │         │
-│  │  • Agentic builder   │          │  • Result writing     │         │
-│  │  • Postgres CRUD     │          │                       │         │
-│  │  Port 3000           │          │  Port 9090            │         │
-│  └──────┬───────┬───────┘          └───────────────────────┘         │
-│         │       │                                                    │
-│         ▼       ▼                                                    │
-│  ┌────────────┐ ┌────────────┐                                      │
-│  │ PostgreSQL │ │ MinIO (S3) │                                      │
-│  │ Sources,   │ │ Uploads,   │                                      │
-│  │ Recipes,   │ │ Results    │                                      │
-│  │ Runs       │ │            │                                      │
-│  └────────────┘ └────────────┘                                      │
+│  ┌──────────────────────┐     ┌──────────────────────────────────┐  │
+│  │     Kalla App        │     │    kallad scheduler               │  │
+│  │     (Next.js)        │────▶│    (Rust / Ballista)              │  │
+│  │                      │ HTTP│                                    │  │
+│  │  • Web UI            │     │  • HTTP API (:8080)               │  │
+│  │  • REST API          │     │  • Ballista gRPC (:50050)         │  │
+│  │  • Agentic builder   │     │  • Source registration            │  │
+│  │  • Postgres CRUD     │     │  • DataFusion SQL execution       │  │
+│  │  Port 3000           │     │  • Evidence store (Parquet)       │  │
+│  └──────┬───────────────┘     └──────────┬───────────────────────┘  │
+│         │                                │                           │
+│         ▼                     ┌──────────┴───────────┐              │
+│  ┌────────────┐               │                      │              │
+│  │ PostgreSQL │          ┌────▼─────┐          ┌─────▼────┐        │
+│  │ App state  │          │ executor │          │ executor │        │
+│  │ Sources    │          │    1     │          │    2     │        │
+│  │ Recipes    │          │ (flight) │          │ (flight) │        │
+│  │ Runs       │          └──────────┘          └──────────┘        │
+│  └────────────┘           Reads from Postgres via PostgresScanExec  │
 │                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### Two Deployable Units
+### Deployable Components
 
 | Component | Technology | Role |
 |-----------|------------|------|
 | **Kalla App** | Next.js | Web UI + REST API + agentic recipe builder + file uploads + Postgres CRUD |
-| **Kalla Worker** | Rust, DataFusion | Source loading (S3 CSV/Parquet) + SQL execution + result writing |
+| **kallad** | Rust, DataFusion, Ballista | Unified binary — `scheduler` and `executor` subcommands |
 
-### Two Deployment Modes
+### Deployment Modes
 
-**Single mode** — one VM, no autoscaling:
-- App dispatches jobs to Worker via HTTP
-- Worker loads sources from S3 (MinIO)
-- Services: App + Worker + Postgres + MinIO
+**Single node** — one machine, no executors:
+- App dispatches jobs to the scheduler via HTTP
+- Scheduler detects no executors (10s probe timeout) and falls back to local DataFusion
+- Services: App + Scheduler + Postgres + MinIO
 
-**Scaled mode** — K8s with autoscaling:
-- App publishes jobs to NATS JetStream
-- Multiple Workers consume from NATS, load from S3/GCS
-- HPA/KEDA scales workers based on queue depth
+**Cluster** — distributed execution with Ballista:
+- App dispatches jobs to the scheduler via HTTP
+- Scheduler distributes query partitions across executors via gRPC/Arrow Flight
+- Executors read source data directly from Postgres using `PostgresScanExec`
+- Services: App + Scheduler + N Executors + Postgres
 
-The Worker binary is the same in both modes — it detects mode from environment variables.
+The `kallad` binary is the same in both modes. In single mode the scheduler runs alone; in cluster mode you add executor instances.
 
 ### Rust Crates
 
 | Crate | Description |
 |-------|-------------|
-| `kalla-core` | ReconciliationEngine wrapping DataFusion |
-| `kalla-connectors` | Data source connectors (S3 CSV, S3 Parquet, PostgreSQL) |
+| `kallad` | Unified binary with `scheduler` and `executor` subcommands |
+| `kalla-ballista` | Ballista integration — scheduler, executor, HTTP runner, codecs, lazy scan nodes |
+| `kalla-core` | `ReconciliationEngine` wrapping DataFusion + financial UDFs (`tolerance_match`) |
+| `kalla-connectors` | Partitioned data source connectors (Postgres, S3 CSV, S3 Parquet). See [connector README](crates/kalla-connectors/README.md) |
 | `kalla-recipe` | Recipe schema types (match_sql, sources, primary keys) |
-| `kalla-evidence` | Matched record audit trail (Parquet) |
-| `kalla-worker` | Source loading + SQL execution + HTTP/NATS job handling |
+| `kalla-evidence` | Matched record audit trail (Parquet evidence store) |
+
+### How Execution Works
+
+1. App submits a `JobRequest` to the scheduler via `POST /api/jobs`
+2. Scheduler registers source tables as `PostgresPartitionedTable` or `CsvByteRangeTable` (partitioned, lazy)
+3. Scheduler probes the Ballista cluster with `SELECT 1` (10s timeout)
+   - If executors respond: uses Ballista distributed execution
+   - If timeout: falls back to local DataFusion
+4. Executes `match_sql` — results streamed as Arrow RecordBatches
+5. Computes unmatched counts from matched records (in-memory HashSet, no post-match queries)
+6. Writes evidence (Parquet) and reports results back to the App via HTTP callback
 
 ## Agentic Recipe Builder
 
@@ -103,20 +117,20 @@ Recipes use raw DataFusion SQL — generated through conversation, never written
   "recipe_id": "invoice-payment-match",
   "name": "Invoice-Payment Reconciliation",
   "description": "Match invoices to payments by reference and amount",
-  "match_sql": "SELECT l.invoice_id, r.payment_id, l.amount, r.amount FROM left_src l JOIN right_src r ON l.invoice_id = r.reference_number AND ABS(l.amount - r.amount) / NULLIF(l.amount, 0) < 0.01",
-  "match_description": "Matches invoices to payments where reference numbers match and amounts are within 1%",
+  "match_sql": "SELECT l.invoice_id, r.payment_id, l.amount, r.amount FROM left_src l JOIN right_src r ON l.invoice_id = r.reference_number AND tolerance_match(l.amount, r.amount, 0.02)",
+  "match_description": "Matches invoices to payments where reference numbers match and amounts are within tolerance",
   "sources": {
     "left": {
       "alias": "invoices",
-      "type": "csv_upload",
-      "uri": "s3://kalla-uploads/sessions/.../invoices.csv",
+      "type": "postgres",
+      "uri": "postgres://user:pass@host/db?table=invoices",
       "primary_key": ["invoice_id"],
       "schema": ["invoice_id", "customer_name", "amount", "currency", "status"]
     },
     "right": {
       "alias": "payments",
-      "type": "csv_upload",
-      "uri": "s3://kalla-uploads/sessions/.../payments.csv",
+      "type": "postgres",
+      "uri": "postgres://user:pass@host/db?table=payments",
       "primary_key": ["payment_id"],
       "schema": ["payment_id", "reference_number", "amount", "date", "currency"]
     }
@@ -124,9 +138,10 @@ Recipes use raw DataFusion SQL — generated through conversation, never written
 }
 ```
 
-- `match_sql` uses `left_src` / `right_src` as fixed table aliases — the worker maps real URIs to these aliases at execution time
-- Kalla auto-derives unmatched records via LEFT ANTI JOIN
-- Source types: `csv_upload` (uploaded files), `postgres`, `bigquery`, `elasticsearch`, `file` (schema-only, user uploads fresh data each run)
+- `match_sql` uses `left_src` / `right_src` as fixed table aliases — the scheduler maps real URIs to these aliases at execution time
+- `tolerance_match(a, b, threshold)` is a built-in UDF: `ABS(a - b) <= threshold`
+- Unmatched counts are computed from matched records (no anti-join queries needed)
+- Source types: `postgres` (partitioned reads), `csv_upload` (S3 CSV byte-range reads), `s3` (Parquet)
 
 ## Prerequisites
 
@@ -136,7 +151,7 @@ For local development without Docker:
 - **Rust** >= 1.85
 - **Node.js** >= 22
 - **PostgreSQL** >= 16
-- **MinIO** (or any S3-compatible store)
+- **MinIO** (or any S3-compatible store, for CSV uploads)
 
 ## Quick Start
 
@@ -146,14 +161,14 @@ For local development without Docker:
 # Start Postgres + MinIO
 docker compose up -d
 
-# Run Worker (single mode)
-cd crates/kalla-worker && cargo run
+# Run the scheduler (single mode, no executors)
+cargo run --bin kallad -- scheduler --http-port 9090
 
 # Run Next.js app (web + API)
 cd kalla-web && npm install && npm run dev
 ```
 
-Docker Compose starts Postgres (port 5432) and MinIO (port 9000, console 9001) with auto-created `kalla-uploads` and `kalla-results` buckets. The Worker loads sources from MinIO. The App calls the Worker at `http://localhost:9090`.
+Docker Compose starts Postgres (port 5432) and MinIO (port 9000, console 9001) with auto-created `kalla-uploads` and `kalla-results` buckets. The scheduler falls back to local DataFusion when no executors are running. The App calls the scheduler at `http://localhost:9090`.
 
 ### File Upload Flow
 
@@ -172,17 +187,17 @@ Users upload CSV files through a presigned-URL flow:
 docker compose -f docker-compose.single.yml up -d
 ```
 
-Four services: app (port 3000), worker (port 9090), postgres, minio.
+Four services: app (port 3000), scheduler (port 9090), postgres, minio.
 
-### Scaled (K8s)
+### Cluster (production)
 
 ```bash
-docker compose -f docker-compose.scaled.yml up -d
+docker compose -f docker-compose.cluster.yml up -d
 ```
 
-Five services: app, worker (N replicas), postgres, NATS (JetStream), MinIO (S3).
+Five services: app, scheduler (HTTP :8080 + gRPC :50050), executor-1, executor-2, postgres.
 
-See [docs/deployment.md](docs/deployment.md) for full deployment guide and environment variables.
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for full deployment guide and environment variables.
 
 ## API Endpoints
 
@@ -221,20 +236,21 @@ See [docs/deployment.md](docs/deployment.md) for full deployment guide and envir
 | POST | `/api/runs` | Create and dispatch a reconciliation run |
 | GET | `/api/runs/:id` | Get run status and results |
 
-### Worker Callbacks (internal)
+### Scheduler Callbacks (internal)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/worker/progress` | Staging/matching progress updates |
+| POST | `/api/worker/progress` | Matching progress updates |
 | POST | `/api/worker/complete` | Run completion with counts and output paths |
 | POST | `/api/worker/error` | Run failure details |
 
-### Worker API (Rust)
+### Scheduler API (Rust — kallad)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/health` | Health check |
-| POST | `/api/jobs` | Submit job (single mode) |
+| POST | `/api/jobs` | Submit a reconciliation job |
+| GET | `/metrics` | Prometheus metrics |
 
 ## Web UI Pages
 
@@ -252,11 +268,12 @@ See [docs/deployment.md](docs/deployment.md) for full deployment guide and envir
 ```
 kalla/
 ├── crates/
-│   ├── kalla-core/          # ReconciliationEngine (DataFusion)
-│   ├── kalla-connectors/    # Data source connectors (S3 CSV, Parquet, Postgres)
-│   ├── kalla-recipe/        # Recipe schema types
-│   ├── kalla-evidence/      # Audit trail storage
-│   └── kalla-worker/        # Source loading + execution + HTTP/NATS job handling
+│   ├── kallad/             # Unified binary (scheduler + executor subcommands)
+│   ├── kalla-ballista/     # Ballista integration, HTTP runner, codecs, lazy scan nodes
+│   ├── kalla-core/         # ReconciliationEngine (DataFusion) + financial UDFs
+│   ├── kalla-connectors/   # Partitioned connectors (Postgres, S3 CSV, S3 Parquet)
+│   ├── kalla-recipe/       # Recipe schema types
+│   └── kalla-evidence/     # Audit trail storage (Parquet)
 ├── kalla-web/               # Next.js app
 │   └── src/
 │       ├── app/
@@ -266,7 +283,7 @@ kalla/
 │       │   │   ├── sources/ # Source CRUD + preview + load-scoped
 │       │   │   ├── recipes/ # Recipe CRUD
 │       │   │   ├── runs/    # Run dispatch + status
-│       │   │   └── worker/  # Worker callbacks (progress, complete, error)
+│       │   │   └── worker/  # Scheduler callbacks (progress, complete, error)
 │       │   ├── reconcile/   # Chat UI page
 │       │   ├── sources/     # Sources browser page
 │       │   ├── recipes/     # Recipes browser page
@@ -283,17 +300,19 @@ kalla/
 │           ├── chat-types.ts    # Phase configs, card types, session types
 │           ├── recipe-types.ts  # Recipe, JobPayload, Worker* types
 │           ├── session-store.ts # In-memory session store with Postgres persistence
-│           ├── worker-client.ts # HTTP dispatch to Rust worker
+│           ├── worker-client.ts # HTTP dispatch to scheduler
 │           ├── db.ts            # Postgres connection pool
 │           └── api.ts           # Client-side API helpers
+├── benchmarks/              # Performance benchmarks (Postgres 100k/1M/5M scenarios)
 ├── docs/
-│   ├── deployment.md        # Deployment guide
+│   ├── DEPLOYMENT.md        # Deployment guide
 │   └── plans/               # Design documents
 ├── scripts/
 │   └── init.sql             # Database schema (sources, recipes, runs, sessions)
+├── Dockerfile                     # Multi-stage build for kallad binary
 ├── docker-compose.yml             # Dev (Postgres + MinIO)
-├── docker-compose.single.yml     # Single-mode production
-└── docker-compose.scaled.yml     # Scaled-mode production
+├── docker-compose.single.yml     # Single-node production
+└── docker-compose.cluster.yml    # Cluster production (scheduler + executors)
 ```
 
 ## Development
@@ -304,7 +323,7 @@ kalla/
 # Rust tests
 cargo test --workspace
 
-# Frontend unit tests (268 tests)
+# Frontend unit tests
 cd kalla-web && npm test
 
 # Integration tests (requires Docker services running)
@@ -314,8 +333,8 @@ cd kalla-web && RUN_INTEGRATION=1 npx jest --verbose
 ### Building for Production
 
 ```bash
-# Build worker binary
-cargo build --release --bin kalla-worker
+# Build the kallad binary
+cargo build --release --bin kallad
 
 # Build frontend
 cd kalla-web && npm run build
@@ -323,25 +342,46 @@ cd kalla-web && npm run build
 
 ## Environment Variables
 
-| Variable | Single | Scaled | Description |
-|----------|--------|--------|-------------|
-| `DATABASE_URL` | Required | Required | Postgres connection string |
-| `WORKER_URL` | Required | - | Worker HTTP endpoint (single mode) |
-| `NATS_URL` | - | Required | NATS broker (enables scaled mode) |
-| `ANTHROPIC_API_KEY` | Required | Required | Claude API key for agentic builder |
-| `ANTHROPIC_BASE_URL` | Optional | Optional | Custom Anthropic API endpoint |
-| `S3_ENDPOINT` | Required | Required | S3/MinIO endpoint (e.g. `http://localhost:9000`) |
-| `S3_ACCESS_KEY_ID` | Required | Required | S3 access key |
-| `S3_SECRET_ACCESS_KEY` | Required | Required | S3 secret key |
-| `S3_BUCKET` | Optional | Optional | Upload bucket (default: `kalla-uploads`) |
-| `S3_REGION` | Optional | Optional | S3 region (default: `us-east-1`) |
-| `AWS_ENDPOINT_URL` | - | Required | S3 endpoint for worker (scaled mode) |
-| `STAGING_PATH` | Optional | - | Local staging dir (default: `./staging/`) |
+### App (Next.js)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | Yes | Postgres connection string |
+| `WORKER_URL` | Yes | Scheduler HTTP endpoint (e.g. `http://scheduler:9090`) |
+| `ANTHROPIC_API_KEY` | Yes | Claude API key for agentic builder |
+| `ANTHROPIC_BASE_URL` | No | Custom Anthropic API endpoint |
+| `S3_ENDPOINT` | Yes | S3/MinIO endpoint (e.g. `http://localhost:9000`) |
+| `S3_ACCESS_KEY` | Yes | S3 access key |
+| `S3_SECRET_KEY` | Yes | S3 secret key |
+| `S3_UPLOADS_BUCKET` | No | Upload bucket (default: `kalla-uploads`) |
+
+### kallad scheduler
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `RUST_LOG` | No | Log level (default: `info`) |
+| `HTTP_PORT` | No | HTTP API port (default: `8080`) |
+| `GRPC_PORT` | No | Ballista gRPC port (default: `50050`) |
+| `BALLISTA_PARTITIONS` | No | Number of partitions for source reads (default: `4`) |
+| `STAGING_PATH` | No | Local staging dir for evidence (default: `./staging`) |
+
+### kallad executor
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `RUST_LOG` | No | Log level (default: `info`) |
+| `SCHEDULER_HOST` | No | Scheduler hostname (default: `localhost`) |
+| `SCHEDULER_PORT` | No | Scheduler gRPC port (default: `50050`) |
+| `BIND_PORT` | No | Arrow Flight port (default: `50051`) |
+| `BIND_GRPC_PORT` | No | gRPC port (default: `50052`) |
+| `EXTERNAL_HOST` | No | Hostname advertised to scheduler (auto-detected if omitted) |
 
 ## Documentation
 
-- [Deployment Guide](docs/deployment.md) — Single VM, scaled K8s, environment variables
-- [Architecture Design](docs/plans/2026-02-15-architecture-review-design.md) — Full design document
+- [Deployment Guide](docs/deployment.md) — Single node, cluster, environment variables
+- [Connector Interface](crates/kalla-connectors/README.md) — How connectors build queries, partitioning invariants
+- [Ballista Cluster Mode](docs/plans/2026-02-17-ballista-cluster-mode.md) — Distributed execution design
+- [Unified kallad Binary](docs/plans/2026-02-17-unified-kallad-binary-design.md) — Scheduler + executor consolidation
 
 ## License
 
