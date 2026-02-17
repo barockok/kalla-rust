@@ -350,10 +350,20 @@ pub async fn handle_exec(
 ) -> Result<ExecResult> {
     let recipe: Recipe = serde_json::from_str(recipe_json)?;
 
-    // Use standard DataFusion engine — the partitioned table providers
-    // already handle parallelism internally.
-    let engine = ReconciliationEngine::new();
-    info!("Run {}: engine created (partitioned sources)", run_id);
+    // Choose engine: cluster mode (Ballista scheduler) or local DataFusion.
+    let engine = if let Some(scheduler_url) = &config.ballista_scheduler_url {
+        let codec = std::sync::Arc::new(kalla_ballista::codec::KallaPhysicalCodec::new());
+        let e = ReconciliationEngine::new_cluster(scheduler_url, codec).await?;
+        info!(
+            "Run {}: engine created (cluster mode, scheduler={})",
+            run_id, scheduler_url
+        );
+        e
+    } else {
+        let e = ReconciliationEngine::new();
+        info!("Run {}: engine created (partitioned sources)", run_id);
+        e
+    };
 
     // Register sources directly from source URIs
     let num_partitions = config.ballista_partitions;

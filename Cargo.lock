@@ -2545,6 +2545,7 @@ dependencies = [
  "futures",
  "http",
  "http-body-util",
+ "kalla-ballista",
  "kalla-connectors",
  "kalla-core",
  "kalla-evidence",

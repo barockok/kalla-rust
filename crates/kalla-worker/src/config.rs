@@ -26,6 +26,9 @@ pub struct WorkerConfig {
     pub reaper_interval_secs: u64,
     /// Local directory for staging files (single mode).
     pub staging_path: String,
+    /// Optional Ballista scheduler URL for cluster mode (e.g., "df://localhost:50050").
+    /// When set, uses cluster mode with true distributed execution.
+    pub ballista_scheduler_url: Option<String>,
 }
 
 impl WorkerConfig {
@@ -52,6 +55,7 @@ impl WorkerConfig {
                 .parse()
                 .context("Invalid REAPER_INTERVAL_SECS")?,
             staging_path: std::env::var("STAGING_PATH").unwrap_or_else(|_| "./staging".to_string()),
+            ballista_scheduler_url: std::env::var("BALLISTA_SCHEDULER_URL").ok(),
         })
     }
 
@@ -83,6 +87,7 @@ mod tests {
             "HEARTBEAT_INTERVAL_SECS",
             "REAPER_INTERVAL_SECS",
             "STAGING_PATH",
+            "BALLISTA_SCHEDULER_URL",
         ] {
             unsafe { std::env::remove_var(key) };
         }
@@ -176,6 +181,24 @@ mod tests {
 
         let result = WorkerConfig::from_env();
         assert!(result.is_err());
+
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_ballista_scheduler_url() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env();
+
+        unsafe {
+            std::env::set_var("BALLISTA_SCHEDULER_URL", "df://scheduler:50050");
+        }
+
+        let config = WorkerConfig::from_env().unwrap();
+        assert_eq!(
+            config.ballista_scheduler_url,
+            Some("df://scheduler:50050".to_string())
+        );
 
         clear_env();
     }
