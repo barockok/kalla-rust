@@ -2440,6 +2440,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "kalla-ballista"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "async-trait",
+ "ballista",
+ "ballista-executor",
+ "ballista-scheduler",
+ "datafusion",
+ "datafusion-proto",
+ "futures",
+ "kalla-connectors",
+ "kalla-core",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "kalla-connectors"
 version = "0.1.0"
 dependencies = [

@@ -6,6 +6,7 @@ members = [
     "crates/kalla-recipe",
     "crates/kalla-evidence",
     "crates/kalla-worker",
+    "crates/kalla-ballista",
 ]
 
 [workspace.package]
@@ -18,6 +19,9 @@ repository = "https://github.com/your-org/kalla"
 # DataFusion ecosystem
 datafusion = "44"
 ballista = { version = "44", default-features = false, features = ["standalone"] }
+ballista-scheduler = "44"
+ballista-executor = "44"
+datafusion-proto = "44"
 arrow = "53"
 parquet = { version = "53", features = ["async"] }
 
@@ -64,6 +68,7 @@ kalla-core = { path = "crates/kalla-core" }
 kalla-connectors = { path = "crates/kalla-connectors" }
 kalla-recipe = { path = "crates/kalla-recipe" }
 kalla-evidence = { path = "crates/kalla-evidence" }
+kalla-ballista = { path = "crates/kalla-ballista" }
 
 [profile.release]
 codegen-units = 4
