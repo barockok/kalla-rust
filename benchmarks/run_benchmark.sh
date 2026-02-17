@@ -32,7 +32,18 @@ if [ $# -gt 0 ]; then
     SCENARIOS=("$@")
 else
     shopt -s nullglob
-    SCENARIOS=("${SCRIPT_DIR}"/scenarios/*.json)
+    SCENARIOS=()
+    for f in "${SCRIPT_DIR}"/scenarios/*.json; do
+        # Skip files meant for scaled-mode benchmarks
+        if [[ "$(basename "$f")" == *scaled* ]] || python3 -c "
+import json, sys
+d = json.load(open('$f'))
+sys.exit(0 if d.get('mode') == 'scaled' else 1)
+" 2>/dev/null; then
+            continue
+        fi
+        SCENARIOS+=("$f")
+    done
     shopt -u nullglob
 fi
 
