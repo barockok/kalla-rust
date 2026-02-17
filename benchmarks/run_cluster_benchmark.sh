@@ -218,13 +218,15 @@ for scenario_file in "${SCENARIOS[@]}"; do
     SOURCE_TYPE=$(json_field "source_type" "$scenario_file")
     ROWS=$(json_field "rows" "$scenario_file")
     MATCH_SQL=$(json_field "match_sql" "$scenario_file")
+    PATTERN=$(json_field "pattern" "$scenario_file")
+    PATTERN="${PATTERN:-one_to_one}"
     echo ""
     echo "=== Scenario: ${SCENARIO_NAME} (${ROWS} rows, ${SOURCE_TYPE}, ${NUM_EXECUTORS} executors) ==="
 
     START_TIME=$(now_ns)
 
     # Build injector arguments as array to preserve quoting
-    INJECT_ARGS=(--rows "$ROWS" --pg-url "$PG_URL" --scheduler-url "http://localhost:8080" --match-sql "$MATCH_SQL" --timeout "$TIMEOUT_SECS" --json-output)
+    INJECT_ARGS=(--rows "$ROWS" --pg-url "$PG_URL" --scheduler-url "http://localhost:8080" --match-sql "$MATCH_SQL" --timeout "$TIMEOUT_SECS" --json-output --pattern "$PATTERN")
 
     # Run the injector script (HTTP-based)
     RESULT=$(python3 "${SCRIPT_DIR}/inject_cluster_job.py" \

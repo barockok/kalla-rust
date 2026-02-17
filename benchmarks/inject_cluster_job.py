@@ -51,11 +51,13 @@ def main():
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--callback-port", type=int, default=9999)
     parser.add_argument("--json-output", action="store_true")
+    parser.add_argument("--pattern", choices=["one_to_one", "split", "batch", "cross"],
+                        default="one_to_one", help="Match pattern")
     args = parser.parse_args()
 
     # Seed benchmark data
     print(f"  Seeding {args.rows} rows to Postgres...", file=sys.stderr)
-    seed_data(args.pg_url, args.rows)
+    seed_data(args.pg_url, args.rows, args.pattern)
 
     # Start callback server
     callback_server = HTTPServer(("0.0.0.0", args.callback_port), CallbackHandler)
@@ -128,14 +130,14 @@ def main():
         print(f"  Status: {output['status']} | Elapsed: {output['elapsed_secs']}s | Rows/sec: {output['rows_per_sec']}", file=sys.stderr)
 
 
-def seed_data(pg_url, rows):
+def seed_data(pg_url, rows, pattern="one_to_one"):
     """Seed benchmark tables using the existing seed_postgres.py logic."""
     import subprocess
     import os
     script_dir = os.path.dirname(os.path.abspath(__file__))
     subprocess.run(
         ["python3", os.path.join(script_dir, "seed_postgres.py"),
-         "--rows", str(rows), "--pg-url", pg_url],
+         "--rows", str(rows), "--pg-url", pg_url, "--pattern", pattern],
         check=True,
     )
 

@@ -97,6 +97,8 @@ for scenario_file in "${SCENARIOS[@]}"; do
     ROWS=$(json_field "rows" "$scenario_file")
     MATCH_SQL=$(json_field "match_sql" "$scenario_file")
     MATCH_RATE=$(json_field "match_rate" "$scenario_file")
+    PATTERN=$(json_field "pattern" "$scenario_file")
+    PATTERN="${PATTERN:-one_to_one}"
 
     echo "=== Scenario: ${SCENARIO_NAME} (${ROWS} rows, ${SOURCE_TYPE}) ==="
 
@@ -114,7 +116,7 @@ for scenario_file in "${SCENARIOS[@]}"; do
         python3 "${SCRIPT_DIR}/generate_data.py" --rows "$ROWS" --output-dir "$DATA_DIR" $MATCH_RATE_ARG
     elif [ "$SOURCE_TYPE" = "postgres" ]; then
         echo "  Seeding Postgres..."
-        python3 "${SCRIPT_DIR}/seed_postgres.py" --rows "$ROWS" --pg-url "$PG_URL" $MATCH_RATE_ARG
+        python3 "${SCRIPT_DIR}/seed_postgres.py" --rows "$ROWS" --pg-url "$PG_URL" $MATCH_RATE_ARG --pattern "$PATTERN"
     fi
 
     # Step 2: Record baseline
