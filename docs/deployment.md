@@ -7,21 +7,27 @@ Kalla consists of two deployable components:
 | Component | Tech | Role |
 |-----------|------|------|
 | **Kalla App** | Next.js | Web UI + API (agentic orchestrator, CRUD, Postgres) |
-| **Kalla Worker** | Rust | Stateless compute — staging sources to Parquet + DataFusion SQL execution |
+| **kallad** | Rust | Unified binary with `scheduler` and `executor` subcommands |
 
-The App owns all state (Postgres, run tracking, recipe storage). The Worker is stateless — it receives a self-contained job payload, executes it, writes results to object storage, and reports status back via HTTP callbacks.
+The App owns all state (Postgres, run tracking, recipe storage). The `kallad` binary runs in two modes:
 
-### How the Worker Detects Its Mode
+- **`kallad scheduler`** — HTTP API for job submission + Ballista scheduler for distributed query coordination
+- **`kallad executor`** — Ballista executor that registers with the scheduler and executes query partitions
 
-The Worker binary is the same in both deployment modes. It selects its mode based on environment variables at startup:
+In single-node deployments, the scheduler runs DataFusion locally. In cluster deployments, the scheduler distributes work across executor instances.
 
-- `NATS_URL` **present** → scaled mode (consume jobs from NATS JetStream)
-- `NATS_URL` **absent** → single mode (accept jobs via HTTP on port 9090)
+### Architecture Diagram
 
-Storage detection works the same way:
-
-- `AWS_ENDPOINT_URL` or `GCS_BUCKET` present → use S3/GCS via `object_store`
-- Neither present → use local filesystem
+```
+Browser --> App (:3000)
+              |
+              |--> Postgres (:5432)           [state]
+              |--> kallad scheduler (:9090)    [compute + coordination]
+                     |
+                     |--> kallad executor 1    [distributed execution]
+                     |--> kallad executor 2
+                     |--> ...
+```
 
 ---
 
@@ -37,15 +43,14 @@ docker compose up -d
 
 This uses the default `docker-compose.yml` which only starts Postgres (port 5432) with the schema from `scripts/init.sql`.
 
-### Start the Worker
+### Start the Scheduler
 
 ```bash
 export RUST_LOG=debug
-cd crates/kalla-worker
-cargo run
+cargo run --bin kallad -- scheduler --http-port 9090
 ```
 
-The worker starts in **single mode** (no `NATS_URL`), listens on port 9090, and uses `./staging/` for local file storage.
+The scheduler starts in single mode, listens on port 9090 for HTTP job submissions, and uses local DataFusion for execution.
 
 ### Start the App
 
@@ -79,7 +84,7 @@ docker compose -f docker-compose.single.yml up -d
 | Service | Port | Notes |
 |---------|------|-------|
 | `app` | 3000 | Next.js (web + API) |
-| `worker` | 9090 | Rust worker, single mode (HTTP) |
+| `scheduler` | 9090 | kallad scheduler (HTTP + local DataFusion) |
 | `postgres` | 5432 | App database |
 
 ### How It Works
@@ -87,73 +92,56 @@ docker compose -f docker-compose.single.yml up -d
 ```
 Browser --> App (:3000)
               |
-              |--> Postgres (:5432)    [state]
-              |--> Worker (:9090)      [compute]
+              |--> Postgres (:5432)              [state]
+              |--> kallad scheduler (:9090)       [compute]
                      |
-                     |--> local volume  [staging + results]
-                     |--> App callback  [progress/complete/error]
+                     |--> local DataFusion        [query execution]
+                     |--> App callback            [progress/complete/error]
 ```
 
-The app dispatches jobs to the worker via `POST /api/jobs`. The worker writes Parquet results to a shared Docker volume and reports status back to the app via HTTP callbacks at `/api/worker/progress`, `/api/worker/complete`, and `/api/worker/error`.
-
-### Volumes
-
-| Volume | Purpose |
-|--------|---------|
-| `postgres_data` | Database files |
-| `staging_data` | Worker staging area (source → Parquet) |
-| `results_data` | Reconciliation result Parquet files |
+The app dispatches jobs to the scheduler via `POST /api/jobs`. The scheduler executes queries using local DataFusion, writes results, and reports status back to the app via HTTP callbacks.
 
 ---
 
-## 3. Scaled Deployment (K8s-Ready)
+## 3. Cluster Deployment
 
-Multiple workers consuming from NATS, writing to S3-compatible object storage.
+Multiple executors for distributed query execution. Suitable for large datasets (1M+ rows).
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-docker compose -f docker-compose.scaled.yml up -d
+docker compose -f docker-compose.cluster.yml up -d
 ```
 
 ### What Runs
 
 | Service | Port | Replicas | Notes |
 |---------|------|----------|-------|
-| `app` | 3000 | 1 | Next.js, publishes jobs to NATS |
-| `worker` | — | 2 (configurable) | Consumes from NATS, writes to MinIO |
+| `app` | 3000 | 1 | Next.js, submits jobs via HTTP |
+| `scheduler` | 8080, 50050 | 1 | kallad scheduler (HTTP + gRPC) |
+| `executor-1` | — | 1 | kallad executor |
+| `executor-2` | — | 1 | kallad executor |
 | `postgres` | 5432 | 1 | App database |
-| `nats` | 4222 | 1 | JetStream job queue |
-| `minio` | 9000, 9001 | 1 | S3-compatible object storage |
 
 ### How It Works
 
 ```
 Browser --> App (:3000)
               |
-              |--> Postgres (:5432)    [state]
-              |--> NATS (:4222)        [job queue]
+              |--> Postgres (:5432)                     [state]
+              |--> kallad scheduler (:8080 HTTP, :50050 gRPC)
                      |
-                     |--> Worker 1 ---> MinIO (:9000)   [staging + results]
-                     |--> Worker 2 ---> MinIO (:9000)
+                     |--> kallad executor 1 (flight + gRPC)
+                     |--> kallad executor 2 (flight + gRPC)
                      |
-                     Workers --> App callback [progress/complete/error]
+                     Executors read from Postgres via PostgresScanExec
+                     Scheduler --> App callback [progress/complete/error]
 ```
 
-The app publishes jobs to NATS JetStream. Workers consume jobs, stage source data to Parquet in MinIO, run DataFusion SQL, and write results back to MinIO. Progress is reported back to the app via HTTP callbacks.
+The app submits jobs to the scheduler via HTTP. The scheduler coordinates distributed query execution across executors using Ballista's gRPC protocol. Executors read source data directly from Postgres.
 
-### Scaling Workers
+### Scaling Executors
 
-With Docker Compose:
-
-```bash
-docker compose -f docker-compose.scaled.yml up -d --scale worker=4
-```
-
-For Kubernetes, use HPA or KEDA to autoscale workers based on NATS queue depth.
-
-### MinIO Console
-
-The MinIO web console is available at `http://localhost:9001` (default credentials: `minioadmin`/`minioadmin`).
+Add more executor services to `docker-compose.cluster.yml` following the pattern of `executor-1` and `executor-2`, ensuring unique `--external-host` values.
 
 ---
 
@@ -161,26 +149,28 @@ The MinIO web console is available at `http://localhost:9001` (default credentia
 
 ### App (Next.js)
 
-| Variable | Single | Scaled | Default | Description |
-|----------|--------|--------|---------|-------------|
-| `DATABASE_URL` | Required | Required | — | Postgres connection string |
-| `WORKER_URL` | Required | — | `http://localhost:9090` | Worker HTTP endpoint (single mode only) |
-| `NATS_URL` | — | Required | — | NATS broker URL (enables scaled mode) |
-| `ANTHROPIC_API_KEY` | Required | Required | — | API key for agentic recipe builder |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | Yes | — | Postgres connection string |
+| `WORKER_URL` | Yes | — | Scheduler HTTP endpoint (e.g., `http://scheduler:9090`) |
+| `ANTHROPIC_API_KEY` | Yes | — | API key for agentic recipe builder |
 
-### Worker (Rust)
+### kallad scheduler
 
-| Variable | Single | Scaled | Default | Description |
-|----------|--------|--------|---------|-------------|
-| `NATS_URL` | — | Required | — | NATS broker (presence enables scaled mode) |
-| `STAGING_PATH` | Optional | — | `./staging/` | Local directory for staging Parquet files |
-| `AWS_ENDPOINT_URL` | — | Required | — | S3-compatible endpoint (e.g., MinIO) |
-| `AWS_ACCESS_KEY_ID` | — | Required | — | S3 access key |
-| `AWS_SECRET_ACCESS_KEY` | — | Required | — | S3 secret key |
-| `AWS_REGION` | — | Optional | `us-east-1` | S3 region |
-| `AWS_ALLOW_HTTP` | — | Optional | `false` | Allow HTTP (non-TLS) S3 connections |
-| `GCS_BUCKET` | — | Alternative | — | GCS bucket (alternative to S3) |
-| `RUST_LOG` | Optional | Optional | `info` | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `RUST_LOG` | No | `info` | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
+| `BALLISTA_PARTITIONS` | No | — | Number of partitions for distributed execution |
+
+CLI flags: `--http-port` (HTTP API port), `--grpc-port` (Ballista gRPC port)
+
+### kallad executor
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `RUST_LOG` | No | `info` | Log level |
+
+CLI flags: `--scheduler-host`, `--scheduler-port`, `--flight-port`, `--grpc-port`, `--external-host`
 
 ### Postgres
 
@@ -192,32 +182,13 @@ The MinIO web console is available at `http://localhost:9001` (default credentia
 
 ---
 
-## 5. Storage Configuration
+## 5. Health Checks
 
-### Single Mode (Local Filesystem)
-
-The worker uses `object_store` with a local filesystem backend. Set `STAGING_PATH` to control where Parquet files are written (default: `./staging/`).
-
-In Docker, this is a named volume mounted at `/data/staging`.
-
-### Scaled Mode (S3/GCS)
-
-The worker uses `object_store` with an S3 or GCS backend.
-
-**S3 / MinIO:**
-```bash
-AWS_ENDPOINT_URL=http://minio:9000
-AWS_ACCESS_KEY_ID=minioadmin
-AWS_SECRET_ACCESS_KEY=minioadmin
-```
-
-**GCS:**
-```bash
-GCS_BUCKET=kalla-staging
-# Uses Application Default Credentials
-```
-
-The same `object_store` API is used regardless of backend — the worker code doesn't change between local and cloud storage.
+| Service | Endpoint | Method |
+|---------|----------|--------|
+| Scheduler | `GET /health` on HTTP port | HTTP |
+| Postgres | `pg_isready -U kalla` | CLI |
+| App | `GET /` | HTTP |
 
 ---
 
@@ -226,9 +197,9 @@ The same `object_store` API is used regardless of backend — the worker code do
 ### Security
 
 - **Change default Postgres password.** The default `kalla_secret` is for development only.
-- **Restrict port exposure.** Don't expose Postgres (5432) or NATS (4222) to the public internet. Bind to `127.0.0.1` or remove port mappings.
+- **Restrict port exposure.** Don't expose Postgres (5432) or gRPC ports to the public internet.
 - **Use HTTPS.** Place a reverse proxy (nginx, Caddy, Traefik) in front of the app for TLS termination.
-- **Protect secrets.** Store `ANTHROPIC_API_KEY` and database credentials securely (`.env` with `chmod 600`, or a secrets manager in K8s).
+- **Protect secrets.** Store `ANTHROPIC_API_KEY` and database credentials securely.
 
 ### Reverse Proxy Example (Caddy)
 
@@ -237,14 +208,6 @@ kalla.example.com {
     reverse_proxy app:3000
 }
 ```
-
-All API routes are served by the Next.js app on port 3000 — no separate backend port.
-
-### Health Checks
-
-- **App:** `GET /` (Next.js default)
-- **Worker:** `GET /health` (Axum health endpoint on port 9090)
-- **Postgres:** `pg_isready -U kalla`
 
 ### Backups
 
@@ -256,12 +219,10 @@ docker compose exec -T postgres pg_dump -U kalla kalla > backup.sql
 docker compose exec -T postgres psql -U kalla kalla < backup.sql
 ```
 
-For MinIO/S3 data, use `mc mirror` or cloud-native backup tools.
-
 ### Resource Requirements
 
 | Deployment | RAM | CPU | Disk |
 |------------|-----|-----|------|
 | Development | 4 GB | 2 cores | 10 GB |
 | Single VM | 4 GB | 2 cores | 20 GB |
-| Scaled (per worker) | 2 GB | 1 core | — (uses S3) |
+| Cluster (per executor) | 2 GB | 1 core | minimal |
