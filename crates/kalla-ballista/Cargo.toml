@@ -19,6 +19,8 @@ async-trait = "0.1"
 futures = "0.3"
 serde.workspace = true
 serde_json.workspace = true
+object_store = { version = "0.11", features = ["aws"] }
+url.workspace = true
 
 kalla-connectors.workspace = true
 kalla-core.workspace = true

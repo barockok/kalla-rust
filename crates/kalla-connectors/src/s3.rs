@@ -23,7 +23,7 @@ use crate::filter::{build_where_clause, FilterCondition};
 use crate::SourceConnector;
 
 /// Configuration for connecting to S3-compatible storage.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct S3Config {
     /// AWS region (e.g. "us-east-1")
     pub region: String,

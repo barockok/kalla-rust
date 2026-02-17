@@ -2454,12 +2454,14 @@ dependencies = [
  "futures",
  "kalla-connectors",
  "kalla-core",
+ "object_store",
  "serde",
  "serde_json",
  "sqlx",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
