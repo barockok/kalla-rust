@@ -2495,6 +2495,7 @@ dependencies = [
  "async-trait",
  "ballista",
  "datafusion",
+ "datafusion-proto",
  "futures",
  "tempfile",
  "thiserror 2.0.18",

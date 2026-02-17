@@ -38,6 +38,54 @@ impl ReconciliationEngine {
         Ok(Self { ctx })
     }
 
+    /// Create a cluster-mode engine that connects to an external Ballista scheduler.
+    ///
+    /// Queries submitted to this engine are distributed across Ballista executors.
+    /// The scheduler URL should be in the form `df://host:port`.
+    ///
+    /// The `codec` parameter should be a [`PhysicalExtensionCodec`] that knows how
+    /// to serialize/deserialize Kalla's custom execution plan nodes (e.g.
+    /// `KallaPhysicalCodec` from the `kalla-ballista` crate).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use kalla_ballista::codec::KallaPhysicalCodec;
+    /// use std::sync::Arc;
+    ///
+    /// let engine = kalla_core::engine::ReconciliationEngine::new_cluster(
+    ///     "df://scheduler-host:50050",
+    ///     Arc::new(KallaPhysicalCodec::new()),
+    /// ).await?;
+    /// ```
+    pub async fn new_cluster(
+        scheduler_url: &str,
+        codec: std::sync::Arc<dyn datafusion_proto::physical_plan::PhysicalExtensionCodec>,
+    ) -> anyhow::Result<Self> {
+        use ballista::prelude::{SessionConfigExt as _, SessionContextExt as _};
+        use datafusion::execution::session_state::SessionStateBuilder;
+
+        let config = datafusion::prelude::SessionConfig::new()
+            .with_information_schema(true)
+            .with_ballista_physical_extension_codec(codec);
+
+        let state = SessionStateBuilder::new()
+            .with_config(config)
+            .with_default_features()
+            .build();
+
+        let ctx: SessionContext =
+            SessionContext::remote_with_state(scheduler_url, state).await?;
+        udf::register_financial_udfs(&ctx);
+
+        info!(
+            "ReconciliationEngine (cluster mode, scheduler={}) initialized",
+            scheduler_url
+        );
+
+        Ok(Self { ctx })
+    }
+
     /// Get a reference to the underlying SessionContext
     pub fn context(&self) -> &SessionContext {
         &self.ctx
@@ -533,5 +581,18 @@ mod tests {
         let total: usize = batches.iter().map(|b| b.num_rows()).sum();
         // Only id=1 matches within 0.01 tolerance; id=2 difference is 0.02
         assert_eq!(total, 1);
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires running Ballista scheduler
+    async fn test_cluster_engine_creation() {
+        use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
+        use std::sync::Arc;
+
+        let codec = Arc::new(DefaultPhysicalExtensionCodec {});
+        let result =
+            ReconciliationEngine::new_cluster("df://localhost:50050", codec).await;
+        // Will fail without a scheduler, just verify it compiles
+        assert!(result.is_err());
     }
 }
