@@ -32,11 +32,11 @@ else
     shopt -s nullglob
     SCENARIOS=()
     for f in "${SCRIPT_DIR}"/scenarios/*.json; do
-        # Skip files meant for scaled-mode benchmarks
-        if [[ "$(basename "$f")" == *scaled* ]] || python3 -c "
+        # Skip files meant for scaled-mode or cluster-mode benchmarks
+        if [[ "$(basename "$f")" == *scaled* ]] || [[ "$(basename "$f")" == *cluster* ]] || python3 -c "
 import json, sys
 d = json.load(open('$f'))
-sys.exit(0 if d.get('mode') == 'scaled' else 1)
+sys.exit(0 if d.get('mode') in ('scaled', 'cluster') else 1)
 " 2>/dev/null; then
             continue
         fi

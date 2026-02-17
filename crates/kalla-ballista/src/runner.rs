@@ -466,6 +466,52 @@ async fn execute_job(job: JobRequest, config: &RunnerConfig, metrics: &RunnerMet
     }
 }
 
+/// Try to create a cluster engine and verify executors are present.
+/// Returns Some(engine) if cluster mode works, None to fall back to local.
+async fn create_engine(scheduler_url: &str, run_id: Uuid) -> Option<ReconciliationEngine> {
+    let engine =
+        match ReconciliationEngine::new_cluster(scheduler_url, Arc::new(KallaPhysicalCodec::new()))
+            .await
+        {
+            Ok(e) => e,
+            Err(e) => {
+                warn!(
+                    "Run {}: cluster connection failed ({}), falling back to local",
+                    run_id, e
+                );
+                return None;
+            }
+        };
+
+    // Probe: run a trivial query to verify executors can handle work.
+    // Without executors, Ballista scheduler returns an error.
+    match engine.sql("SELECT 1").await {
+        Ok(df) => match df.collect().await {
+            Ok(_) => {
+                info!(
+                    "Run {}: using cluster engine (scheduler={})",
+                    run_id, scheduler_url
+                );
+                Some(engine)
+            }
+            Err(e) => {
+                warn!(
+                    "Run {}: cluster probe failed ({}), falling back to local",
+                    run_id, e
+                );
+                None
+            }
+        },
+        Err(e) => {
+            warn!(
+                "Run {}: cluster probe failed ({}), falling back to local",
+                run_id, e
+            );
+            None
+        }
+    }
+}
+
 async fn execute_job_inner(
     job: &JobRequest,
     config: &RunnerConfig,
@@ -486,26 +532,14 @@ async fn execute_job_inner(
         )
         .await;
 
-    // Create engine: try cluster mode (co-located scheduler), fallback to local
+    // Create engine: try cluster mode first, verify executors exist, fallback to local.
+    // The co-located Ballista gRPC scheduler always accepts connections, so new_cluster()
+    // succeeds even without executors. We probe with SELECT 1 to verify executors are present.
     let scheduler_url = format!("df://localhost:{}", config.grpc_port);
-    let engine = match ReconciliationEngine::new_cluster(
-        &scheduler_url,
-        Arc::new(KallaPhysicalCodec::new()),
-    )
-    .await
-    {
-        Ok(e) => {
-            info!(
-                "Run {}: engine created (cluster mode, scheduler={})",
-                run_id, scheduler_url
-            );
-            e
-        }
-        Err(e) => {
-            warn!(
-                "Run {}: cluster engine failed ({}), falling back to local",
-                run_id, e
-            );
+    let engine = match create_engine(&scheduler_url, run_id).await {
+        Some(e) => e,
+        None => {
+            info!("Run {}: using local DataFusion engine", run_id);
             ReconciliationEngine::new()
         }
     };

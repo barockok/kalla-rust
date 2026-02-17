@@ -268,12 +268,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust toolchain & cargo artifacts
-        uses: Swatinem/rust-cache@v2
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -282,8 +276,14 @@ jobs:
       - name: Install Python dependencies
         run: pip install psycopg2-binary
 
-      - name: Build release binary
-        run: cargo build --release --bin kallad
+      - name: Download kallad binary
+        uses: actions/download-artifact@v4
+        with:
+          name: kallad-binary
+          path: target/release/
+
+      - name: Make binary executable
+        run: chmod +x target/release/kallad
 
       - name: Init DB schema
         run: psql "$DATABASE_URL" -f scripts/init.sql
