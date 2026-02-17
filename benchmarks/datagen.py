@@ -172,6 +172,68 @@ def generate_payments(n: int, invoices: list[dict], match_rate: float = 0.75,
     return payments
 
 
+def generate_split_payments(n: int, invoices: list[dict],
+                            pay_offset: int = 0) -> list[dict]:
+    """Generate 1:N split payments for the first *n* invoices.
+
+    Each invoice is paid in 2-5 random partial payments whose amounts
+    sum to the invoice total.  An additional 10 % orphan right-side
+    payments are appended (reference_number starts with ``ORPHAN-SPLIT-``).
+    """
+    payments: list[dict] = []
+    pay_idx = pay_offset + 1
+
+    for i in range(n):
+        inv = invoices[i]
+        num_parts = random.randint(2, 5)
+        total = inv["amount"]
+
+        # Split *total* into *num_parts* random fractions.
+        cuts = sorted(random.uniform(0, total) for _ in range(num_parts - 1))
+        parts = (
+            [round(cuts[0], 2)]
+            + [round(cuts[j] - cuts[j - 1], 2) for j in range(1, len(cuts))]
+            + [0.0]  # placeholder for last part
+        )
+        # Fix rounding on the last part so they sum exactly.
+        parts[-1] = round(total - sum(parts[:-1]), 2)
+
+        for k, amt in enumerate(parts):
+            payments.append({
+                "payment_id": _pad_id("PAY", pay_idx),
+                "payer_id": inv["customer_id"],
+                "payer_name": inv["customer_name"],
+                "payment_date": _random_date(2024),
+                "paid_amount": amt,
+                "currency": inv["currency"],
+                "payment_method": PAYMENT_METHODS[pay_idx % len(PAYMENT_METHODS)],
+                "reference_number": inv["invoice_id"],
+                "bank_reference": f"BR-PAY-{pay_idx:06d}",
+                "notes": f"Split part {k + 1}/{num_parts} for {inv['invoice_id']}",
+            })
+            pay_idx += 1
+
+    # --- Right-side orphans (10 % of n) ---
+    orphan_count = max(1, int(n * 0.10))
+    for i in range(orphan_count):
+        cust_id = _pad_id("CUST", 400 + i)
+        payments.append({
+            "payment_id": _pad_id("PAY", pay_idx),
+            "payer_id": cust_id,
+            "payer_name": f"Unknown Split Payer {i + 1}",
+            "payment_date": _random_date(2024),
+            "paid_amount": _random_amount(),
+            "currency": "USD",
+            "payment_method": PAYMENT_METHODS[i % len(PAYMENT_METHODS)],
+            "reference_number": f"ORPHAN-SPLIT-{i + 1}",
+            "bank_reference": f"BR-PAY-{pay_idx:06d}",
+            "notes": f"Orphan split payment {i + 1}",
+        })
+        pay_idx += 1
+
+    return payments
+
+
 def generate_batch_invoices(
     n: int,
     offset: int = 0,
