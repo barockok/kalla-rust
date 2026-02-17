@@ -435,8 +435,10 @@ mod tests {
         assert!(exec.children().is_empty());
 
         // Display
-        let display_str =
-            format!("{}", datafusion::physical_plan::displayable(&exec).one_line());
+        let display_str = format!(
+            "{}",
+            datafusion::physical_plan::displayable(&exec).one_line()
+        );
         assert!(
             display_str.contains("CsvRangeScanExec: uri=s3://bucket/data.csv, range=1000..2000"),
             "unexpected display: {}",
@@ -467,7 +469,10 @@ mod tests {
         assert_eq!(restored.is_first_partition, exec.is_first_partition);
         assert_eq!(restored.header_line, exec.header_line);
         assert_eq!(restored.s3_config.region, exec.s3_config.region);
-        assert_eq!(restored.s3_config.access_key_id, exec.s3_config.access_key_id);
+        assert_eq!(
+            restored.s3_config.access_key_id,
+            exec.s3_config.access_key_id
+        );
         assert_eq!(
             restored.s3_config.secret_access_key,
             exec.s3_config.secret_access_key
@@ -476,7 +481,12 @@ mod tests {
         assert_eq!(restored.s3_config.allow_http, exec.s3_config.allow_http);
         assert_eq!(restored.schema.fields().len(), exec.schema.fields().len());
 
-        for (orig, rest) in exec.schema.fields().iter().zip(restored.schema.fields().iter()) {
+        for (orig, rest) in exec
+            .schema
+            .fields()
+            .iter()
+            .zip(restored.schema.fields().iter())
+        {
             assert_eq!(orig.name(), rest.name());
             assert_eq!(orig.data_type(), rest.data_type());
             assert_eq!(orig.is_nullable(), rest.is_nullable());
@@ -509,7 +519,7 @@ mod tests {
         let restored =
             CsvRangeScanExec::deserialize(&bytes).expect("deserialization should succeed");
 
-        assert_eq!(restored.is_first_partition, false);
+        assert!(!restored.is_first_partition);
         assert_eq!(restored.s3_uri, "s3://data-bucket/large.csv");
         assert_eq!(restored.start_byte, 10000);
         assert_eq!(restored.end_byte, 20000);

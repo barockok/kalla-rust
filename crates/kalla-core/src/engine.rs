@@ -74,8 +74,7 @@ impl ReconciliationEngine {
             .with_default_features()
             .build();
 
-        let ctx: SessionContext =
-            SessionContext::remote_with_state(scheduler_url, state).await?;
+        let ctx: SessionContext = SessionContext::remote_with_state(scheduler_url, state).await?;
         udf::register_financial_udfs(&ctx);
 
         info!(
@@ -590,8 +589,7 @@ mod tests {
         use std::sync::Arc;
 
         let codec = Arc::new(DefaultPhysicalExtensionCodec {});
-        let result =
-            ReconciliationEngine::new_cluster("df://localhost:50050", codec).await;
+        let result = ReconciliationEngine::new_cluster("df://localhost:50050", codec).await;
         // Will fail without a scheduler, just verify it compiles
         assert!(result.is_err());
     }

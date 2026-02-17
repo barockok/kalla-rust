@@ -92,11 +92,7 @@ impl PhysicalExtensionCodec for KallaPhysicalCodec {
         }
     }
 
-    fn try_encode(
-        &self,
-        node: Arc<dyn ExecutionPlan>,
-        buf: &mut Vec<u8>,
-    ) -> DFResult<()> {
+    fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> DFResult<()> {
         if let Some(pg) = node.as_any().downcast_ref::<PostgresScanExec>() {
             buf.push(TAG_POSTGRES_SCAN);
             buf.extend_from_slice(&pg.serialize());
@@ -256,7 +252,10 @@ mod tests {
         assert_eq!(restored.header_line, "id,value,score");
         assert_eq!(restored.s3_config.region, "us-east-1");
         assert_eq!(restored.s3_config.access_key_id, "test-key");
-        assert_eq!(restored.s3_config.endpoint_url, Some("http://localhost:9000".to_string()));
+        assert_eq!(
+            restored.s3_config.endpoint_url,
+            Some("http://localhost:9000".to_string())
+        );
         assert!(restored.s3_config.allow_http);
         assert_eq!(restored.schema.fields().len(), 3);
         assert_eq!(restored.schema.field(0).name(), "id");

@@ -174,7 +174,15 @@ impl ExecutionPlan for PostgresScanExec {
 
         // Build the stream lazily — the async Postgres work happens inside.
         let stream = futures::stream::once(async move {
-            let result = fetch_partition(&conn_string, &pg_table, &schema, offset, limit, order_column.as_deref()).await;
+            let result = fetch_partition(
+                &conn_string,
+                &pg_table,
+                &schema,
+                offset,
+                limit,
+                order_column.as_deref(),
+            )
+            .await;
             result.map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))
         });
 
@@ -327,7 +335,10 @@ mod tests {
         assert!(exec.children().is_empty());
 
         // Display
-        let display_str = format!("{}", datafusion::physical_plan::displayable(&exec).one_line());
+        let display_str = format!(
+            "{}",
+            datafusion::physical_plan::displayable(&exec).one_line()
+        );
         assert!(
             display_str.contains("PostgresScanExec: table=my_table, offset=100, limit=50"),
             "unexpected display: {}",
@@ -348,7 +359,8 @@ mod tests {
         );
 
         let bytes = exec.serialize();
-        let restored = PostgresScanExec::deserialize(&bytes).expect("deserialization should succeed");
+        let restored =
+            PostgresScanExec::deserialize(&bytes).expect("deserialization should succeed");
 
         assert_eq!(restored.conn_string, exec.conn_string);
         assert_eq!(restored.pg_table, exec.pg_table);
@@ -357,7 +369,12 @@ mod tests {
         assert_eq!(restored.order_column, exec.order_column);
         assert_eq!(restored.schema.fields().len(), exec.schema.fields().len());
 
-        for (orig, rest) in exec.schema.fields().iter().zip(restored.schema.fields().iter()) {
+        for (orig, rest) in exec
+            .schema
+            .fields()
+            .iter()
+            .zip(restored.schema.fields().iter())
+        {
             assert_eq!(orig.name(), rest.name());
             assert_eq!(orig.data_type(), rest.data_type());
             assert_eq!(orig.is_nullable(), rest.is_nullable());
@@ -380,7 +397,8 @@ mod tests {
         );
 
         let bytes = exec.serialize();
-        let restored = PostgresScanExec::deserialize(&bytes).expect("deserialization should succeed");
+        let restored =
+            PostgresScanExec::deserialize(&bytes).expect("deserialization should succeed");
 
         assert_eq!(restored.order_column, None);
         assert_eq!(restored.pg_table, "points");
@@ -403,7 +421,10 @@ mod tests {
     #[test]
     fn test_parse_data_type_unknown_defaults_to_utf8() {
         assert_eq!(parse_data_type("LargeUtf8"), DataType::Utf8);
-        assert_eq!(parse_data_type("Timestamp(Nanosecond, None)"), DataType::Utf8);
+        assert_eq!(
+            parse_data_type("Timestamp(Nanosecond, None)"),
+            DataType::Utf8
+        );
         assert_eq!(parse_data_type("SomeWeirdType"), DataType::Utf8);
     }
 }

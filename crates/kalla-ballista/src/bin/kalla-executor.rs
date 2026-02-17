@@ -23,6 +23,7 @@ use ballista_executor::executor_process::{start_executor_process, ExecutorProces
 use kalla_ballista::codec::KallaPhysicalCodec;
 
 #[tokio::main]
+#[allow(clippy::field_reassign_with_default)]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())

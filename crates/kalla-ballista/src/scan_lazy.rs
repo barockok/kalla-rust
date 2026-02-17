@@ -13,9 +13,7 @@ use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::ExecutionPlan;
 
 use kalla_connectors::csv_partitioned::{compute_byte_ranges, CsvByteRangeTable};
-use kalla_connectors::postgres_partitioned::{
-    compute_partition_ranges, PostgresPartitionedTable,
-};
+use kalla_connectors::postgres_partitioned::{compute_partition_ranges, PostgresPartitionedTable};
 
 use crate::csv_range_scan_exec::CsvRangeScanExec;
 use crate::postgres_scan_exec::PostgresScanExec;
