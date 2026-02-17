@@ -600,7 +600,10 @@ async fn handle_exec_distributed(
     // custom TableProviders (LogicalExtensionCodec not implemented).
     // The partitioned table providers already handle parallelism internally.
     let engine = ReconciliationEngine::new();
-    info!("Run {}: distributed engine created (partitioned sources)", run_id);
+    info!(
+        "Run {}: distributed engine created (partitioned sources)",
+        run_id
+    );
 
     // Register sources: prefer direct source URIs when available,
     // otherwise fall back to staged Parquet/CSV files.
