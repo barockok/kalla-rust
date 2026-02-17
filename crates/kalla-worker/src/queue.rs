@@ -124,13 +124,17 @@ impl QueueClient {
     }
 
     /// Create a pull consumer for the stage queue.
-    pub async fn stage_consumer(&self, consumer_name: &str) -> Result<PullConsumer> {
+    ///
+    /// Uses a shared consumer name so multiple workers pull from the same
+    /// consumer on the WorkQueue stream (NATS requires a single consumer
+    /// on workqueue-retention streams).
+    pub async fn stage_consumer(&self, _worker_id: &str) -> Result<PullConsumer> {
         let stream = self.stage_stream.lock().await;
         let consumer = stream
             .get_or_create_consumer(
-                consumer_name,
+                "kalla-stage-workers",
                 jetstream::consumer::pull::Config {
-                    durable_name: Some(consumer_name.to_string()),
+                    durable_name: Some("kalla-stage-workers".to_string()),
                     ack_policy: jetstream::consumer::AckPolicy::Explicit,
                     ..Default::default()
                 },
@@ -140,13 +144,16 @@ impl QueueClient {
     }
 
     /// Create a pull consumer for the exec queue.
-    pub async fn exec_consumer(&self, consumer_name: &str) -> Result<PullConsumer> {
+    ///
+    /// Uses a shared consumer name so multiple workers pull from the same
+    /// consumer on the WorkQueue stream.
+    pub async fn exec_consumer(&self, _worker_id: &str) -> Result<PullConsumer> {
         let stream = self.exec_stream.lock().await;
         let consumer = stream
             .get_or_create_consumer(
-                consumer_name,
+                "kalla-exec-workers",
                 jetstream::consumer::pull::Config {
-                    durable_name: Some(consumer_name.to_string()),
+                    durable_name: Some("kalla-exec-workers".to_string()),
                     ack_policy: jetstream::consumer::AckPolicy::Explicit,
                     ..Default::default()
                 },

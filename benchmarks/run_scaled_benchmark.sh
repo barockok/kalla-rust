@@ -75,7 +75,7 @@ json_field() {
 
 cleanup_workers() {
     echo "Cleaning up worker processes..."
-    for pid in "${WORKER_PIDS[@]}"; do
+    for pid in ${WORKER_PIDS[@]+"${WORKER_PIDS[@]}"}; do
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
         fi
@@ -109,7 +109,8 @@ start_workers() {
         "${WORKER_BINARY}" > "${log_file}" 2>&1 &
 
         WORKER_PIDS+=($!)
-        echo "  Worker ${i} started (PID ${WORKER_PIDS[-1]}, log: ${log_file})"
+        local last_pid=$!
+        echo "  Worker ${i} started (PID ${last_pid}, log: ${log_file})"
     done
 
     # Wait for workers to connect to NATS
@@ -118,7 +119,7 @@ start_workers() {
 
     # Verify workers are running
     local running=0
-    for pid in "${WORKER_PIDS[@]}"; do
+    for pid in ${WORKER_PIDS[@]+"${WORKER_PIDS[@]}"}; do
         if kill -0 "$pid" 2>/dev/null; then
             running=$((running + 1))
         fi
@@ -169,16 +170,16 @@ for scenario_file in "${SCENARIOS[@]}"; do
 
     START_TIME=$(now_ns)
 
-    # Build injector arguments
-    INJECT_ARGS="--rows $ROWS --pg-url $PG_URL --nats-url $NATS_URL --staging-bucket $STAGING_BUCKET --match-sql $MATCH_SQL --timeout $TIMEOUT_SECS --json-output"
+    # Build injector arguments as array to preserve quoting
+    INJECT_ARGS=(--rows "$ROWS" --pg-url "$PG_URL" --nats-url "$NATS_URL" --staging-bucket "$STAGING_BUCKET" --match-sql "$MATCH_SQL" --timeout "$TIMEOUT_SECS" --json-output)
     if [ "$DIRECT_EXEC" = "True" ] || [ "$DIRECT_EXEC" = "true" ]; then
-        INJECT_ARGS="$INJECT_ARGS --direct-exec"
+        INJECT_ARGS+=(--direct-exec)
         echo "  (direct exec mode — skipping staging, Ballista enabled)"
     fi
 
     # Run the injector script
     RESULT=$(python3 "${SCRIPT_DIR}/inject_scaled_job.py" \
-        $INJECT_ARGS \
+        "${INJECT_ARGS[@]}" \
     2>&1 | tee /dev/stderr | tail -1)
 
     END_TIME=$(now_ns)

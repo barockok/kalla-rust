@@ -131,14 +131,22 @@ def insert_jobs(pg_url: str, run_id: str, staging_bucket: str,
         "job_id": exec_job_id,
         "run_id": run_id,
         "recipe_json": json.dumps({
+            "recipe_id": f"bench-{run_id[:8]}",
+            "name": "Benchmark Recipe",
+            "description": "Auto-generated benchmark recipe",
             "match_sql": match_sql,
+            "match_description": "Benchmark match SQL",
             "sources": {
                 "left": {
                     "alias": "left_src",
+                    "type": "postgres",
+                    "uri": left_uri,
                     "primary_key": ["invoice_id"],
                 },
                 "right": {
                     "alias": "right_src",
+                    "type": "postgres",
+                    "uri": right_uri,
                     "primary_key": ["payment_id"],
                 },
             },

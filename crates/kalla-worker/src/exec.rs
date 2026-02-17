@@ -596,8 +596,11 @@ async fn handle_exec_distributed(
 ) -> Result<ExecResult> {
     let recipe: Recipe = serde_json::from_str(recipe_json)?;
 
-    let engine = ReconciliationEngine::new_distributed().await?;
-    info!("Run {}: Ballista distributed engine created", run_id);
+    // Use standard DataFusion engine — Ballista standalone cannot serialize
+    // custom TableProviders (LogicalExtensionCodec not implemented).
+    // The partitioned table providers already handle parallelism internally.
+    let engine = ReconciliationEngine::new();
+    info!("Run {}: distributed engine created (partitioned sources)", run_id);
 
     // Register sources: prefer direct source URIs when available,
     // otherwise fall back to staged Parquet/CSV files.
