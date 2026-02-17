@@ -1,0 +1,16 @@
+[package]
+name = "kallad"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "kallad"
+path = "src/main.rs"
+
+[dependencies]
+kalla-ballista.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
