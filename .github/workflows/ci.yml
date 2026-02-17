@@ -309,3 +309,70 @@ jobs:
           if [ -n "$LATEST" ]; then
             cat "$LATEST" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  # ===== Ground Truth Verification =====
+  verify-ground-truth:
+    name: Verify Ground Truth
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, '[perform-benchmark]')
+    needs: [rust]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: kalla
+          POSTGRES_PASSWORD: kalla_secret
+          POSTGRES_DB: kalla
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kalla"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install psycopg2-binary
+
+      - name: Download kallad binary
+        uses: actions/download-artifact@v4
+        with:
+          name: kallad-binary
+          path: target/release/
+
+      - name: Make binary executable
+        run: chmod +x target/release/kallad
+
+      - name: Start scheduler (single mode)
+        env:
+          RUST_LOG: info
+          STAGING_PATH: /tmp/kalla-staging
+        run: |
+          mkdir -p /tmp/kalla-staging
+          ./target/release/kallad scheduler --http-port 9090 > /tmp/kalla-verify-scheduler.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9090/health && break || sleep 1
+          done
+
+      - name: Verify all patterns against Postgres ground truth
+        env:
+          PG_URL: postgresql://kalla:kalla_secret@localhost:5432/kalla
+        run: |
+          python3 benchmarks/verify_ground_truth.py \
+            --pg-url "$PG_URL" \
+            --scheduler-url http://localhost:9090 \
+            --rows 30000
+
+      - name: Upload bug report (on failure)
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ground-truth-bugs
+          path: benchmarks/results/ground-truth-bugs-*.md
