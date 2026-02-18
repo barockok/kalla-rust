@@ -23,6 +23,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install arm64 cross-compilation toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Cache Rust toolchain & cargo artifacts
         uses: Swatinem/rust-cache@v2
@@ -36,14 +40,26 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
-      - name: Build kallad (release)
+      - name: Build kallad (release, amd64)
         run: cargo build --release --bin kallad
 
-      - name: Upload kallad binary
+      - name: Build kallad (release, arm64)
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release --bin kallad --target aarch64-unknown-linux-gnu
+
+      - name: Upload kallad binary (amd64)
         uses: actions/upload-artifact@v4
         with:
-          name: kallad-binary
+          name: kallad-amd64
           path: target/release/kallad
+          retention-days: 1
+
+      - name: Upload kallad binary (arm64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: kallad-arm64
+          path: target/aarch64-unknown-linux-gnu/release/kallad
           retention-days: 1
 
   # ===== Frontend =====
@@ -108,7 +124,7 @@ jobs:
             console.log('Coverage check passed: ${COVERAGE}%');
           "
 
-  # ===== Docker (multi-arch) =====
+  # ===== Docker (multi-arch via cross-compiled binaries) =====
   docker-push:
     name: Docker Push
     runs-on: ubuntu-latest
@@ -120,7 +136,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up QEMU (for arm64 cross-build)
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
@@ -143,17 +159,30 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
 
-      - name: Build and push kallad image (amd64 + arm64)
+      - name: Download kallad binary (amd64)
+        uses: actions/download-artifact@v4
+        with:
+          name: kallad-amd64
+          path: bin/amd64/
+
+      - name: Download kallad binary (arm64)
+        uses: actions/download-artifact@v4
+        with:
+          name: kallad-arm64
+          path: bin/arm64/
+
+      - name: Prepare binaries
+        run: chmod +x bin/amd64/kallad bin/arm64/kallad
+
+      - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile
+          file: Dockerfile.ci
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   # ===== Integration tests =====
   integration:
@@ -166,7 +195,7 @@ jobs:
       - name: Download kallad binary
         uses: actions/download-artifact@v4
         with:
-          name: kallad-binary
+          name: kallad-amd64
           path: target/release/
 
       - name: Start scheduler in single mode
@@ -222,7 +251,7 @@ jobs:
       - name: Download kallad binary
         uses: actions/download-artifact@v4
         with:
-          name: kallad-binary
+          name: kallad-amd64
           path: target/release/
 
       - name: Make binary executable
@@ -296,7 +325,7 @@ jobs:
       - name: Download kallad binary
         uses: actions/download-artifact@v4
         with:
-          name: kallad-binary
+          name: kallad-amd64
           path: target/release/
 
       - name: Make binary executable
@@ -361,7 +390,7 @@ jobs:
       - name: Download kallad binary
         uses: actions/download-artifact@v4
         with:
-          name: kallad-binary
+          name: kallad-amd64
           path: target/release/
 
       - name: Make binary executable
