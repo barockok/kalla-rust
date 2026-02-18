@@ -23,15 +23,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
+          targets: aarch64-unknown-linux-gnu
 
-      - name: Install musl cross-compilation toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-          # Install aarch64 musl cross-compiler
-          curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz | sudo tar xz -C /opt
-          echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+      - name: Install arm64 cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Cache Rust toolchain & cargo artifacts
         uses: Swatinem/rust-cache@v2
@@ -45,27 +40,26 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
-      - name: Build kallad (release, amd64-musl)
-        run: cargo build --release --bin kallad --target x86_64-unknown-linux-musl
+      - name: Build kallad (release, amd64)
+        run: cargo build --release --bin kallad
 
-      - name: Build kallad (release, arm64-musl)
+      - name: Build kallad (release, arm64)
         env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
-          CC_aarch64_unknown_linux_musl: aarch64-linux-musl-gcc
-        run: cargo build --release --bin kallad --target aarch64-unknown-linux-musl
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release --bin kallad --target aarch64-unknown-linux-gnu
 
       - name: Upload kallad binary (amd64)
         uses: actions/upload-artifact@v4
         with:
           name: kallad-amd64
-          path: target/x86_64-unknown-linux-musl/release/kallad
+          path: target/release/kallad
           retention-days: 1
 
       - name: Upload kallad binary (arm64)
         uses: actions/upload-artifact@v4
         with:
           name: kallad-arm64
-          path: target/aarch64-unknown-linux-musl/release/kallad
+          path: target/aarch64-unknown-linux-gnu/release/kallad
           retention-days: 1
 
   # ===== Frontend =====
