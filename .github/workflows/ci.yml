@@ -23,27 +23,15 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: aarch64-unknown-linux-gnu
+          targets: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
 
-      - name: Install arm64 cross-compilation toolchain
+      - name: Install musl cross-compilation toolchain
         run: |
-          sudo dpkg --add-architecture arm64
-          # Add arm64 sources (Ubuntu 24.04 uses ports.ubuntu.com for non-amd64)
-          cat <<'SOURCES' | sudo tee /etc/apt/sources.list.d/arm64-cross.list
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble main restricted universe
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble-updates main restricted universe
-          SOURCES
-          # Pin existing sources to amd64 only (skip non-.list DEB822 sources)
-          for f in /etc/apt/sources.list.d/*.list; do
-            [ -f "$f" ] && [ "$f" != "/etc/apt/sources.list.d/arm64-cross.list" ] && \
-              sudo sed -i 's/^deb http/deb [arch=amd64] http/' "$f" 2>/dev/null || true
-          done
-          # Handle DEB822 format (.sources files) — add arch filter
-          for f in /etc/apt/sources.list.d/*.sources; do
-            [ -f "$f" ] && sudo sed -i '/^Types: deb/a Architectures: amd64' "$f" 2>/dev/null || true
-          done
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu libssl-dev:arm64 pkg-config
+          sudo apt-get install -y musl-tools
+          # Install aarch64 musl cross-compiler
+          curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz | sudo tar xz -C /opt
+          echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
 
       - name: Cache Rust toolchain & cargo artifacts
         uses: Swatinem/rust-cache@v2
@@ -57,31 +45,27 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
-      - name: Build kallad (release, amd64)
-        run: cargo build --release --bin kallad
+      - name: Build kallad (release, amd64-musl)
+        run: cargo build --release --bin kallad --target x86_64-unknown-linux-musl
 
-      - name: Build kallad (release, arm64)
+      - name: Build kallad (release, arm64-musl)
         env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          PKG_CONFIG_ALLOW_CROSS: 1
-          PKG_CONFIG_PATH: /usr/lib/aarch64-linux-gnu/pkgconfig
-          PKG_CONFIG_SYSROOT_DIR: /
-          OPENSSL_LIB_DIR: /usr/lib/aarch64-linux-gnu
-          OPENSSL_INCLUDE_DIR: /usr/include
-        run: cargo build --release --bin kallad --target aarch64-unknown-linux-gnu
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
+          CC_aarch64_unknown_linux_musl: aarch64-linux-musl-gcc
+        run: cargo build --release --bin kallad --target aarch64-unknown-linux-musl
 
       - name: Upload kallad binary (amd64)
         uses: actions/upload-artifact@v4
         with:
           name: kallad-amd64
-          path: target/release/kallad
+          path: target/x86_64-unknown-linux-musl/release/kallad
           retention-days: 1
 
       - name: Upload kallad binary (arm64)
         uses: actions/upload-artifact@v4
         with:
           name: kallad-arm64
-          path: target/aarch64-unknown-linux-gnu/release/kallad
+          path: target/aarch64-unknown-linux-musl/release/kallad
           retention-days: 1
 
   # ===== Frontend =====
