@@ -35,3 +35,4 @@ dist/
 .worktrees/
 
 *.prompt.md
+benchmarks/results/*
