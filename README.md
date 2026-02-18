@@ -52,6 +52,63 @@ The `kallad` binary is the same in both modes. In single mode the scheduler runs
 5. Computes unmatched counts from matched records (in-memory HashSet, no post-match queries)
 6. Writes evidence (Parquet) and reports results back to the App via HTTP callback
 
+### Distributed Partitioning & Join Strategy
+
+When running in cluster mode, Ballista executes reconciliation joins across multiple executors in three phases:
+
+**Phase 1 — Partitioned Scan (parallel I/O)**
+
+Each source is divided into partitions for parallel reads. Executors fetch their assigned partitions directly from the data source:
+
+- **Postgres** — `LIMIT/OFFSET` with `ORDER BY ctid` for deterministic row splits
+- **S3 CSV** — byte-range reads with line-boundary handling
+
+```
+Executor 1: SELECT * FROM invoices ORDER BY ctid LIMIT 250000 OFFSET 0
+Executor 2: SELECT * FROM invoices ORDER BY ctid LIMIT 250000 OFFSET 250000
+Executor 3: SELECT * FROM payments ORDER BY ctid LIMIT 250000 OFFSET 0
+Executor 4: SELECT * FROM payments ORDER BY ctid LIMIT 250000 OFFSET 250000
+```
+
+At this point data is partitioned by **position**, not by join key — matching rows could be on different executors.
+
+**Phase 2 — Shuffle / Repartition (colocate by join key)**
+
+Ballista inserts a shuffle exchange (`ShuffleWriterExec` → `ShuffleReaderExec`) that repartitions both sides by the join key hash. This ensures all rows with the same join key end up on the same executor:
+
+```
+Before shuffle:                          After shuffle (by join key hash):
+┌─────────────────────────────┐          ┌─────────────────────────────┐
+│ Exec 1: left rows 0-250K   │          │ Exec 1: all rows where      │
+│ Exec 2: left rows 250K-500K│   ──►    │         hash(key) % N == 0  │
+│ Exec 3: right rows 0-250K  │          │ Exec 2: all rows where      │
+│ Exec 4: right rows 250K+   │          │         hash(key) % N == 1  │
+└─────────────────────────────┘          └─────────────────────────────┘
+
+Invoice #12345 (Exec 1) and Payment #12345 (Exec 3) → same executor after shuffle
+```
+
+**Phase 3 — Local Join (per executor)**
+
+Each executor now holds all rows for its assigned join keys from both sides. It runs a local `HashJoinExec` — including UDF evaluation like `tolerance_match` — and produces matched pairs. Results are collected back at the scheduler.
+
+```
+Physical plan (simplified):
+
+CoalescePartitionsExec          ← collect results at scheduler
+└── HashJoinExec                ← join on invoice_id = reference_number
+    ├── ShuffleReaderExec       ← left side, repartitioned by join key
+    │   └── UnionExec
+    │       ├── PostgresScanExec(left, partition 0)   [Executor 1]
+    │       └── PostgresScanExec(left, partition 1)   [Executor 2]
+    └── ShuffleReaderExec       ← right side, repartitioned by join key
+        └── UnionExec
+            ├── PostgresScanExec(right, partition 0)  [Executor 3]
+            └── PostgresScanExec(right, partition 1)  [Executor 4]
+```
+
+This means position-based partitioning is used for **parallel I/O** only. The actual join uses **hash-based repartitioning** so that matching rows are always colocated, regardless of which partition they were originally read from.
+
 ## Agentic Recipe Builder
 
 The core of Kalla is a 7-phase conversational agent that guides users from raw data to a working reconciliation recipe:

@@ -27,5 +27,26 @@ testdata/
 kalla-web/node_modules
 kalla-web/.next
 
+# Worktrees
+.worktrees/
+
+# Playwright
+.playwright-mcp/
+
+# Benchmarks (not needed in image)
+benchmarks/
+
+# Scripts
+scripts/
+
+# Docker compose files
+docker-compose*.yml
+
+# K8s manifests
+k8s/
+
+# Docs
+docs/
+
 # Claude
 .claude
