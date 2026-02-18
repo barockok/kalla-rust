@@ -9,6 +9,7 @@
 
 # Build artifacts
 target/
+!target/release/kallad
 *.log
 
 # Environment files
