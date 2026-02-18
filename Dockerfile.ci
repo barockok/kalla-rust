@@ -1,0 +1,6 @@
+# Thin runtime image — uses pre-built binary from CI artifact
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends libssl3 ca-certificates curl && rm -rf /var/lib/apt/lists/*
+COPY target/release/kallad /usr/local/bin/
+EXPOSE 8080 50050 50051 50052
+ENTRYPOINT ["kallad"]
