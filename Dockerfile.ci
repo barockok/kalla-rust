@@ -1,6 +1,6 @@
-# Thin runtime image — uses pre-built binary from CI artifact
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+# Thin runtime image — uses pre-built static musl binary from CI
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates curl
 ARG TARGETARCH
 COPY bin/${TARGETARCH}/kallad /usr/local/bin/
 EXPOSE 8080 50050 50051 50052
