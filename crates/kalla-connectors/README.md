@@ -214,6 +214,51 @@ String values are sanitized (single quotes escaped). Column names are double-quo
 | `DATE`, `TIMESTAMP`, `TIMESTAMPTZ` | `Utf8` |
 | Unknown types | `Utf8` |
 
+## Table Statistics for Query Optimization
+
+Partitioned connectors implement `TableProvider::statistics()` to report row counts to DataFusion's query optimizer. This is critical for distributed execution with Ballista.
+
+### Why Statistics Matter
+
+DataFusion's optimizer uses table statistics to choose join strategies:
+
+- **With statistics**: The optimizer sees both tables have millions of rows and picks a **partitioned hash join** — both sides are repartitioned by join key, and each executor handles `1/N` of the data independently.
+- **Without statistics**: The optimizer has no size information and defaults to **`CollectLeft`** (broadcast join) — one executor collects the entire left side into memory, creating a single-node bottleneck that causes OOM on large tables.
+
+### Implementation
+
+`PostgresPartitionedTable` reports `num_rows` as `Precision::Exact` using the row count obtained at construction time:
+
+```rust
+fn statistics(&self) -> Option<Statistics> {
+    Some(Statistics {
+        num_rows: Precision::Exact(self.total_rows as usize),
+        total_byte_size: Precision::Absent,
+        column_statistics: vec![],
+    })
+}
+```
+
+This enables the optimizer to produce a distributed execution plan like:
+
+```
+Stage 1: HashRepartition(join_key) → scan left_src partitions
+Stage 2: HashRepartition(join_key) → scan right_src partitions
+Stage 3: HashJoinExec(Partitioned) per partition
+```
+
+Instead of the problematic single-executor plan:
+
+```
+Stage 1: ShuffleWriter → scan left_src
+Stage 2: HashJoinExec(CollectLeft)
+            CoalescePartitionsExec  ← gathers ALL data to ONE executor
+```
+
+### Guidelines for New Connectors
+
+When implementing `TableProvider` for a new connector, always implement `statistics()` if the row count is known. At minimum, provide `num_rows` — this single field has the largest impact on join strategy selection. Column-level statistics (`min`, `max`, `null_count`) are optional but can further improve filter pushdown and partition pruning.
+
 ## Writing a New Connector
 
 To add a new partitioned connector:

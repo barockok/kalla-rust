@@ -10,11 +10,12 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::catalog::Session;
+use datafusion::common::stats::Precision;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result as DFResult;
 use datafusion::logical_expr::TableType;
 use datafusion::physical_plan::memory::MemoryExec;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, Statistics};
 use datafusion::prelude::{Expr, SessionContext};
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use tracing::{debug, info};
@@ -181,6 +182,14 @@ impl TableProvider for PostgresPartitionedTable {
 
     fn table_type(&self) -> TableType {
         TableType::Base
+    }
+
+    fn statistics(&self) -> Option<Statistics> {
+        Some(Statistics {
+            num_rows: Precision::Exact(self.total_rows as usize),
+            total_byte_size: Precision::Absent,
+            column_statistics: vec![],
+        })
     }
 
     async fn scan(

@@ -69,6 +69,7 @@ impl ReconciliationEngine {
 
         let config = datafusion::prelude::SessionConfig::new()
             .with_information_schema(true)
+            .with_repartition_joins(true)
             .with_ballista_logical_extension_codec(logical_codec)
             .with_ballista_physical_extension_codec(codec);
 
