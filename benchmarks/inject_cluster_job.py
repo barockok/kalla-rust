@@ -53,6 +53,8 @@ def main():
     parser.add_argument("--json-output", action="store_true")
     parser.add_argument("--pattern", choices=["one_to_one", "split", "batch", "cross"],
                         default="one_to_one", help="Match pattern")
+    parser.add_argument("--filters-json", default=None,
+                        help="JSON object mapping alias to list of filter conditions")
     args = parser.parse_args()
 
     # Seed benchmark data
@@ -68,14 +70,23 @@ def main():
     run_id = str(uuid.uuid4())
     pg = args.pg_url.replace("postgresql://", "postgres://", 1)
 
+    # Parse optional filters
+    filters_map = json.loads(args.filters_json) if args.filters_json else {}
+
+    sources = [
+        {"alias": "left_src", "uri": f"{pg}?table=bench_invoices"},
+        {"alias": "right_src", "uri": f"{pg}?table=bench_payments"},
+    ]
+    for src in sources:
+        alias_filters = filters_map.get(src["alias"], [])
+        if alias_filters:
+            src["filters"] = alias_filters
+
     job = {
         "run_id": run_id,
         "callback_url": callback_url,
         "match_sql": args.match_sql,
-        "sources": [
-            {"alias": "left_src", "uri": f"{pg}?table=bench_invoices"},
-            {"alias": "right_src", "uri": f"{pg}?table=bench_payments"},
-        ],
+        "sources": sources,
         "output_path": f"/tmp/bench-output-{run_id}",
         "primary_keys": {
             "left_src": ["invoice_id"],

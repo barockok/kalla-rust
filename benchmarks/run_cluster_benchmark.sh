@@ -220,13 +220,30 @@ for scenario_file in "${SCENARIOS[@]}"; do
     MATCH_SQL=$(json_field "match_sql" "$scenario_file")
     PATTERN=$(json_field "pattern" "$scenario_file")
     PATTERN="${PATTERN:-one_to_one}"
+    # Extract filters JSON (compact, empty string if absent)
+    FILTERS_JSON=$(python3 -c "
+import json, sys
+d = json.load(open('$scenario_file'))
+f = d.get('filters')
+print(json.dumps(f) if f else '')
+" 2>/dev/null || echo "")
+
     echo ""
-    echo "=== Scenario: ${SCENARIO_NAME} (${ROWS} rows, ${SOURCE_TYPE}, ${NUM_EXECUTORS} executors) ==="
+    if [ -n "$FILTERS_JSON" ]; then
+        echo "=== Scenario: ${SCENARIO_NAME} (${ROWS} rows, ${SOURCE_TYPE}, ${NUM_EXECUTORS} executors, filtered) ==="
+    else
+        echo "=== Scenario: ${SCENARIO_NAME} (${ROWS} rows, ${SOURCE_TYPE}, ${NUM_EXECUTORS} executors) ==="
+    fi
 
     START_TIME=$(now_ns)
 
     # Build injector arguments as array to preserve quoting
     INJECT_ARGS=(--rows "$ROWS" --pg-url "$PG_URL" --scheduler-url "http://localhost:8080" --match-sql "$MATCH_SQL" --timeout "$TIMEOUT_SECS" --json-output --pattern "$PATTERN")
+
+    # Append filters if present
+    if [ -n "$FILTERS_JSON" ]; then
+        INJECT_ARGS+=(--filters-json "$FILTERS_JSON")
+    fi
 
     # Run the injector script (HTTP-based)
     RESULT=$(python3 "${SCRIPT_DIR}/inject_cluster_job.py" \
