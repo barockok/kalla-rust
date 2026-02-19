@@ -311,26 +311,6 @@ async fn infer_schema(pool: &sqlx::PgPool, table_name: &str) -> anyhow::Result<S
     Ok(Arc::new(Schema::new(fields)))
 }
 
-/// Convert PostgreSQL type name to Arrow DataType.
-fn pg_type_to_arrow(pg_type: &str) -> DataType {
-    match pg_type.to_uppercase().as_str() {
-        "INT2" | "SMALLINT" => DataType::Int16,
-        "INT4" | "INTEGER" | "INT" => DataType::Int32,
-        "INT8" | "BIGINT" => DataType::Int64,
-        "FLOAT4" | "REAL" => DataType::Float32,
-        "FLOAT8" | "DOUBLE PRECISION" | "NUMERIC" | "DECIMAL" => DataType::Float64,
-        "BOOL" | "BOOLEAN" => DataType::Boolean,
-        "TEXT" | "VARCHAR" | "CHAR" | "BPCHAR" | "NAME" => DataType::Utf8,
-        "BYTEA" => DataType::Binary,
-        "DATE" | "TIMESTAMP" | "TIMESTAMPTZ" => DataType::Utf8,
-        "UUID" => DataType::Utf8,
-        _ => {
-            debug!("Unknown PostgreSQL type '{}', defaulting to Utf8", pg_type);
-            DataType::Utf8
-        }
-    }
-}
-
 /// Convert PostgreSQL rows to Arrow RecordBatch.
 fn rows_to_record_batch(
     rows: &[PgRow],
@@ -403,8 +383,6 @@ fn rows_to_record_batch(
 /// The `information_schema` uses SQL standard type names (e.g. "integer",
 /// "character varying") rather than the shorter Postgres type names.
 fn info_schema_type_to_arrow(data_type: &str) -> DataType {
-    // information_schema uses SQL-standard names, so we handle those
-    // and also fall back to pg_type_to_arrow for Postgres-native names.
     match data_type.to_lowercase().as_str() {
         "smallint" => DataType::Int16,
         "integer" => DataType::Int32,
@@ -420,8 +398,8 @@ fn info_schema_type_to_arrow(data_type: &str) -> DataType {
         "json" | "jsonb" => DataType::Utf8,
         "array" | "user-defined" => DataType::Utf8,
         other => {
-            // Fall back to the existing pg_type_to_arrow helper
-            pg_type_to_arrow(other)
+            debug!("Unknown PostgreSQL type '{}', defaulting to Utf8", other);
+            DataType::Utf8
         }
     }
 }
@@ -934,72 +912,4 @@ mod tests {
         assert_eq!(parse_data_type("SomeWeirdType"), DataType::Utf8);
     }
 
-    // -- pg_type_to_arrow tests -----------------------------------------------
-
-    #[test]
-    fn test_pg_type_to_arrow_int_types() {
-        assert_eq!(pg_type_to_arrow("INT2"), DataType::Int16);
-        assert_eq!(pg_type_to_arrow("SMALLINT"), DataType::Int16);
-        assert_eq!(pg_type_to_arrow("INT4"), DataType::Int32);
-        assert_eq!(pg_type_to_arrow("INTEGER"), DataType::Int32);
-        assert_eq!(pg_type_to_arrow("INT"), DataType::Int32);
-        assert_eq!(pg_type_to_arrow("INT8"), DataType::Int64);
-        assert_eq!(pg_type_to_arrow("BIGINT"), DataType::Int64);
-    }
-
-    #[test]
-    fn test_pg_type_to_arrow_float_types() {
-        assert_eq!(pg_type_to_arrow("FLOAT4"), DataType::Float32);
-        assert_eq!(pg_type_to_arrow("REAL"), DataType::Float32);
-        assert_eq!(pg_type_to_arrow("FLOAT8"), DataType::Float64);
-        assert_eq!(pg_type_to_arrow("DOUBLE PRECISION"), DataType::Float64);
-        assert_eq!(pg_type_to_arrow("NUMERIC"), DataType::Float64);
-        assert_eq!(pg_type_to_arrow("DECIMAL"), DataType::Float64);
-    }
-
-    #[test]
-    fn test_pg_type_to_arrow_bool() {
-        assert_eq!(pg_type_to_arrow("BOOL"), DataType::Boolean);
-        assert_eq!(pg_type_to_arrow("BOOLEAN"), DataType::Boolean);
-    }
-
-    #[test]
-    fn test_pg_type_to_arrow_text_types() {
-        assert_eq!(pg_type_to_arrow("TEXT"), DataType::Utf8);
-        assert_eq!(pg_type_to_arrow("VARCHAR"), DataType::Utf8);
-        assert_eq!(pg_type_to_arrow("CHAR"), DataType::Utf8);
-        assert_eq!(pg_type_to_arrow("BPCHAR"), DataType::Utf8);
-        assert_eq!(pg_type_to_arrow("NAME"), DataType::Utf8);
-    }
-
-    #[test]
-    fn test_pg_type_to_arrow_binary() {
-        assert_eq!(pg_type_to_arrow("BYTEA"), DataType::Binary);
-    }
-
-    #[test]
-    fn test_pg_type_to_arrow_temporal() {
-        assert_eq!(pg_type_to_arrow("DATE"), DataType::Utf8);
-        assert_eq!(pg_type_to_arrow("TIMESTAMP"), DataType::Utf8);
-        assert_eq!(pg_type_to_arrow("TIMESTAMPTZ"), DataType::Utf8);
-    }
-
-    #[test]
-    fn test_pg_type_to_arrow_uuid() {
-        assert_eq!(pg_type_to_arrow("UUID"), DataType::Utf8);
-    }
-
-    #[test]
-    fn test_pg_type_to_arrow_unknown_defaults_to_utf8() {
-        assert_eq!(pg_type_to_arrow("JSONB"), DataType::Utf8);
-        assert_eq!(pg_type_to_arrow("CIDR"), DataType::Utf8);
-        assert_eq!(pg_type_to_arrow("UNKNOWN_TYPE"), DataType::Utf8);
-    }
-
-    #[test]
-    fn test_pg_type_to_arrow_case_insensitive() {
-        assert_eq!(pg_type_to_arrow("int4"), DataType::Int32);
-        assert_eq!(pg_type_to_arrow("Bool"), DataType::Boolean);
-        assert_eq!(pg_type_to_arrow("text"), DataType::Utf8);
-    }
 }
