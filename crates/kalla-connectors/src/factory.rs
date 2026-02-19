@@ -65,8 +65,10 @@ impl ConnectorRegistry {
                         .register(ctx, &raw_alias, uri, partitions, filters)
                         .await?;
                     let where_clause = build_where_clause(filters);
-                    let view_sql =
-                        format!("CREATE VIEW \"{}\" AS SELECT * FROM \"{}\"{}", alias, raw_alias, where_clause);
+                    let view_sql = format!(
+                        "CREATE VIEW \"{}\" AS SELECT * FROM \"{}\"{}",
+                        alias, raw_alias, where_clause
+                    );
                     ctx.sql(&view_sql).await?;
                     info!(
                         "Created filtered view '{}' over '{}' with{}",
