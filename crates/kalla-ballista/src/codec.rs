@@ -15,23 +15,18 @@
 //! `serialize()` method. Ballista-internal nodes are delegated to
 //! `BallistaPhysicalExtensionCodec`.
 
-use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use ballista_core::serde::BallistaPhysicalExtensionCodec;
-use datafusion::catalog::Session;
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::execution::FunctionRegistry;
-use datafusion::logical_expr::{ScalarUDF, TableType};
+use datafusion::logical_expr::ScalarUDF;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::Expr;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 
-use crate::csv_range_scan_exec::CsvRangeScanExec;
-use crate::postgres_scan_exec::PostgresScanExec;
-use crate::scan_lazy::ScanLazy;
+use kalla_connectors::CsvRangeScanExec;
+use kalla_connectors::PostgresScanExec;
 
 // ---------------------------------------------------------------------------
 // Tag bytes
@@ -139,83 +134,6 @@ impl PhysicalExtensionCodec for KallaPhysicalCodec {
 }
 
 // ---------------------------------------------------------------------------
-// Lazy table wrappers for cluster-mode deserialization
-// ---------------------------------------------------------------------------
-
-/// Wraps a `PostgresPartitionedTable` so that `scan()` returns serializable
-/// `PostgresScanExec` nodes (via `scan_lazy()`) instead of the eager `MemoryExec`.
-///
-/// Created when the scheduler deserializes a logical plan containing a Postgres
-/// table reference. The lazy scan nodes are distributed to remote executors.
-struct LazyPostgresTable(kalla_connectors::postgres_partitioned::PostgresPartitionedTable);
-
-impl std::fmt::Debug for LazyPostgresTable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LazyPostgresTable({:?})", self.0)
-    }
-}
-
-#[async_trait]
-impl datafusion::datasource::TableProvider for LazyPostgresTable {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn schema(&self) -> arrow::datatypes::SchemaRef {
-        self.0.schema()
-    }
-
-    fn table_type(&self) -> TableType {
-        self.0.table_type()
-    }
-
-    async fn scan(
-        &self,
-        _state: &dyn Session,
-        _projection: Option<&Vec<usize>>,
-        _filters: &[Expr],
-        _limit: Option<usize>,
-    ) -> DFResult<Arc<dyn ExecutionPlan>> {
-        self.0.scan_lazy()
-    }
-}
-
-/// Wraps a `CsvByteRangeTable` so that `scan()` returns serializable
-/// `CsvRangeScanExec` nodes (via `scan_lazy()`) instead of the eager in-memory scan.
-struct LazyCsvByteRangeTable(kalla_connectors::csv_partitioned::CsvByteRangeTable);
-
-impl std::fmt::Debug for LazyCsvByteRangeTable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LazyCsvByteRangeTable({:?})", self.0)
-    }
-}
-
-#[async_trait]
-impl datafusion::datasource::TableProvider for LazyCsvByteRangeTable {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn schema(&self) -> arrow::datatypes::SchemaRef {
-        self.0.schema()
-    }
-
-    fn table_type(&self) -> TableType {
-        self.0.table_type()
-    }
-
-    async fn scan(
-        &self,
-        _state: &dyn Session,
-        _projection: Option<&Vec<usize>>,
-        _filters: &[Expr],
-        _limit: Option<usize>,
-    ) -> DFResult<Arc<dyn ExecutionPlan>> {
-        self.0.scan_lazy()
-    }
-}
-
-// ---------------------------------------------------------------------------
 // KallaLogicalCodec
 // ---------------------------------------------------------------------------
 
@@ -303,8 +221,7 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
                 let where_clause = info["where_clause"].as_str().map(|s| s.to_string());
 
                 // Reconstruct without connecting — schema and row count are provided.
-                // Wrap in LazyPostgresTable so scan() returns serializable
-                // PostgresScanExec nodes for distribution to remote executors.
+                // scan() now returns lazy PostgresScanExec nodes directly.
                 let table =
                     kalla_connectors::postgres_partitioned::PostgresPartitionedTable::from_parts(
                         conn_string,
@@ -315,7 +232,7 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
                         order_column,
                         where_clause,
                     );
-                Ok(Arc::new(LazyPostgresTable(table)))
+                Ok(Arc::new(table))
             }
             LOGICAL_TAG_CSV_BYTE_RANGE => {
                 let info: serde_json::Value = serde_json::from_slice(payload).map_err(|e| {
@@ -341,8 +258,7 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
                         ))
                     })?;
 
-                // Wrap in LazyCsvByteRangeTable so scan() returns serializable
-                // CsvRangeScanExec nodes for distribution to remote executors.
+                // scan() now returns lazy CsvRangeScanExec nodes directly.
                 let table = kalla_connectors::csv_partitioned::CsvByteRangeTable::from_parts(
                     s3_uri,
                     schema,
@@ -351,7 +267,7 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
                     header_line,
                     s3_config,
                 );
-                Ok(Arc::new(LazyCsvByteRangeTable(table)))
+                Ok(Arc::new(table))
             }
             _ => Err(DataFusionError::Internal(format!(
                 "KallaLogicalCodec: unknown table provider tag 0x{tag:02x}"

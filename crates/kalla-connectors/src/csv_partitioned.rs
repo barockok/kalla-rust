@@ -4,6 +4,10 @@
 //! The file is split into byte ranges, each partition reads its range via
 //! `object_store`, handles partial first/last lines at boundaries, and parses
 //! CSV independently.  This enables parallel reads across Ballista executors.
+//!
+//! Contains both the `CsvByteRangeTable` (the `TableProvider`) and
+//! `CsvRangeScanExec` (the lazy `ExecutionPlan` that fetches a single byte
+//! range). Used by both local and cluster (Ballista) modes.
 
 use std::any::Any;
 use std::fmt;
@@ -15,16 +19,28 @@ use async_trait::async_trait;
 use datafusion::catalog::Session;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result as DFResult;
+use datafusion::execution::TaskContext;
 use datafusion::logical_expr::TableType;
-use datafusion::physical_plan::memory::MemoryExec;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::union::UnionExec;
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream,
+};
 use datafusion::prelude::{Expr, SessionContext};
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path as ObjectPath;
 use object_store::{GetOptions, GetRange, ObjectStore};
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::s3::{S3Config, S3Connector};
+
+// ===========================================================================
+// Partition helpers
+// ===========================================================================
 
 /// Compute byte ranges for partitioned reads of a file.
 ///
@@ -91,17 +107,18 @@ pub fn split_csv_chunk(data: &[u8], is_first_partition: bool) -> (bool, Vec<&[u8
     (false, lines)
 }
 
+// ===========================================================================
+// CsvByteRangeTable — the TableProvider
+// ===========================================================================
+
 /// A DataFusion `TableProvider` that reads a CSV file from S3 using
 /// byte-range partitioned reads.
 ///
 /// On construction, the file's size and header are retrieved.  On `scan()`,
-/// the file is divided into byte ranges, each range is fetched, partial
-/// boundary lines are handled, and the resulting CSV data is parsed into
-/// Arrow `RecordBatch`es.
+/// the file is divided into byte ranges and each range becomes a lazy
+/// `CsvRangeScanExec` node that fetches data when polled.
 pub struct CsvByteRangeTable {
     s3_uri: String,
-    bucket: String,
-    key: String,
     schema: SchemaRef,
     file_size: u64,
     num_partitions: usize,
@@ -181,8 +198,6 @@ impl CsvByteRangeTable {
 
         Ok(Self {
             s3_uri: s3_uri.to_string(),
-            bucket,
-            key,
             schema,
             file_size,
             num_partitions,
@@ -200,12 +215,8 @@ impl CsvByteRangeTable {
         _header_line: String,
         s3_config: S3Config,
     ) -> Self {
-        let (bucket, key) = S3Connector::parse_s3_uri(&s3_uri)
-            .unwrap_or_else(|_| ("unknown".to_string(), "unknown".to_string()));
         Self {
             s3_uri,
-            bucket,
-            key,
             schema,
             file_size: total_size,
             num_partitions,
@@ -266,139 +277,36 @@ impl TableProvider for CsvByteRangeTable {
     async fn scan(
         &self,
         _state: &dyn Session,
-        projection: Option<&Vec<usize>>,
+        _projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
         let ranges = compute_byte_ranges(self.file_size, self.num_partitions);
-        let store = build_store(&self.s3_config, &self.bucket)
-            .map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?;
-        let path = ObjectPath::from(self.key.as_str());
         let header = self.header_line();
-
-        // Build projected schema
-        let projected_schema = match projection {
-            Some(indices) => {
-                let projected_fields: Vec<Field> = indices
-                    .iter()
-                    .map(|&i| self.schema.field(i).clone())
-                    .collect();
-                Arc::new(Schema::new(projected_fields))
-            }
-            None => Arc::clone(&self.schema),
-        };
-
-        let mut partitions: Vec<Vec<arrow::array::RecordBatch>> = Vec::with_capacity(ranges.len());
+        let mut plans: Vec<Arc<dyn ExecutionPlan>> = Vec::with_capacity(ranges.len());
 
         for (i, (start, end)) in ranges.iter().enumerate() {
-            let is_first = i == 0;
-
-            // Read byte range from S3
-            let opts = GetOptions {
-                range: Some(GetRange::Bounded(*start as usize..*end as usize)),
-                ..Default::default()
-            };
-            let result = store.get_opts(&path, opts).await.map_err(|e| {
-                datafusion::error::DataFusionError::Execution(format!(
-                    "failed to read S3 byte range {}..{}: {}",
-                    start, end, e
-                ))
-            })?;
-            let raw_bytes = result.bytes().await.map_err(|e| {
-                datafusion::error::DataFusionError::Execution(format!(
-                    "failed to read bytes for partition {}: {}",
-                    i, e
-                ))
-            })?;
-
-            // Handle partial lines at partition boundaries
-            let (_skipped, lines) = if is_first {
-                // First partition: skip the header line, keep data lines
-                let all_lines: Vec<&[u8]> = raw_bytes.split(|&b| b == b'\n').collect();
-                let data_lines: Vec<&[u8]> = all_lines
-                    .into_iter()
-                    .skip(1) // skip header
-                    .filter(|l| !l.is_empty())
-                    .collect();
-                (false, data_lines)
-            } else {
-                split_csv_chunk(&raw_bytes, false)
-            };
-
-            if lines.is_empty() {
-                partitions.push(vec![]);
-                continue;
-            }
-
-            // Reconstruct CSV with header for the Arrow CSV reader
-            let mut csv_data = Vec::new();
-            csv_data.extend_from_slice(header.as_bytes());
-            csv_data.push(b'\n');
-            for line in &lines {
-                csv_data.extend_from_slice(line);
-                csv_data.push(b'\n');
-            }
-
-            debug!(
-                "Partition {}: range={}..{}, lines={}, csv_bytes={}",
-                i,
-                start,
-                end,
-                lines.len(),
-                csv_data.len()
-            );
-
-            // Parse CSV data into a RecordBatch
-            let cursor = std::io::Cursor::new(csv_data);
-            let reader = ReaderBuilder::new(Arc::clone(&self.schema))
-                .with_header(true)
-                .build(cursor)
-                .map_err(|e| {
-                    datafusion::error::DataFusionError::Execution(format!(
-                        "failed to build CSV reader for partition {}: {}",
-                        i, e
-                    ))
-                })?;
-
-            let mut batch_vec = Vec::new();
-            for batch_result in reader {
-                let batch = batch_result.map_err(|e| {
-                    datafusion::error::DataFusionError::Execution(format!(
-                        "CSV parse error in partition {}: {}",
-                        i, e
-                    ))
-                })?;
-
-                // Apply projection if requested
-                let projected_batch = match projection {
-                    Some(indices) => {
-                        let columns: Vec<_> = indices
-                            .iter()
-                            .map(|&idx| batch.column(idx).clone())
-                            .collect();
-                        arrow::array::RecordBatch::try_new(Arc::clone(&projected_schema), columns)
-                            .map_err(|e| {
-                            datafusion::error::DataFusionError::Execution(format!(
-                                "projection error in partition {}: {}",
-                                i, e
-                            ))
-                        })?
-                    }
-                    None => batch,
-                };
-                batch_vec.push(projected_batch);
-            }
-
-            partitions.push(batch_vec);
+            plans.push(Arc::new(CsvRangeScanExec::new(
+                self.s3_uri.clone(),
+                Arc::clone(&self.schema),
+                *start,
+                *end,
+                i == 0,
+                header.clone(),
+                self.s3_config.clone(),
+            )));
         }
 
-        let exec = MemoryExec::try_new(&partitions, projected_schema, None)?;
-        Ok(Arc::new(exec))
+        if plans.len() == 1 {
+            Ok(plans.into_iter().next().unwrap())
+        } else {
+            Ok(Arc::new(UnionExec::new(plans)))
+        }
     }
 }
 
 /// Build an `object_store::aws::AmazonS3` instance for the given bucket.
-fn build_store(config: &S3Config, bucket: &str) -> anyhow::Result<object_store::aws::AmazonS3> {
+pub(crate) fn build_store(config: &S3Config, bucket: &str) -> anyhow::Result<object_store::aws::AmazonS3> {
     let mut builder = AmazonS3Builder::new()
         .with_region(&config.region)
         .with_bucket_name(bucket)
@@ -434,9 +342,325 @@ pub async fn register(
     Ok(())
 }
 
+// ===========================================================================
+// CsvRangeScanExec — the lazy ExecutionPlan for a single byte range
+// ===========================================================================
+
+/// A lazy DataFusion `ExecutionPlan` that fetches a single byte range from
+/// an S3 CSV file when `execute()` is called.
+///
+/// This node is a leaf node (no children) with exactly 1 output partition.
+/// The actual S3 read is deferred until the returned stream is polled.
+#[derive(Debug)]
+pub struct CsvRangeScanExec {
+    pub s3_uri: String,
+    pub schema: SchemaRef,
+    pub start_byte: u64,
+    pub end_byte: u64,
+    pub is_first_partition: bool,
+    pub header_line: String,
+    pub s3_config: S3Config,
+    properties: PlanProperties,
+}
+
+impl CsvRangeScanExec {
+    /// Create a new `CsvRangeScanExec`.
+    pub fn new(
+        s3_uri: String,
+        schema: SchemaRef,
+        start_byte: u64,
+        end_byte: u64,
+        is_first_partition: bool,
+        header_line: String,
+        s3_config: S3Config,
+    ) -> Self {
+        let properties = PlanProperties::new(
+            EquivalenceProperties::new(Arc::clone(&schema)),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Final,
+            Boundedness::Bounded,
+        );
+        Self {
+            s3_uri,
+            schema,
+            start_byte,
+            end_byte,
+            is_first_partition,
+            header_line,
+            s3_config,
+            properties,
+        }
+    }
+
+    // -- Serialization -------------------------------------------------------
+
+    /// Serialize this execution plan to bytes (JSON).
+    pub fn serialize(&self) -> Vec<u8> {
+        let dto = CsvRangeScanExecDto {
+            s3_uri: self.s3_uri.clone(),
+            start_byte: self.start_byte,
+            end_byte: self.end_byte,
+            is_first_partition: self.is_first_partition,
+            header_line: self.header_line.clone(),
+            s3_config: self.s3_config.clone(),
+            schema_fields: self
+                .schema
+                .fields()
+                .iter()
+                .map(|f| CsvFieldDto {
+                    name: f.name().clone(),
+                    data_type: format!("{:?}", f.data_type()),
+                    nullable: f.is_nullable(),
+                })
+                .collect(),
+        };
+        serde_json::to_vec(&dto).expect("CsvRangeScanExecDto serialization cannot fail")
+    }
+
+    /// Deserialize from bytes (JSON) back into a `CsvRangeScanExec`.
+    pub fn deserialize(bytes: &[u8]) -> anyhow::Result<Self> {
+        let dto: CsvRangeScanExecDto = serde_json::from_slice(bytes)?;
+        let fields: Vec<Field> = dto
+            .schema_fields
+            .iter()
+            .map(|f| Field::new(&f.name, parse_data_type(&f.data_type), f.nullable))
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
+        Ok(Self::new(
+            dto.s3_uri,
+            schema,
+            dto.start_byte,
+            dto.end_byte,
+            dto.is_first_partition,
+            dto.header_line,
+            dto.s3_config,
+        ))
+    }
+}
+
+impl ExecutionPlan for CsvRangeScanExec {
+    fn name(&self) -> &str {
+        "CsvRangeScanExec"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        if children.is_empty() {
+            Ok(self)
+        } else {
+            Err(datafusion::error::DataFusionError::Internal(
+                "CsvRangeScanExec is a leaf node and cannot have children".to_string(),
+            ))
+        }
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        _context: Arc<TaskContext>,
+    ) -> DFResult<SendableRecordBatchStream> {
+        if partition != 0 {
+            return Err(datafusion::error::DataFusionError::Internal(format!(
+                "CsvRangeScanExec only supports partition 0, got {}",
+                partition
+            )));
+        }
+
+        let s3_uri = self.s3_uri.clone();
+        let schema = Arc::clone(&self.schema);
+        let start_byte = self.start_byte;
+        let end_byte = self.end_byte;
+        let is_first_partition = self.is_first_partition;
+        let header_line = self.header_line.clone();
+        let s3_config = self.s3_config.clone();
+
+        let stream = futures::stream::once(async move {
+            let result = fetch_csv_range(
+                &s3_uri,
+                &schema,
+                start_byte,
+                end_byte,
+                is_first_partition,
+                &header_line,
+                &s3_config,
+            )
+            .await;
+            result.map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))
+        });
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            Arc::clone(&self.schema),
+            stream,
+        )))
+    }
+}
+
+impl DisplayAs for CsvRangeScanExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "CsvRangeScanExec: uri={}, range={}..{}",
+            self.s3_uri, self.start_byte, self.end_byte
+        )
+    }
+}
+
+/// Read a byte range from S3, handle partial lines at boundaries, and parse
+/// the resulting CSV into a `RecordBatch`.
+async fn fetch_csv_range(
+    s3_uri: &str,
+    schema: &SchemaRef,
+    start_byte: u64,
+    end_byte: u64,
+    is_first_partition: bool,
+    header_line: &str,
+    s3_config: &S3Config,
+) -> anyhow::Result<arrow::array::RecordBatch> {
+    let (bucket, key) = S3Connector::parse_s3_uri(s3_uri)?;
+    let store = build_store(s3_config, &bucket)?;
+    let path = ObjectPath::from(key.as_str());
+
+    let opts = GetOptions {
+        range: Some(GetRange::Bounded(start_byte as usize..end_byte as usize)),
+        ..Default::default()
+    };
+    let result = store.get_opts(&path, opts).await.map_err(|e| {
+        anyhow::anyhow!(
+            "failed to read S3 byte range {}..{}: {}",
+            start_byte,
+            end_byte,
+            e
+        )
+    })?;
+    let raw_bytes = result
+        .bytes()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read bytes: {}", e))?;
+
+    debug!(
+        "CsvRangeScanExec: fetched {} bytes from {} (range {}..{})",
+        raw_bytes.len(),
+        s3_uri,
+        start_byte,
+        end_byte
+    );
+
+    let lines: Vec<&[u8]> = if is_first_partition {
+        raw_bytes
+            .split(|&b| b == b'\n')
+            .skip(1)
+            .filter(|l| !l.is_empty())
+            .collect()
+    } else {
+        let all_lines: Vec<&[u8]> = raw_bytes
+            .split(|&b| b == b'\n')
+            .filter(|l| !l.is_empty())
+            .collect();
+        if all_lines.is_empty() {
+            vec![]
+        } else {
+            all_lines[1..].to_vec()
+        }
+    };
+
+    if lines.is_empty() {
+        return Ok(arrow::array::RecordBatch::new_empty(Arc::clone(schema)));
+    }
+
+    let mut csv_data = Vec::new();
+    csv_data.extend_from_slice(header_line.as_bytes());
+    csv_data.push(b'\n');
+    for line in &lines {
+        csv_data.extend_from_slice(line);
+        csv_data.push(b'\n');
+    }
+
+    debug!(
+        "CsvRangeScanExec: parsing {} data lines, {} csv bytes",
+        lines.len(),
+        csv_data.len()
+    );
+
+    let cursor = std::io::Cursor::new(csv_data);
+    let reader = ReaderBuilder::new(Arc::clone(schema))
+        .with_header(true)
+        .build(cursor)?;
+
+    let mut batches = Vec::new();
+    for batch_result in reader {
+        batches.push(batch_result?);
+    }
+
+    if batches.is_empty() {
+        Ok(arrow::array::RecordBatch::new_empty(Arc::clone(schema)))
+    } else if batches.len() == 1 {
+        Ok(batches.into_iter().next().unwrap())
+    } else {
+        let batch = arrow::compute::concat_batches(schema, &batches)?;
+        Ok(batch)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Serialization DTOs
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+struct CsvRangeScanExecDto {
+    s3_uri: String,
+    start_byte: u64,
+    end_byte: u64,
+    is_first_partition: bool,
+    header_line: String,
+    s3_config: S3Config,
+    schema_fields: Vec<CsvFieldDto>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CsvFieldDto {
+    name: String,
+    data_type: String,
+    nullable: bool,
+}
+
+/// Parse a `DataType` from its `Debug` representation string.
+fn parse_data_type(s: &str) -> DataType {
+    match s {
+        "Int16" => DataType::Int16,
+        "Int32" => DataType::Int32,
+        "Int64" => DataType::Int64,
+        "Float32" => DataType::Float32,
+        "Float64" => DataType::Float64,
+        "Boolean" => DataType::Boolean,
+        "Utf8" => DataType::Utf8,
+        "Binary" => DataType::Binary,
+        _ => DataType::Utf8,
+    }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- byte range tests ----------------------------------------------------
 
     #[test]
     fn test_byte_range_partitions() {
@@ -477,7 +701,6 @@ mod tests {
 
     #[test]
     fn test_byte_range_more_partitions_than_bytes() {
-        // 3 bytes, 10 partitions -> capped to 3 partitions
         let ranges = compute_byte_ranges(3, 10);
         assert_eq!(ranges.len(), 3);
         assert_eq!(ranges[0], (0, 1));
@@ -487,13 +710,11 @@ mod tests {
 
     #[test]
     fn test_byte_range_uneven() {
-        // 10 bytes, 3 partitions: 3, 3, 4
         let ranges = compute_byte_ranges(10, 3);
         assert_eq!(ranges.len(), 3);
         assert_eq!(ranges[0], (0, 3));
         assert_eq!(ranges[1], (3, 6));
         assert_eq!(ranges[2], (6, 10));
-        // Verify coverage
         let total: u64 = ranges.iter().map(|(s, e)| e - s).sum();
         assert_eq!(total, 10);
     }
@@ -509,17 +730,16 @@ mod tests {
     fn test_split_csv_chunk_first_partition() {
         let data = b"1,Alice,100\n2,Bob,200\n";
         let (skip, lines) = split_csv_chunk(data, true);
-        assert!(!skip); // first partition keeps all lines
+        assert!(!skip);
         assert_eq!(lines.len(), 2);
     }
 
     #[test]
     fn test_split_csv_chunk_middle_partition() {
-        // Simulating a read that starts mid-line
         let data = b"ice,100\n2,Bob,200\n3,Carol,300\n";
         let (skip, lines) = split_csv_chunk(data, false);
-        assert!(skip); // non-first partition discards first partial line
-        assert_eq!(lines.len(), 2); // "2,Bob,200" and "3,Carol,300"
+        assert!(skip);
+        assert_eq!(lines.len(), 2);
     }
 
     #[test]
@@ -543,7 +763,6 @@ mod tests {
         let data = b"partial_data";
         let (skip, lines) = split_csv_chunk(data, false);
         assert!(skip);
-        // After discarding the only (partial) line, nothing left
         assert_eq!(lines.len(), 0);
     }
 
@@ -553,5 +772,150 @@ mod tests {
         let (skip, lines) = split_csv_chunk(data, true);
         assert!(!skip);
         assert_eq!(lines.len(), 0);
+    }
+
+    // -- CsvRangeScanExec tests ----------------------------------------------
+
+    fn sample_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("amount", DataType::Float64, true),
+        ]))
+    }
+
+    fn sample_s3_config() -> S3Config {
+        S3Config {
+            region: "us-east-1".to_string(),
+            access_key_id: "test-key".to_string(),
+            secret_access_key: "test-secret".to_string(),
+            endpoint_url: Some("http://localhost:9000".to_string()),
+            allow_http: true,
+        }
+    }
+
+    #[test]
+    fn test_csv_range_scan_exec_properties() {
+        let schema = sample_schema();
+        let exec = CsvRangeScanExec::new(
+            "s3://bucket/data.csv".to_string(),
+            Arc::clone(&schema),
+            1000,
+            2000,
+            false,
+            "id,name,amount".to_string(),
+            sample_s3_config(),
+        );
+        assert_eq!(exec.schema(), schema);
+        assert_eq!(exec.properties().partitioning.partition_count(), 1);
+        assert!(exec.children().is_empty());
+        let display_str = format!(
+            "{}",
+            datafusion::physical_plan::displayable(&exec).one_line()
+        );
+        assert!(
+            display_str.contains("CsvRangeScanExec: uri=s3://bucket/data.csv, range=1000..2000"),
+            "unexpected display: {}",
+            display_str
+        );
+    }
+
+    #[test]
+    fn test_csv_serialization_roundtrip() {
+        let schema = sample_schema();
+        let exec = CsvRangeScanExec::new(
+            "s3://my-bucket/path/to/file.csv".to_string(),
+            Arc::clone(&schema),
+            500,
+            1500,
+            true,
+            "id,name,amount".to_string(),
+            sample_s3_config(),
+        );
+        let bytes = exec.serialize();
+        let restored =
+            CsvRangeScanExec::deserialize(&bytes).expect("deserialization should succeed");
+        assert_eq!(restored.s3_uri, exec.s3_uri);
+        assert_eq!(restored.start_byte, exec.start_byte);
+        assert_eq!(restored.end_byte, exec.end_byte);
+        assert_eq!(restored.is_first_partition, exec.is_first_partition);
+        assert_eq!(restored.header_line, exec.header_line);
+        assert_eq!(restored.s3_config.region, exec.s3_config.region);
+        assert_eq!(
+            restored.s3_config.access_key_id,
+            exec.s3_config.access_key_id
+        );
+        assert_eq!(
+            restored.s3_config.secret_access_key,
+            exec.s3_config.secret_access_key
+        );
+        assert_eq!(restored.s3_config.endpoint_url, exec.s3_config.endpoint_url);
+        assert_eq!(restored.s3_config.allow_http, exec.s3_config.allow_http);
+        assert_eq!(restored.schema.fields().len(), exec.schema.fields().len());
+        for (orig, rest) in exec
+            .schema
+            .fields()
+            .iter()
+            .zip(restored.schema.fields().iter())
+        {
+            assert_eq!(orig.name(), rest.name());
+            assert_eq!(orig.data_type(), rest.data_type());
+            assert_eq!(orig.is_nullable(), rest.is_nullable());
+        }
+    }
+
+    #[test]
+    fn test_csv_serialization_roundtrip_non_first_partition() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Int32, false),
+            Field::new("y", DataType::Utf8, true),
+        ]));
+        let exec = CsvRangeScanExec::new(
+            "s3://data-bucket/large.csv".to_string(),
+            schema,
+            10000,
+            20000,
+            false,
+            "x,y".to_string(),
+            S3Config {
+                region: "eu-west-1".to_string(),
+                access_key_id: "ak".to_string(),
+                secret_access_key: "sk".to_string(),
+                endpoint_url: None,
+                allow_http: false,
+            },
+        );
+        let bytes = exec.serialize();
+        let restored =
+            CsvRangeScanExec::deserialize(&bytes).expect("deserialization should succeed");
+        assert!(!restored.is_first_partition);
+        assert_eq!(restored.s3_uri, "s3://data-bucket/large.csv");
+        assert_eq!(restored.start_byte, 10000);
+        assert_eq!(restored.end_byte, 20000);
+        assert_eq!(restored.header_line, "x,y");
+        assert!(restored.s3_config.endpoint_url.is_none());
+        assert!(!restored.s3_config.allow_http);
+    }
+
+    #[test]
+    fn test_parse_data_type_known_types() {
+        assert_eq!(parse_data_type("Int16"), DataType::Int16);
+        assert_eq!(parse_data_type("Int32"), DataType::Int32);
+        assert_eq!(parse_data_type("Int64"), DataType::Int64);
+        assert_eq!(parse_data_type("Float32"), DataType::Float32);
+        assert_eq!(parse_data_type("Float64"), DataType::Float64);
+        assert_eq!(parse_data_type("Boolean"), DataType::Boolean);
+        assert_eq!(parse_data_type("Utf8"), DataType::Utf8);
+        assert_eq!(parse_data_type("Binary"), DataType::Binary);
+    }
+
+    #[test]
+    fn test_parse_data_type_unknown_defaults_to_utf8() {
+        assert_eq!(parse_data_type("LargeUtf8"), DataType::Utf8);
+        assert_eq!(
+            parse_data_type("Timestamp(Nanosecond, None)"),
+            DataType::Utf8
+        );
+        assert_eq!(parse_data_type("SomeWeirdType"), DataType::Utf8);
     }
 }

@@ -2,6 +2,10 @@
 //!
 //! Implements `TableProvider` to support partitioned reads from PostgreSQL
 //! using `LIMIT/OFFSET` queries, enabling parallel partition-level execution.
+//!
+//! Contains both the `PostgresPartitionedTable` (the `TableProvider`) and
+//! `PostgresScanExec` (the lazy `ExecutionPlan` that fetches a single
+//! partition). Used by both local and cluster (Ballista) modes.
 
 use std::any::Any;
 use std::fmt;
@@ -13,14 +17,25 @@ use datafusion::catalog::Session;
 use datafusion::common::stats::Precision;
 use datafusion::datasource::TableProvider;
 use datafusion::error::Result as DFResult;
+use datafusion::execution::TaskContext;
 use datafusion::logical_expr::TableType;
-use datafusion::physical_plan::memory::MemoryExec;
-use datafusion::physical_plan::{ExecutionPlan, Statistics};
+use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::union::UnionExec;
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream, Statistics,
+};
 use datafusion::prelude::{Expr, SessionContext};
+use serde::{Deserialize, Serialize};
 use sqlx::postgres::{PgPoolOptions, PgRow};
+use sqlx::Row;
 use tracing::{debug, info};
 
-use crate::postgres::{pg_type_to_arrow, rows_to_record_batch};
+// ===========================================================================
+// Partition helpers
+// ===========================================================================
 
 /// Compute (offset, limit) ranges for partitioned reads.
 ///
@@ -51,6 +66,10 @@ pub fn compute_partition_ranges(total_rows: u64, num_partitions: usize) -> Vec<(
 
     ranges
 }
+
+// ===========================================================================
+// PostgresPartitionedTable — the TableProvider
+// ===========================================================================
 
 /// A DataFusion `TableProvider` that reads from PostgreSQL using partitioned
 /// `LIMIT/OFFSET` queries.
@@ -207,88 +226,30 @@ impl TableProvider for PostgresPartitionedTable {
     async fn scan(
         &self,
         _state: &dyn Session,
-        projection: Option<&Vec<usize>>,
+        _projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
         let ranges = compute_partition_ranges(self.total_rows, self.num_partitions);
+        let mut plans: Vec<Arc<dyn ExecutionPlan>> = Vec::with_capacity(ranges.len());
 
-        // Determine which columns to SELECT
-        let all_fields: Vec<&str> = self
-            .schema
-            .fields()
-            .iter()
-            .map(|f| f.name().as_str())
-            .collect();
-
-        let selected_fields: Vec<&str> = match projection {
-            Some(indices) => indices.iter().map(|&i| all_fields[i]).collect(),
-            None => all_fields.clone(),
-        };
-
-        let columns_sql = selected_fields
-            .iter()
-            .map(|name| format!("\"{}\"", name))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        // Build projected schema
-        let projected_schema = match projection {
-            Some(indices) => {
-                let projected_fields: Vec<Field> = indices
-                    .iter()
-                    .map(|&i| self.schema.field(i).clone())
-                    .collect();
-                Arc::new(Schema::new(projected_fields))
-            }
-            None => Arc::clone(&self.schema),
-        };
-
-        // Connect and fetch each partition
-        let pool = PgPoolOptions::new()
-            .max_connections(self.num_partitions.max(2) as u32)
-            .connect(&self.conn_string)
-            .await
-            .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
-
-        let mut partitions: Vec<Vec<arrow::array::RecordBatch>> = Vec::with_capacity(ranges.len());
-
-        let wc = self.where_clause.as_deref().unwrap_or("");
         for (offset, limit) in &ranges {
-            let query = match &self.order_column {
-                Some(col) => format!(
-                    "SELECT {} FROM \"{}\"{} ORDER BY \"{}\" LIMIT {} OFFSET {}",
-                    columns_sql, self.pg_table, wc, col, limit, offset
-                ),
-                None => format!(
-                    "SELECT {} FROM \"{}\"{} LIMIT {} OFFSET {}",
-                    columns_sql, self.pg_table, wc, limit, offset
-                ),
-            };
-
-            debug!("Partition query: {}", query);
-
-            let rows: Vec<PgRow> = sqlx::query(&query)
-                .fetch_all(&pool)
-                .await
-                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
-
-            if rows.is_empty() {
-                partitions.push(vec![]);
-            } else {
-                let batch = rows_to_record_batch(&rows, Arc::clone(&projected_schema))
-                    .map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))?;
-                partitions.push(vec![batch]);
-            }
+            plans.push(Arc::new(PostgresScanExec::new(
+                self.conn_string.clone(),
+                self.pg_table.clone(),
+                Arc::clone(&self.schema),
+                *offset,
+                *limit,
+                self.order_column.clone(),
+                self.where_clause.clone(),
+            )));
         }
 
-        pool.close().await;
-
-        // MemoryExec expects partitions as &[Vec<RecordBatch>]
-        // Pass None for projection since we already projected the columns in SQL
-        let exec = MemoryExec::try_new(&partitions, projected_schema, None)?;
-
-        Ok(Arc::new(exec))
+        if plans.len() == 1 {
+            Ok(plans.into_iter().next().unwrap())
+        } else {
+            Ok(Arc::new(UnionExec::new(plans)))
+        }
     }
 }
 
@@ -350,6 +311,93 @@ async fn infer_schema(pool: &sqlx::PgPool, table_name: &str) -> anyhow::Result<S
     Ok(Arc::new(Schema::new(fields)))
 }
 
+/// Convert PostgreSQL type name to Arrow DataType.
+fn pg_type_to_arrow(pg_type: &str) -> DataType {
+    match pg_type.to_uppercase().as_str() {
+        "INT2" | "SMALLINT" => DataType::Int16,
+        "INT4" | "INTEGER" | "INT" => DataType::Int32,
+        "INT8" | "BIGINT" => DataType::Int64,
+        "FLOAT4" | "REAL" => DataType::Float32,
+        "FLOAT8" | "DOUBLE PRECISION" | "NUMERIC" | "DECIMAL" => DataType::Float64,
+        "BOOL" | "BOOLEAN" => DataType::Boolean,
+        "TEXT" | "VARCHAR" | "CHAR" | "BPCHAR" | "NAME" => DataType::Utf8,
+        "BYTEA" => DataType::Binary,
+        "DATE" | "TIMESTAMP" | "TIMESTAMPTZ" => DataType::Utf8,
+        "UUID" => DataType::Utf8,
+        _ => {
+            debug!("Unknown PostgreSQL type '{}', defaulting to Utf8", pg_type);
+            DataType::Utf8
+        }
+    }
+}
+
+/// Convert PostgreSQL rows to Arrow RecordBatch.
+fn rows_to_record_batch(
+    rows: &[PgRow],
+    schema: Arc<Schema>,
+) -> anyhow::Result<arrow::array::RecordBatch> {
+    use arrow::array::*;
+
+    let mut columns: Vec<ArrayRef> = Vec::new();
+
+    for (i, field) in schema.fields().iter().enumerate() {
+        let array: ArrayRef = match field.data_type() {
+            DataType::Int16 => {
+                let values: Vec<Option<i16>> = rows
+                    .iter()
+                    .map(|row| row.try_get::<i16, _>(i).ok())
+                    .collect();
+                Arc::new(Int16Array::from(values))
+            }
+            DataType::Int32 => {
+                let values: Vec<Option<i32>> = rows
+                    .iter()
+                    .map(|row| row.try_get::<i32, _>(i).ok())
+                    .collect();
+                Arc::new(Int32Array::from(values))
+            }
+            DataType::Int64 => {
+                let values: Vec<Option<i64>> = rows
+                    .iter()
+                    .map(|row| row.try_get::<i64, _>(i).ok())
+                    .collect();
+                Arc::new(Int64Array::from(values))
+            }
+            DataType::Float32 => {
+                let values: Vec<Option<f32>> = rows
+                    .iter()
+                    .map(|row| row.try_get::<f32, _>(i).ok())
+                    .collect();
+                Arc::new(Float32Array::from(values))
+            }
+            DataType::Float64 => {
+                let values: Vec<Option<f64>> = rows
+                    .iter()
+                    .map(|row| row.try_get::<f64, _>(i).ok())
+                    .collect();
+                Arc::new(Float64Array::from(values))
+            }
+            DataType::Boolean => {
+                let values: Vec<Option<bool>> = rows
+                    .iter()
+                    .map(|row| row.try_get::<bool, _>(i).ok())
+                    .collect();
+                Arc::new(BooleanArray::from(values))
+            }
+            _ => {
+                let values: Vec<Option<String>> = rows
+                    .iter()
+                    .map(|row| row.try_get::<String, _>(i).ok())
+                    .collect();
+                Arc::new(StringArray::from(values))
+            }
+        };
+        columns.push(array);
+    }
+
+    Ok(arrow::array::RecordBatch::try_new(schema, columns)?)
+}
+
 /// Map `information_schema.columns.data_type` values to Arrow DataType.
 ///
 /// The `information_schema` uses SQL standard type names (e.g. "integer",
@@ -378,9 +426,280 @@ fn info_schema_type_to_arrow(data_type: &str) -> DataType {
     }
 }
 
+// ===========================================================================
+// PostgresScanExec — the lazy ExecutionPlan for a single partition
+// ===========================================================================
+
+/// A lazy DataFusion `ExecutionPlan` that fetches a single LIMIT/OFFSET
+/// partition from PostgreSQL when `execute()` is called.
+///
+/// This node is a leaf node (no children) with exactly 1 output partition.
+/// The actual Postgres query is deferred until the returned stream is polled.
+#[derive(Debug)]
+pub struct PostgresScanExec {
+    pub conn_string: String,
+    pub pg_table: String,
+    pub schema: SchemaRef,
+    pub offset: u64,
+    pub limit: u64,
+    pub order_column: Option<String>,
+    pub where_clause: Option<String>,
+    properties: PlanProperties,
+}
+
+impl PostgresScanExec {
+    /// Create a new `PostgresScanExec`.
+    pub fn new(
+        conn_string: String,
+        pg_table: String,
+        schema: SchemaRef,
+        offset: u64,
+        limit: u64,
+        order_column: Option<String>,
+        where_clause: Option<String>,
+    ) -> Self {
+        let properties = PlanProperties::new(
+            EquivalenceProperties::new(Arc::clone(&schema)),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Final,
+            Boundedness::Bounded,
+        );
+        Self {
+            conn_string,
+            pg_table,
+            schema,
+            offset,
+            limit,
+            order_column,
+            where_clause,
+            properties,
+        }
+    }
+
+    // -- Serialization -------------------------------------------------------
+
+    /// Serialize this execution plan to bytes (JSON).
+    pub fn serialize(&self) -> Vec<u8> {
+        let dto = PostgresScanExecDto {
+            conn_string: self.conn_string.clone(),
+            pg_table: self.pg_table.clone(),
+            offset: self.offset,
+            limit: self.limit,
+            order_column: self.order_column.clone(),
+            where_clause: self.where_clause.clone(),
+            schema_fields: self
+                .schema
+                .fields()
+                .iter()
+                .map(|f| PgFieldDto {
+                    name: f.name().clone(),
+                    data_type: format!("{:?}", f.data_type()),
+                    nullable: f.is_nullable(),
+                })
+                .collect(),
+        };
+        serde_json::to_vec(&dto).expect("PostgresScanExecDto serialization cannot fail")
+    }
+
+    /// Deserialize from bytes (JSON) back into a `PostgresScanExec`.
+    pub fn deserialize(bytes: &[u8]) -> anyhow::Result<Self> {
+        let dto: PostgresScanExecDto = serde_json::from_slice(bytes)?;
+        let fields: Vec<Field> = dto
+            .schema_fields
+            .iter()
+            .map(|f| Field::new(&f.name, parse_data_type(&f.data_type), f.nullable))
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
+        Ok(Self::new(
+            dto.conn_string,
+            dto.pg_table,
+            schema,
+            dto.offset,
+            dto.limit,
+            dto.order_column,
+            dto.where_clause,
+        ))
+    }
+}
+
+impl ExecutionPlan for PostgresScanExec {
+    fn name(&self) -> &str {
+        "PostgresScanExec"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        if children.is_empty() {
+            Ok(self)
+        } else {
+            Err(datafusion::error::DataFusionError::Internal(
+                "PostgresScanExec is a leaf node and cannot have children".to_string(),
+            ))
+        }
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        _context: Arc<TaskContext>,
+    ) -> DFResult<SendableRecordBatchStream> {
+        if partition != 0 {
+            return Err(datafusion::error::DataFusionError::Internal(format!(
+                "PostgresScanExec only supports partition 0, got {}",
+                partition
+            )));
+        }
+
+        let conn_string = self.conn_string.clone();
+        let pg_table = self.pg_table.clone();
+        let schema = Arc::clone(&self.schema);
+        let offset = self.offset;
+        let limit = self.limit;
+        let order_column = self.order_column.clone();
+        let where_clause = self.where_clause.clone();
+
+        let stream = futures::stream::once(async move {
+            let result = fetch_partition(
+                &conn_string,
+                &pg_table,
+                &schema,
+                offset,
+                limit,
+                order_column.as_deref(),
+                where_clause.as_deref(),
+            )
+            .await;
+            result.map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))
+        });
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            Arc::clone(&self.schema),
+            stream,
+        )))
+    }
+}
+
+impl DisplayAs for PostgresScanExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "PostgresScanExec: table={}, offset={}, limit={}",
+            self.pg_table, self.offset, self.limit
+        )?;
+        if let Some(wc) = &self.where_clause {
+            write!(f, ", where={}", wc)?;
+        }
+        Ok(())
+    }
+}
+
+/// Execute a LIMIT/OFFSET query against Postgres and return a `RecordBatch`.
+async fn fetch_partition(
+    conn_string: &str,
+    pg_table: &str,
+    schema: &SchemaRef,
+    offset: u64,
+    limit: u64,
+    order_column: Option<&str>,
+    where_clause: Option<&str>,
+) -> anyhow::Result<arrow::array::RecordBatch> {
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(conn_string)
+        .await?;
+
+    let columns_sql: String = schema
+        .fields()
+        .iter()
+        .map(|f| format!("\"{}\"", f.name()))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let wc = where_clause.unwrap_or("");
+    let query = match order_column {
+        Some(col) => format!(
+            "SELECT {} FROM \"{}\"{} ORDER BY \"{}\" LIMIT {} OFFSET {}",
+            columns_sql, pg_table, wc, col, limit, offset
+        ),
+        None => format!(
+            "SELECT {} FROM \"{}\"{} LIMIT {} OFFSET {}",
+            columns_sql, pg_table, wc, limit, offset
+        ),
+    };
+
+    debug!("PostgresScanExec query: {}", query);
+
+    let rows: Vec<PgRow> = sqlx::query(&query).fetch_all(&pool).await?;
+    pool.close().await;
+
+    if rows.is_empty() {
+        Ok(arrow::array::RecordBatch::new_empty(Arc::clone(schema)))
+    } else {
+        rows_to_record_batch(&rows, Arc::clone(schema))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Serialization DTOs
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+struct PostgresScanExecDto {
+    conn_string: String,
+    pg_table: String,
+    offset: u64,
+    limit: u64,
+    order_column: Option<String>,
+    #[serde(default)]
+    where_clause: Option<String>,
+    schema_fields: Vec<PgFieldDto>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PgFieldDto {
+    name: String,
+    data_type: String,
+    nullable: bool,
+}
+
+/// Parse a `DataType` from its `Debug` representation string.
+fn parse_data_type(s: &str) -> DataType {
+    match s {
+        "Int16" => DataType::Int16,
+        "Int32" => DataType::Int32,
+        "Int64" => DataType::Int64,
+        "Float32" => DataType::Float32,
+        "Float64" => DataType::Float64,
+        "Boolean" => DataType::Boolean,
+        "Utf8" => DataType::Utf8,
+        "Binary" => DataType::Binary,
+        _ => DataType::Utf8,
+    }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- partition range tests -----------------------------------------------
 
     #[test]
     fn test_partition_ranges_even_division() {
@@ -402,7 +721,6 @@ mod tests {
 
     #[test]
     fn test_partition_ranges_more_partitions_than_rows() {
-        // 2 rows, 10 partitions -> capped to 2 partitions
         let ranges = compute_partition_ranges(2, 10);
         assert_eq!(ranges, vec![(0, 1), (1, 1)]);
     }
@@ -429,12 +747,8 @@ mod tests {
     fn test_partition_ranges_large_table() {
         let ranges = compute_partition_ranges(1_000_000, 8);
         assert_eq!(ranges.len(), 8);
-
-        // Verify all rows are covered
         let total: u64 = ranges.iter().map(|(_, limit)| limit).sum();
         assert_eq!(total, 1_000_000);
-
-        // Verify no gaps
         let mut expected_offset = 0u64;
         for (offset, limit) in &ranges {
             assert_eq!(*offset, expected_offset);
@@ -444,7 +758,6 @@ mod tests {
 
     #[test]
     fn test_partition_ranges_exact_match() {
-        // rows == partitions
         let ranges = compute_partition_ranges(5, 5);
         assert_eq!(ranges, vec![(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)]);
     }
@@ -476,5 +789,217 @@ mod tests {
             DataType::Utf8
         );
         assert_eq!(info_schema_type_to_arrow("jsonb"), DataType::Utf8);
+    }
+
+    // -- PostgresScanExec tests ----------------------------------------------
+
+    fn sample_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("amount", DataType::Float64, true),
+            Field::new("active", DataType::Boolean, true),
+        ]))
+    }
+
+    #[test]
+    fn test_postgres_scan_exec_properties() {
+        let schema = sample_schema();
+        let exec = PostgresScanExec::new(
+            "postgres://localhost/test".to_string(),
+            "my_table".to_string(),
+            Arc::clone(&schema),
+            100,
+            50,
+            Some("id".to_string()),
+            None,
+        );
+        assert_eq!(exec.schema(), schema);
+        assert_eq!(exec.properties().partitioning.partition_count(), 1);
+        assert!(exec.children().is_empty());
+        let display_str = format!(
+            "{}",
+            datafusion::physical_plan::displayable(&exec).one_line()
+        );
+        assert!(
+            display_str.contains("PostgresScanExec: table=my_table, offset=100, limit=50"),
+            "unexpected display: {}",
+            display_str
+        );
+    }
+
+    #[test]
+    fn test_serialization_roundtrip() {
+        let schema = sample_schema();
+        let exec = PostgresScanExec::new(
+            "postgres://user:pass@host:5432/db".to_string(),
+            "invoices".to_string(),
+            Arc::clone(&schema),
+            500,
+            250,
+            Some("invoice_id".to_string()),
+            None,
+        );
+        let bytes = exec.serialize();
+        let restored =
+            PostgresScanExec::deserialize(&bytes).expect("deserialization should succeed");
+        assert_eq!(restored.conn_string, exec.conn_string);
+        assert_eq!(restored.pg_table, exec.pg_table);
+        assert_eq!(restored.offset, exec.offset);
+        assert_eq!(restored.limit, exec.limit);
+        assert_eq!(restored.order_column, exec.order_column);
+        assert_eq!(restored.where_clause, exec.where_clause);
+        assert_eq!(restored.schema.fields().len(), exec.schema.fields().len());
+        for (orig, rest) in exec
+            .schema
+            .fields()
+            .iter()
+            .zip(restored.schema.fields().iter())
+        {
+            assert_eq!(orig.name(), rest.name());
+            assert_eq!(orig.data_type(), rest.data_type());
+            assert_eq!(orig.is_nullable(), rest.is_nullable());
+        }
+    }
+
+    #[test]
+    fn test_serialization_roundtrip_no_order_column() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Int32, false),
+            Field::new("y", DataType::Binary, true),
+        ]));
+        let exec = PostgresScanExec::new(
+            "postgres://localhost/test".to_string(),
+            "points".to_string(),
+            schema,
+            0,
+            1000,
+            None,
+            None,
+        );
+        let bytes = exec.serialize();
+        let restored =
+            PostgresScanExec::deserialize(&bytes).expect("deserialization should succeed");
+        assert_eq!(restored.order_column, None);
+        assert_eq!(restored.pg_table, "points");
+        assert_eq!(restored.offset, 0);
+        assert_eq!(restored.limit, 1000);
+    }
+
+    #[test]
+    fn test_serialization_roundtrip_with_where_clause() {
+        let schema = sample_schema();
+        let exec = PostgresScanExec::new(
+            "postgres://user:pass@host:5432/db".to_string(),
+            "invoices".to_string(),
+            Arc::clone(&schema),
+            0,
+            500,
+            Some("id".to_string()),
+            Some(" WHERE \"status\" = 'active' AND \"amount\" >= 50".to_string()),
+        );
+        let bytes = exec.serialize();
+        let restored =
+            PostgresScanExec::deserialize(&bytes).expect("deserialization should succeed");
+        assert_eq!(
+            restored.where_clause,
+            Some(" WHERE \"status\" = 'active' AND \"amount\" >= 50".to_string())
+        );
+        assert_eq!(restored.conn_string, exec.conn_string);
+        assert_eq!(restored.pg_table, exec.pg_table);
+        assert_eq!(restored.offset, exec.offset);
+        assert_eq!(restored.limit, exec.limit);
+        assert_eq!(restored.order_column, exec.order_column);
+    }
+
+    #[test]
+    fn test_parse_data_type_known_types() {
+        assert_eq!(parse_data_type("Int16"), DataType::Int16);
+        assert_eq!(parse_data_type("Int32"), DataType::Int32);
+        assert_eq!(parse_data_type("Int64"), DataType::Int64);
+        assert_eq!(parse_data_type("Float32"), DataType::Float32);
+        assert_eq!(parse_data_type("Float64"), DataType::Float64);
+        assert_eq!(parse_data_type("Boolean"), DataType::Boolean);
+        assert_eq!(parse_data_type("Utf8"), DataType::Utf8);
+        assert_eq!(parse_data_type("Binary"), DataType::Binary);
+    }
+
+    #[test]
+    fn test_parse_data_type_unknown_defaults_to_utf8() {
+        assert_eq!(parse_data_type("LargeUtf8"), DataType::Utf8);
+        assert_eq!(
+            parse_data_type("Timestamp(Nanosecond, None)"),
+            DataType::Utf8
+        );
+        assert_eq!(parse_data_type("SomeWeirdType"), DataType::Utf8);
+    }
+
+    // -- pg_type_to_arrow tests -----------------------------------------------
+
+    #[test]
+    fn test_pg_type_to_arrow_int_types() {
+        assert_eq!(pg_type_to_arrow("INT2"), DataType::Int16);
+        assert_eq!(pg_type_to_arrow("SMALLINT"), DataType::Int16);
+        assert_eq!(pg_type_to_arrow("INT4"), DataType::Int32);
+        assert_eq!(pg_type_to_arrow("INTEGER"), DataType::Int32);
+        assert_eq!(pg_type_to_arrow("INT"), DataType::Int32);
+        assert_eq!(pg_type_to_arrow("INT8"), DataType::Int64);
+        assert_eq!(pg_type_to_arrow("BIGINT"), DataType::Int64);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_float_types() {
+        assert_eq!(pg_type_to_arrow("FLOAT4"), DataType::Float32);
+        assert_eq!(pg_type_to_arrow("REAL"), DataType::Float32);
+        assert_eq!(pg_type_to_arrow("FLOAT8"), DataType::Float64);
+        assert_eq!(pg_type_to_arrow("DOUBLE PRECISION"), DataType::Float64);
+        assert_eq!(pg_type_to_arrow("NUMERIC"), DataType::Float64);
+        assert_eq!(pg_type_to_arrow("DECIMAL"), DataType::Float64);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_bool() {
+        assert_eq!(pg_type_to_arrow("BOOL"), DataType::Boolean);
+        assert_eq!(pg_type_to_arrow("BOOLEAN"), DataType::Boolean);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_text_types() {
+        assert_eq!(pg_type_to_arrow("TEXT"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("VARCHAR"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("CHAR"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("BPCHAR"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("NAME"), DataType::Utf8);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_binary() {
+        assert_eq!(pg_type_to_arrow("BYTEA"), DataType::Binary);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_temporal() {
+        assert_eq!(pg_type_to_arrow("DATE"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("TIMESTAMP"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("TIMESTAMPTZ"), DataType::Utf8);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_uuid() {
+        assert_eq!(pg_type_to_arrow("UUID"), DataType::Utf8);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_unknown_defaults_to_utf8() {
+        assert_eq!(pg_type_to_arrow("JSONB"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("CIDR"), DataType::Utf8);
+        assert_eq!(pg_type_to_arrow("UNKNOWN_TYPE"), DataType::Utf8);
+    }
+
+    #[test]
+    fn test_pg_type_to_arrow_case_insensitive() {
+        assert_eq!(pg_type_to_arrow("int4"), DataType::Int32);
+        assert_eq!(pg_type_to_arrow("Bool"), DataType::Boolean);
+        assert_eq!(pg_type_to_arrow("text"), DataType::Utf8);
     }
 }

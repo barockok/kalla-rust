@@ -10,17 +10,15 @@ pub mod csv_partitioned;
 pub mod error;
 pub mod factory;
 pub mod filter;
-pub mod postgres;
 pub mod postgres_partitioned;
 pub mod s3;
 
 pub use bigquery::BigQueryConnector;
-pub use csv_partitioned::CsvByteRangeTable;
+pub use csv_partitioned::{CsvByteRangeTable, CsvRangeScanExec};
 pub use error::ConnectorError;
 pub use factory::{ConnectorFactory, ConnectorRegistry};
 pub use filter::{build_where_clause, FilterCondition, FilterOp, FilterValue};
-pub use postgres::PostgresConnector;
-pub use postgres_partitioned::PostgresPartitionedTable;
+pub use postgres_partitioned::{PostgresPartitionedTable, PostgresScanExec};
 pub use s3::{S3Config, S3Connector};
 
 use async_trait::async_trait;
