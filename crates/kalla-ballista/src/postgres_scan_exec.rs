@@ -44,6 +44,7 @@ pub struct PostgresScanExec {
     pub offset: u64,
     pub limit: u64,
     pub order_column: Option<String>,
+    pub where_clause: Option<String>,
     properties: PlanProperties,
 }
 
@@ -56,6 +57,7 @@ impl PostgresScanExec {
         offset: u64,
         limit: u64,
         order_column: Option<String>,
+        where_clause: Option<String>,
     ) -> Self {
         let properties = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
@@ -70,6 +72,7 @@ impl PostgresScanExec {
             offset,
             limit,
             order_column,
+            where_clause,
             properties,
         }
     }
@@ -84,6 +87,7 @@ impl PostgresScanExec {
             offset: self.offset,
             limit: self.limit,
             order_column: self.order_column.clone(),
+            where_clause: self.where_clause.clone(),
             schema_fields: self
                 .schema
                 .fields()
@@ -114,6 +118,7 @@ impl PostgresScanExec {
             dto.offset,
             dto.limit,
             dto.order_column,
+            dto.where_clause,
         ))
     }
 }
@@ -171,6 +176,7 @@ impl ExecutionPlan for PostgresScanExec {
         let offset = self.offset;
         let limit = self.limit;
         let order_column = self.order_column.clone();
+        let where_clause = self.where_clause.clone();
 
         // Build the stream lazily — the async Postgres work happens inside.
         let stream = futures::stream::once(async move {
@@ -181,6 +187,7 @@ impl ExecutionPlan for PostgresScanExec {
                 offset,
                 limit,
                 order_column.as_deref(),
+                where_clause.as_deref(),
             )
             .await;
             result.map_err(|e| datafusion::error::DataFusionError::Execution(e.to_string()))
@@ -203,7 +210,11 @@ impl DisplayAs for PostgresScanExec {
             f,
             "PostgresScanExec: table={}, offset={}, limit={}",
             self.pg_table, self.offset, self.limit
-        )
+        )?;
+        if let Some(wc) = &self.where_clause {
+            write!(f, ", where={}", wc)?;
+        }
+        Ok(())
     }
 }
 
@@ -220,6 +231,7 @@ async fn fetch_partition(
     offset: u64,
     limit: u64,
     order_column: Option<&str>,
+    where_clause: Option<&str>,
 ) -> anyhow::Result<arrow::array::RecordBatch> {
     let pool = PgPoolOptions::new()
         .max_connections(2)
@@ -233,14 +245,15 @@ async fn fetch_partition(
         .collect::<Vec<_>>()
         .join(", ");
 
+    let wc = where_clause.unwrap_or("");
     let query = match order_column {
         Some(col) => format!(
-            "SELECT {} FROM \"{}\" ORDER BY \"{}\" LIMIT {} OFFSET {}",
-            columns_sql, pg_table, col, limit, offset
+            "SELECT {} FROM \"{}\"{} ORDER BY \"{}\" LIMIT {} OFFSET {}",
+            columns_sql, pg_table, wc, col, limit, offset
         ),
         None => format!(
-            "SELECT {} FROM \"{}\" LIMIT {} OFFSET {}",
-            columns_sql, pg_table, limit, offset
+            "SELECT {} FROM \"{}\"{} LIMIT {} OFFSET {}",
+            columns_sql, pg_table, wc, limit, offset
         ),
     };
 
@@ -268,6 +281,8 @@ struct PostgresScanExecDto {
     offset: u64,
     limit: u64,
     order_column: Option<String>,
+    #[serde(default)]
+    where_clause: Option<String>,
     schema_fields: Vec<FieldDto>,
 }
 
@@ -323,6 +338,7 @@ mod tests {
             100,
             50,
             Some("id".to_string()),
+            None,
         );
 
         // Schema should match.
@@ -356,6 +372,7 @@ mod tests {
             500,
             250,
             Some("invoice_id".to_string()),
+            None,
         );
 
         let bytes = exec.serialize();
@@ -367,6 +384,7 @@ mod tests {
         assert_eq!(restored.offset, exec.offset);
         assert_eq!(restored.limit, exec.limit);
         assert_eq!(restored.order_column, exec.order_column);
+        assert_eq!(restored.where_clause, exec.where_clause);
         assert_eq!(restored.schema.fields().len(), exec.schema.fields().len());
 
         for (orig, rest) in exec
@@ -394,6 +412,7 @@ mod tests {
             0,
             1000,
             None,
+            None,
         );
 
         let bytes = exec.serialize();
@@ -404,6 +423,34 @@ mod tests {
         assert_eq!(restored.pg_table, "points");
         assert_eq!(restored.offset, 0);
         assert_eq!(restored.limit, 1000);
+    }
+
+    #[test]
+    fn test_serialization_roundtrip_with_where_clause() {
+        let schema = sample_schema();
+        let exec = PostgresScanExec::new(
+            "postgres://user:pass@host:5432/db".to_string(),
+            "invoices".to_string(),
+            Arc::clone(&schema),
+            0,
+            500,
+            Some("id".to_string()),
+            Some(" WHERE \"status\" = 'active' AND \"amount\" >= 50".to_string()),
+        );
+
+        let bytes = exec.serialize();
+        let restored =
+            PostgresScanExec::deserialize(&bytes).expect("deserialization should succeed");
+
+        assert_eq!(
+            restored.where_clause,
+            Some(" WHERE \"status\" = 'active' AND \"amount\" >= 50".to_string())
+        );
+        assert_eq!(restored.conn_string, exec.conn_string);
+        assert_eq!(restored.pg_table, exec.pg_table);
+        assert_eq!(restored.offset, exec.offset);
+        assert_eq!(restored.limit, exec.limit);
+        assert_eq!(restored.order_column, exec.order_column);
     }
 
     #[test]

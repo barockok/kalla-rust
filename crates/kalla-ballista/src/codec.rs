@@ -300,6 +300,7 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
                 let total_rows = info["total_rows"].as_u64().unwrap_or(0);
                 let num_partitions = info["num_partitions"].as_u64().unwrap_or(1) as usize;
                 let order_column = info["order_column"].as_str().map(|s| s.to_string());
+                let where_clause = info["where_clause"].as_str().map(|s| s.to_string());
 
                 // Reconstruct without connecting — schema and row count are provided.
                 // Wrap in LazyPostgresTable so scan() returns serializable
@@ -312,6 +313,7 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
                         total_rows,
                         num_partitions,
                         order_column,
+                        where_clause,
                     );
                 Ok(Arc::new(LazyPostgresTable(table)))
             }
@@ -374,6 +376,7 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
                 "total_rows": pg.total_rows(),
                 "num_partitions": pg.num_partitions(),
                 "order_column": pg.order_column(),
+                "where_clause": pg.where_clause(),
             });
             buf.extend_from_slice(
                 serde_json::to_vec(&info)
@@ -467,6 +470,7 @@ mod tests {
             500,
             250,
             Some("invoice_id".to_string()),
+            None,
         );
 
         // Encode
@@ -497,6 +501,48 @@ mod tests {
         assert_eq!(restored.schema.fields().len(), 4);
         assert_eq!(restored.schema.field(0).name(), "id");
         assert_eq!(*restored.schema.field(0).data_type(), DataType::Int64);
+        assert_eq!(restored.where_clause, None);
+    }
+
+    #[test]
+    fn test_codec_roundtrip_postgres_with_where_clause() {
+        let codec = KallaPhysicalCodec::new();
+        let schema = pg_schema();
+
+        let exec = PostgresScanExec::new(
+            "postgres://user:pass@host:5432/db".to_string(),
+            "invoices".to_string(),
+            Arc::clone(&schema),
+            0,
+            1000,
+            Some("invoice_id".to_string()),
+            Some(" WHERE \"status\" = 'active'".to_string()),
+        );
+
+        // Encode
+        let mut buf = Vec::new();
+        codec
+            .try_encode(Arc::new(exec), &mut buf)
+            .expect("encode should succeed");
+
+        // Decode
+        let registry = empty_registry();
+        let decoded = codec
+            .try_decode(&buf, &[], registry.as_ref())
+            .expect("decode should succeed");
+
+        let restored = decoded
+            .as_any()
+            .downcast_ref::<PostgresScanExec>()
+            .expect("should downcast to PostgresScanExec");
+
+        assert_eq!(
+            restored.where_clause,
+            Some(" WHERE \"status\" = 'active'".to_string())
+        );
+        assert_eq!(restored.pg_table, "invoices");
+        assert_eq!(restored.offset, 0);
+        assert_eq!(restored.limit, 1000);
     }
 
     #[test]

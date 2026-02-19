@@ -65,6 +65,7 @@ pub struct PostgresPartitionedTable {
     total_rows: u64,
     num_partitions: usize,
     order_column: Option<String>,
+    where_clause: Option<String>,
 }
 
 impl fmt::Debug for PostgresPartitionedTable {
@@ -74,6 +75,7 @@ impl fmt::Debug for PostgresPartitionedTable {
             .field("total_rows", &self.total_rows)
             .field("num_partitions", &self.num_partitions)
             .field("order_column", &self.order_column)
+            .field("where_clause", &self.where_clause)
             .finish()
     }
 }
@@ -88,6 +90,7 @@ impl PostgresPartitionedTable {
         pg_table: &str,
         num_partitions: usize,
         order_column: Option<String>,
+        where_clause: Option<String>,
     ) -> anyhow::Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(2)
@@ -97,14 +100,15 @@ impl PostgresPartitionedTable {
         // Infer schema from information_schema.columns
         let schema = infer_schema(&pool, pg_table).await?;
 
-        // Count total rows
-        let count_query = format!("SELECT COUNT(*) AS cnt FROM \"{}\"", pg_table);
+        // Count total rows (with optional WHERE clause)
+        let wc = where_clause.as_deref().unwrap_or("");
+        let count_query = format!("SELECT COUNT(*) AS cnt FROM \"{}\"{}", pg_table, wc);
         let row: (i64,) = sqlx::query_as(&count_query).fetch_one(&pool).await?;
         let total_rows = row.0 as u64;
 
         info!(
-            "PostgresPartitionedTable: table='{}', rows={}, partitions={}, order_col={:?}",
-            pg_table, total_rows, num_partitions, order_column
+            "PostgresPartitionedTable: table='{}', rows={}, partitions={}, order_col={:?}, where={:?}",
+            pg_table, total_rows, num_partitions, order_column, where_clause
         );
 
         pool.close().await;
@@ -116,6 +120,7 @@ impl PostgresPartitionedTable {
             total_rows,
             num_partitions,
             order_column,
+            where_clause,
         })
     }
 
@@ -128,6 +133,7 @@ impl PostgresPartitionedTable {
         total_rows: u64,
         num_partitions: usize,
         order_column: Option<String>,
+        where_clause: Option<String>,
     ) -> Self {
         Self {
             conn_string,
@@ -136,6 +142,7 @@ impl PostgresPartitionedTable {
             total_rows,
             num_partitions,
             order_column,
+            where_clause,
         }
     }
 
@@ -167,6 +174,11 @@ impl PostgresPartitionedTable {
     /// Access the inferred Arrow schema.
     pub fn arrow_schema(&self) -> &SchemaRef {
         &self.schema
+    }
+
+    /// Access the optional WHERE clause.
+    pub fn where_clause(&self) -> Option<&str> {
+        self.where_clause.as_deref()
     }
 }
 
@@ -241,15 +253,16 @@ impl TableProvider for PostgresPartitionedTable {
 
         let mut partitions: Vec<Vec<arrow::array::RecordBatch>> = Vec::with_capacity(ranges.len());
 
+        let wc = self.where_clause.as_deref().unwrap_or("");
         for (offset, limit) in &ranges {
             let query = match &self.order_column {
                 Some(col) => format!(
-                    "SELECT {} FROM \"{}\" ORDER BY \"{}\" LIMIT {} OFFSET {}",
-                    columns_sql, self.pg_table, col, limit, offset
+                    "SELECT {} FROM \"{}\"{} ORDER BY \"{}\" LIMIT {} OFFSET {}",
+                    columns_sql, self.pg_table, wc, col, limit, offset
                 ),
                 None => format!(
-                    "SELECT {} FROM \"{}\" LIMIT {} OFFSET {}",
-                    columns_sql, self.pg_table, limit, offset
+                    "SELECT {} FROM \"{}\"{} LIMIT {} OFFSET {}",
+                    columns_sql, self.pg_table, wc, limit, offset
                 ),
             };
 
@@ -287,9 +300,16 @@ pub async fn register(
     pg_table: &str,
     num_partitions: usize,
     order_column: Option<String>,
+    where_clause: Option<String>,
 ) -> anyhow::Result<()> {
-    let table =
-        PostgresPartitionedTable::new(conn_string, pg_table, num_partitions, order_column).await?;
+    let table = PostgresPartitionedTable::new(
+        conn_string,
+        pg_table,
+        num_partitions,
+        order_column,
+        where_clause,
+    )
+    .await?;
     ctx.register_table(table_name, Arc::new(table))?;
     info!(
         "Registered PostgresPartitionedTable '{}' -> '{}'",

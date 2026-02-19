@@ -48,6 +48,8 @@ pub struct JobRequest {
 pub struct ResolvedSource {
     pub alias: String,
     pub uri: String,
+    #[serde(default)]
+    pub filters: Vec<kalla_connectors::FilterCondition>,
 }
 
 /// Response returned when a job is accepted.
@@ -347,9 +349,10 @@ async fn register_source(
     alias: &str,
     uri: &str,
     partitions: usize,
+    filters: &[kalla_connectors::FilterCondition],
 ) -> anyhow::Result<u64> {
     let row_count = registry
-        .register_source(engine.context(), alias, uri, partitions)
+        .register_source(engine.context(), alias, uri, partitions, filters)
         .await?;
 
     // Factories that return 0 don't know the row count at registration time.
@@ -653,6 +656,7 @@ async fn execute_job_inner(
             &source.alias,
             &source.uri,
             config.partitions,
+            &source.filters,
         )
         .await?;
         source_row_counts.insert(source.alias.clone(), row_count);

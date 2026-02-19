@@ -45,6 +45,7 @@ impl ScanLazy for PostgresPartitionedTable {
                 *offset,
                 *limit,
                 self.order_column().map(|s| s.to_string()),
+                self.where_clause().map(|s| s.to_string()),
             )));
         }
 
