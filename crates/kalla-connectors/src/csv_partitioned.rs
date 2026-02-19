@@ -258,6 +258,60 @@ impl CsvByteRangeTable {
             .collect::<Vec<_>>()
             .join(",")
     }
+
+    /// Serialize this table provider to bytes for the wire codec.
+    pub fn wire_serialize(&self) -> Vec<u8> {
+        let info = serde_json::json!({
+            "s3_uri": self.s3_uri,
+            "total_size": self.file_size,
+            "num_partitions": self.num_partitions,
+            "header_line": self.header_line(),
+            "s3_config": self.s3_config,
+        });
+        serde_json::to_vec(&info).expect("CsvByteRangeTable serialization cannot fail")
+    }
+
+    /// Deserialize from bytes + schema into a `CsvByteRangeTable`.
+    pub fn wire_deserialize(
+        buf: &[u8],
+        schema: SchemaRef,
+    ) -> datafusion::error::Result<Self> {
+        let info: serde_json::Value = serde_json::from_slice(buf).map_err(|e| {
+            datafusion::error::DataFusionError::Internal(format!(
+                "failed to deserialize CsvByteRangeTable: {e}"
+            ))
+        })?;
+
+        let s3_uri = info["s3_uri"]
+            .as_str()
+            .ok_or_else(|| {
+                datafusion::error::DataFusionError::Internal("missing s3_uri".into())
+            })?
+            .to_string();
+        let total_size = info["total_size"].as_u64().unwrap_or(0);
+        let num_partitions = info["num_partitions"].as_u64().unwrap_or(1) as usize;
+        let header_line = info["header_line"]
+            .as_str()
+            .ok_or_else(|| {
+                datafusion::error::DataFusionError::Internal("missing header_line".into())
+            })?
+            .to_string();
+        let s3_config: S3Config =
+            serde_json::from_value(info["s3_config"].clone()).map_err(|e| {
+                datafusion::error::DataFusionError::Internal(format!(
+                    "failed to deserialize S3Config: {e}"
+                ))
+            })?;
+
+        Ok(Self::from_parts(
+            s3_uri,
+            schema,
+            total_size,
+            num_partitions,
+            header_line,
+            s3_config,
+        ))
+    }
 }
 
 #[async_trait]
@@ -649,6 +703,53 @@ fn parse_data_type(s: &str) -> DataType {
         "Utf8" => DataType::Utf8,
         "Binary" => DataType::Binary,
         _ => DataType::Utf8,
+    }
+}
+
+// ===========================================================================
+// Wire codec entries
+// ===========================================================================
+
+/// Wire tag for [`CsvRangeScanExec`].
+pub const WIRE_TAG_CSV_EXEC: u8 = 0x02;
+
+/// Wire tag for [`CsvByteRangeTable`].
+pub const WIRE_TAG_CSV_TABLE: u8 = 0x02;
+
+/// Codec entry for serializing/deserializing [`CsvRangeScanExec`].
+pub fn csv_exec_codec_entry() -> crate::wire::ExecCodecEntry {
+    crate::wire::ExecCodecEntry {
+        tag: WIRE_TAG_CSV_EXEC,
+        type_name: "CsvRangeScanExec",
+        try_encode: |any| {
+            any.downcast_ref::<CsvRangeScanExec>()
+                .map(|csv| csv.serialize())
+        },
+        try_decode: |buf| {
+            CsvRangeScanExec::deserialize(buf)
+                .map(|e| Arc::new(e) as Arc<dyn datafusion::physical_plan::ExecutionPlan>)
+                .map_err(|e| {
+                    datafusion::error::DataFusionError::Internal(format!(
+                        "failed to deserialize CsvRangeScanExec: {e}"
+                    ))
+                })
+        },
+    }
+}
+
+/// Codec entry for serializing/deserializing [`CsvByteRangeTable`].
+pub fn csv_table_codec_entry() -> crate::wire::TableCodecEntry {
+    crate::wire::TableCodecEntry {
+        tag: WIRE_TAG_CSV_TABLE,
+        type_name: "CsvByteRangeTable",
+        try_encode: |any| {
+            any.downcast_ref::<CsvByteRangeTable>()
+                .map(|csv| csv.wire_serialize())
+        },
+        try_decode: |buf, schema| {
+            CsvByteRangeTable::wire_deserialize(buf, schema)
+                .map(|t| Arc::new(t) as Arc<dyn datafusion::catalog::TableProvider>)
+        },
     }
 }
 

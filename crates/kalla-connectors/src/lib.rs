@@ -12,6 +12,7 @@ pub mod factory;
 pub mod filter;
 pub mod postgres;
 pub mod s3;
+pub mod wire;
 
 pub use csv_partitioned::{CsvByteRangeTable, CsvRangeScanExec};
 pub use error::ConnectorError;
@@ -19,3 +20,4 @@ pub use factory::register_source;
 pub use filter::{build_where_clause, FilterCondition, FilterOp, FilterValue};
 pub use postgres::{PostgresPartitionedTable, PostgresScanExec};
 pub use s3::{S3Config, S3Connector};
+pub use wire::{exec_codecs, table_codecs, ExecCodecEntry, TableCodecEntry};

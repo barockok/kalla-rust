@@ -2,18 +2,16 @@
 //!
 //! Wraps Ballista's `BallistaPhysicalExtensionCodec` to handle both
 //! Ballista-internal nodes (ShuffleWriterExec, ShuffleReaderExec, etc.)
-//! and Kalla's custom nodes (`PostgresScanExec`, `CsvRangeScanExec`).
+//! and Kalla's custom nodes.
 //!
 //! ## Wire format for Kalla nodes
 //!
-//! Each serialized payload is prefixed with a single tag byte:
+//! Each serialized payload is prefixed with a single tag byte followed by
+//! a JSON payload.  Tag assignments and encode/decode logic are defined by
+//! each connector via [`kalla_connectors::wire`] — this codec is a generic
+//! dispatcher that iterates the registry.
 //!
-//! - `0x01` = `PostgresScanExec`
-//! - `0x02` = `CsvRangeScanExec`
-//!
-//! The remaining bytes are the JSON payload produced by each node's
-//! `serialize()` method. Ballista-internal nodes are delegated to
-//! `BallistaPhysicalExtensionCodec`.
+//! Adding a new connector requires **zero changes** to this file.
 
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -25,15 +23,7 @@ use datafusion::logical_expr::ScalarUDF;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 
-use kalla_connectors::CsvRangeScanExec;
-use kalla_connectors::PostgresScanExec;
-
-// ---------------------------------------------------------------------------
-// Tag bytes
-// ---------------------------------------------------------------------------
-
-const TAG_POSTGRES_SCAN: u8 = 0x01;
-const TAG_CSV_RANGE_SCAN: u8 = 0x02;
+use kalla_connectors::{ExecCodecEntry, TableCodecEntry};
 
 // ---------------------------------------------------------------------------
 // KallaPhysicalCodec
@@ -44,15 +34,24 @@ const TAG_CSV_RANGE_SCAN: u8 = 0x02;
 ///
 /// Delegates to [`BallistaPhysicalExtensionCodec`] for Ballista-internal nodes
 /// like `ShuffleWriterExec` and `ShuffleReaderExec`.
-#[derive(Debug)]
 pub struct KallaPhysicalCodec {
     inner: BallistaPhysicalExtensionCodec,
+    exec_codecs: Vec<ExecCodecEntry>,
+}
+
+impl Debug for KallaPhysicalCodec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KallaPhysicalCodec")
+            .field("exec_codecs_count", &self.exec_codecs.len())
+            .finish()
+    }
 }
 
 impl KallaPhysicalCodec {
     pub fn new() -> Self {
         Self {
             inner: BallistaPhysicalExtensionCodec::default(),
+            exec_codecs: kalla_connectors::exec_codecs(),
         }
     }
 }
@@ -80,24 +79,10 @@ impl PhysicalExtensionCodec for KallaPhysicalCodec {
         let payload = &buf[1..];
 
         // Try Kalla custom nodes first (identified by tag byte)
-        match tag {
-            TAG_POSTGRES_SCAN => {
-                let exec = PostgresScanExec::deserialize(payload).map_err(|e| {
-                    DataFusionError::Internal(format!(
-                        "KallaPhysicalCodec: failed to deserialize PostgresScanExec: {e}"
-                    ))
-                })?;
-                return Ok(Arc::new(exec));
+        for entry in &self.exec_codecs {
+            if entry.tag == tag {
+                return (entry.try_decode)(payload);
             }
-            TAG_CSV_RANGE_SCAN => {
-                let exec = CsvRangeScanExec::deserialize(payload).map_err(|e| {
-                    DataFusionError::Internal(format!(
-                        "KallaPhysicalCodec: failed to deserialize CsvRangeScanExec: {e}"
-                    ))
-                })?;
-                return Ok(Arc::new(exec));
-            }
-            _ => {}
         }
 
         // Delegate to Ballista's codec for internal nodes (ShuffleWriter, etc.)
@@ -106,18 +91,16 @@ impl PhysicalExtensionCodec for KallaPhysicalCodec {
 
     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> DFResult<()> {
         // Try Kalla custom nodes first
-        if let Some(pg) = node.as_any().downcast_ref::<PostgresScanExec>() {
-            buf.push(TAG_POSTGRES_SCAN);
-            buf.extend_from_slice(&pg.serialize());
-            Ok(())
-        } else if let Some(csv) = node.as_any().downcast_ref::<CsvRangeScanExec>() {
-            buf.push(TAG_CSV_RANGE_SCAN);
-            buf.extend_from_slice(&csv.serialize());
-            Ok(())
-        } else {
-            // Delegate to Ballista's codec for internal nodes
-            self.inner.try_encode(node, buf)
+        for entry in &self.exec_codecs {
+            if let Some(bytes) = (entry.try_encode)(node.as_any()) {
+                buf.push(entry.tag);
+                buf.extend_from_slice(&bytes);
+                return Ok(());
+            }
         }
+
+        // Delegate to Ballista's codec for internal nodes
+        self.inner.try_encode(node, buf)
     }
 
     fn try_decode_udf(&self, name: &str, buf: &[u8]) -> DFResult<Arc<ScalarUDF>> {
@@ -137,24 +120,29 @@ impl PhysicalExtensionCodec for KallaPhysicalCodec {
 // KallaLogicalCodec
 // ---------------------------------------------------------------------------
 
-/// Tag bytes for logical-level serialization of custom table providers.
-const LOGICAL_TAG_POSTGRES: u8 = 0x01;
-const LOGICAL_TAG_CSV_BYTE_RANGE: u8 = 0x02;
-
 /// A [`LogicalExtensionCodec`] that handles serialization of Kalla's custom
-/// `TableProvider` implementations (`PostgresPartitionedTable`, `CsvByteRangeTable`)
-/// so Ballista can ship logical plans to the scheduler.
+/// `TableProvider` implementations so Ballista can ship logical plans to the
+/// scheduler.
 ///
 /// Delegates to [`BallistaLogicalExtensionCodec`] for Ballista-internal nodes.
-#[derive(Debug)]
 pub struct KallaLogicalCodec {
     inner: ballista_core::serde::BallistaLogicalExtensionCodec,
+    table_codecs: Vec<TableCodecEntry>,
+}
+
+impl Debug for KallaLogicalCodec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KallaLogicalCodec")
+            .field("table_codecs_count", &self.table_codecs.len())
+            .finish()
+    }
 }
 
 impl KallaLogicalCodec {
     pub fn new() -> Self {
         Self {
             inner: ballista_core::serde::BallistaLogicalExtensionCodec::default(),
+            table_codecs: kalla_connectors::table_codecs(),
         }
     }
 }
@@ -199,80 +187,15 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
         let tag = buf[0];
         let payload = &buf[1..];
 
-        match tag {
-            LOGICAL_TAG_POSTGRES => {
-                let info: serde_json::Value = serde_json::from_slice(payload).map_err(|e| {
-                    DataFusionError::Internal(format!(
-                        "KallaLogicalCodec: failed to deserialize PostgresPartitionedTable: {e}"
-                    ))
-                })?;
-
-                let conn_string = info["conn_string"]
-                    .as_str()
-                    .ok_or_else(|| DataFusionError::Internal("missing conn_string".into()))?
-                    .to_string();
-                let pg_table = info["pg_table"]
-                    .as_str()
-                    .ok_or_else(|| DataFusionError::Internal("missing pg_table".into()))?
-                    .to_string();
-                let total_rows = info["total_rows"].as_u64().unwrap_or(0);
-                let num_partitions = info["num_partitions"].as_u64().unwrap_or(1) as usize;
-                let order_column = info["order_column"].as_str().map(|s| s.to_string());
-                let where_clause = info["where_clause"].as_str().map(|s| s.to_string());
-
-                // Reconstruct without connecting — schema and row count are provided.
-                // scan() now returns lazy PostgresScanExec nodes directly.
-                let table =
-                    kalla_connectors::postgres::PostgresPartitionedTable::from_parts(
-                        conn_string,
-                        pg_table,
-                        schema,
-                        total_rows,
-                        num_partitions,
-                        order_column,
-                        where_clause,
-                    );
-                Ok(Arc::new(table))
+        for entry in &self.table_codecs {
+            if entry.tag == tag {
+                return (entry.try_decode)(payload, schema);
             }
-            LOGICAL_TAG_CSV_BYTE_RANGE => {
-                let info: serde_json::Value = serde_json::from_slice(payload).map_err(|e| {
-                    DataFusionError::Internal(format!(
-                        "KallaLogicalCodec: failed to deserialize CsvByteRangeTable: {e}"
-                    ))
-                })?;
-
-                let s3_uri = info["s3_uri"]
-                    .as_str()
-                    .ok_or_else(|| DataFusionError::Internal("missing s3_uri".into()))?
-                    .to_string();
-                let total_size = info["total_size"].as_u64().unwrap_or(0);
-                let num_partitions = info["num_partitions"].as_u64().unwrap_or(1) as usize;
-                let header_line = info["header_line"]
-                    .as_str()
-                    .ok_or_else(|| DataFusionError::Internal("missing header_line".into()))?
-                    .to_string();
-                let s3_config: kalla_connectors::s3::S3Config =
-                    serde_json::from_value(info["s3_config"].clone()).map_err(|e| {
-                        DataFusionError::Internal(format!(
-                            "KallaLogicalCodec: failed to deserialize S3Config: {e}"
-                        ))
-                    })?;
-
-                // scan() now returns lazy CsvRangeScanExec nodes directly.
-                let table = kalla_connectors::csv_partitioned::CsvByteRangeTable::from_parts(
-                    s3_uri,
-                    schema,
-                    total_size,
-                    num_partitions,
-                    header_line,
-                    s3_config,
-                );
-                Ok(Arc::new(table))
-            }
-            _ => Err(DataFusionError::Internal(format!(
-                "KallaLogicalCodec: unknown table provider tag 0x{tag:02x}"
-            ))),
         }
+
+        Err(DataFusionError::Internal(format!(
+            "KallaLogicalCodec: unknown table provider tag 0x{tag:02x}"
+        )))
     }
 
     fn try_encode_table_provider(
@@ -281,47 +204,16 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
         node: Arc<dyn datafusion::catalog::TableProvider>,
         buf: &mut Vec<u8>,
     ) -> DFResult<()> {
-        if let Some(pg) =
-            node.as_any()
-                .downcast_ref::<kalla_connectors::postgres::PostgresPartitionedTable>()
-        {
-            buf.push(LOGICAL_TAG_POSTGRES);
-            let info = serde_json::json!({
-                "conn_string": pg.conn_string(),
-                "pg_table": pg.pg_table(),
-                "total_rows": pg.total_rows(),
-                "num_partitions": pg.num_partitions(),
-                "order_column": pg.order_column(),
-                "where_clause": pg.where_clause(),
-            });
-            buf.extend_from_slice(
-                serde_json::to_vec(&info)
-                    .map_err(|e| DataFusionError::Internal(format!("serialize error: {e}")))?
-                    .as_slice(),
-            );
-            Ok(())
-        } else if let Some(csv) = node
-            .as_any()
-            .downcast_ref::<kalla_connectors::csv_partitioned::CsvByteRangeTable>()
-        {
-            buf.push(LOGICAL_TAG_CSV_BYTE_RANGE);
-            let info = serde_json::json!({
-                "s3_uri": csv.s3_uri(),
-                "total_size": csv.total_size(),
-                "num_partitions": csv.num_partitions(),
-                "header_line": csv.header_line(),
-                "s3_config": csv.s3_config(),
-            });
-            buf.extend_from_slice(
-                serde_json::to_vec(&info)
-                    .map_err(|e| DataFusionError::Internal(format!("serialize error: {e}")))?
-                    .as_slice(),
-            );
-            Ok(())
-        } else {
-            // Delegate to Ballista's inner codec for any other table providers
-            self.inner.try_encode_table_provider(table_ref, node, buf)
+        for entry in &self.table_codecs {
+            if let Some(bytes) = (entry.try_encode)(node.as_any()) {
+                buf.push(entry.tag);
+                buf.extend_from_slice(&bytes);
+                return Ok(());
+            }
         }
+
+        // Delegate to Ballista's inner codec for any other table providers
+        self.inner.try_encode_table_provider(table_ref, node, buf)
     }
 
     fn try_decode_udf(&self, name: &str, buf: &[u8]) -> DFResult<Arc<ScalarUDF>> {
@@ -341,6 +233,7 @@ mod tests {
     use super::*;
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use kalla_connectors::s3::S3Config;
+    use kalla_connectors::{CsvRangeScanExec, PostgresScanExec};
 
     fn pg_schema() -> SchemaRef {
         Arc::new(Schema::new(vec![
@@ -396,7 +289,10 @@ mod tests {
             .expect("encode should succeed");
 
         // First byte should be the postgres tag.
-        assert_eq!(buf[0], TAG_POSTGRES_SCAN);
+        assert_eq!(
+            buf[0],
+            kalla_connectors::postgres::WIRE_TAG_POSTGRES_EXEC
+        );
 
         // Decode
         let registry = empty_registry();
@@ -483,7 +379,10 @@ mod tests {
             .expect("encode should succeed");
 
         // First byte should be the csv tag.
-        assert_eq!(buf[0], TAG_CSV_RANGE_SCAN);
+        assert_eq!(
+            buf[0],
+            kalla_connectors::csv_partitioned::WIRE_TAG_CSV_EXEC
+        );
 
         // Decode
         let registry = empty_registry();
@@ -547,7 +446,12 @@ mod tests {
         let registry = empty_registry();
 
         // Valid tag but garbage payload
-        let buf = vec![TAG_POSTGRES_SCAN, 0x00, 0x01, 0x02];
+        let buf = vec![
+            kalla_connectors::postgres::WIRE_TAG_POSTGRES_EXEC,
+            0x00,
+            0x01,
+            0x02,
+        ];
         let result = codec.try_decode(&buf, &[], registry.as_ref());
 
         assert!(result.is_err());

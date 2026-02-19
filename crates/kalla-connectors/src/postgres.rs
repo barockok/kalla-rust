@@ -199,6 +199,58 @@ impl PostgresPartitionedTable {
     pub fn where_clause(&self) -> Option<&str> {
         self.where_clause.as_deref()
     }
+
+    /// Serialize this table provider to bytes for the wire codec.
+    pub fn wire_serialize(&self) -> Vec<u8> {
+        let info = serde_json::json!({
+            "conn_string": self.conn_string,
+            "pg_table": self.pg_table,
+            "total_rows": self.total_rows,
+            "num_partitions": self.num_partitions,
+            "order_column": self.order_column,
+            "where_clause": self.where_clause,
+        });
+        serde_json::to_vec(&info).expect("PostgresPartitionedTable serialization cannot fail")
+    }
+
+    /// Deserialize from bytes + schema into a `PostgresPartitionedTable`.
+    pub fn wire_deserialize(
+        buf: &[u8],
+        schema: SchemaRef,
+    ) -> datafusion::error::Result<Self> {
+        let info: serde_json::Value = serde_json::from_slice(buf).map_err(|e| {
+            datafusion::error::DataFusionError::Internal(format!(
+                "failed to deserialize PostgresPartitionedTable: {e}"
+            ))
+        })?;
+
+        let conn_string = info["conn_string"]
+            .as_str()
+            .ok_or_else(|| {
+                datafusion::error::DataFusionError::Internal("missing conn_string".into())
+            })?
+            .to_string();
+        let pg_table = info["pg_table"]
+            .as_str()
+            .ok_or_else(|| {
+                datafusion::error::DataFusionError::Internal("missing pg_table".into())
+            })?
+            .to_string();
+        let total_rows = info["total_rows"].as_u64().unwrap_or(0);
+        let num_partitions = info["num_partitions"].as_u64().unwrap_or(1) as usize;
+        let order_column = info["order_column"].as_str().map(|s| s.to_string());
+        let where_clause = info["where_clause"].as_str().map(|s| s.to_string());
+
+        Ok(Self::from_parts(
+            conn_string,
+            pg_table,
+            schema,
+            total_rows,
+            num_partitions,
+            order_column,
+            where_clause,
+        ))
+    }
 }
 
 #[async_trait]
@@ -666,6 +718,53 @@ fn parse_data_type(s: &str) -> DataType {
         "Utf8" => DataType::Utf8,
         "Binary" => DataType::Binary,
         _ => DataType::Utf8,
+    }
+}
+
+// ===========================================================================
+// Wire codec entries
+// ===========================================================================
+
+/// Wire tag for [`PostgresScanExec`].
+pub const WIRE_TAG_POSTGRES_EXEC: u8 = 0x01;
+
+/// Wire tag for [`PostgresPartitionedTable`].
+pub const WIRE_TAG_POSTGRES_TABLE: u8 = 0x01;
+
+/// Codec entry for serializing/deserializing [`PostgresScanExec`].
+pub fn postgres_exec_codec_entry() -> crate::wire::ExecCodecEntry {
+    crate::wire::ExecCodecEntry {
+        tag: WIRE_TAG_POSTGRES_EXEC,
+        type_name: "PostgresScanExec",
+        try_encode: |any| {
+            any.downcast_ref::<PostgresScanExec>()
+                .map(|pg| pg.serialize())
+        },
+        try_decode: |buf| {
+            PostgresScanExec::deserialize(buf)
+                .map(|e| Arc::new(e) as Arc<dyn datafusion::physical_plan::ExecutionPlan>)
+                .map_err(|e| {
+                    datafusion::error::DataFusionError::Internal(format!(
+                        "failed to deserialize PostgresScanExec: {e}"
+                    ))
+                })
+        },
+    }
+}
+
+/// Codec entry for serializing/deserializing [`PostgresPartitionedTable`].
+pub fn postgres_table_codec_entry() -> crate::wire::TableCodecEntry {
+    crate::wire::TableCodecEntry {
+        tag: WIRE_TAG_POSTGRES_TABLE,
+        type_name: "PostgresPartitionedTable",
+        try_encode: |any| {
+            any.downcast_ref::<PostgresPartitionedTable>()
+                .map(|pg| pg.wire_serialize())
+        },
+        try_decode: |buf, schema| {
+            PostgresPartitionedTable::wire_deserialize(buf, schema)
+                .map(|t| Arc::new(t) as Arc<dyn datafusion::catalog::TableProvider>)
+        },
     }
 }
 
