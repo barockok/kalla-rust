@@ -15,13 +15,11 @@ pub trait ConnectorFactory: Send + Sync {
     /// Returns `true` if this factory can handle the given URI.
     fn can_handle(&self, uri: &str) -> bool;
 
-    /// Returns `true` if this factory supports pushing filters down at registration time.
-    fn supports_filter_pushdown(&self) -> bool {
-        false
-    }
-
     /// Register the source under `alias` with the given context.
     /// Returns the total row count of the registered source.
+    ///
+    /// Each factory decides how to handle `filters` — e.g. Postgres pushes
+    /// them into the WHERE clause, while file-based connectors may ignore them.
     async fn register(
         &self,
         ctx: &SessionContext,
@@ -44,10 +42,8 @@ impl ConnectorRegistry {
     }
 
     /// Register a source by finding the first factory that can handle the URI.
-    ///
-    /// If `filters` are provided and the factory does not support pushdown,
-    /// the source is registered under a raw alias and a DataFusion view with
-    /// the WHERE clause is created as `alias`.
+    /// Filters are passed through to the factory — each connector decides
+    /// how to apply them.
     pub async fn register_source(
         &self,
         ctx: &SessionContext,
@@ -58,24 +54,6 @@ impl ConnectorRegistry {
     ) -> Result<u64> {
         for factory in &self.factories {
             if factory.can_handle(uri) {
-                if !filters.is_empty() && !factory.supports_filter_pushdown() {
-                    // Register under a raw alias, then create a view with WHERE clause.
-                    let raw_alias = format!("__raw_{}", alias);
-                    let row_count = factory
-                        .register(ctx, &raw_alias, uri, partitions, filters)
-                        .await?;
-                    let where_clause = build_where_clause(filters);
-                    let view_sql = format!(
-                        "CREATE VIEW \"{}\" AS SELECT * FROM \"{}\"{}",
-                        alias, raw_alias, where_clause
-                    );
-                    ctx.sql(&view_sql).await?;
-                    info!(
-                        "Created filtered view '{}' over '{}' with{}",
-                        alias, raw_alias, where_clause
-                    );
-                    return Ok(row_count);
-                }
                 return factory.register(ctx, alias, uri, partitions, filters).await;
             }
         }
@@ -94,10 +72,6 @@ pub struct PostgresFactory;
 impl ConnectorFactory for PostgresFactory {
     fn can_handle(&self, uri: &str) -> bool {
         uri.starts_with("postgres://") || uri.starts_with("postgresql://")
-    }
-
-    fn supports_filter_pushdown(&self) -> bool {
-        true
     }
 
     async fn register(
