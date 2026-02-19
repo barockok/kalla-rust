@@ -75,6 +75,23 @@ pub struct MatchedRecord {
     pub matched_at: DateTime<Utc>,
 }
 
+/// Which side of the reconciliation a record belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    Left,
+    Right,
+}
+
+impl Side {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Side::Left => "left",
+            Side::Right => "right",
+        }
+    }
+}
+
 /// An unmatched record entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnmatchedRecord {

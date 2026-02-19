@@ -5,5 +5,5 @@
 pub mod schema;
 pub mod store;
 
-pub use schema::{MatchedRecord, RunMetadata, RunStatus, UnmatchedRecord};
+pub use schema::{MatchedRecord, RunMetadata, RunStatus, Side, UnmatchedRecord};
 pub use store::EvidenceStore;

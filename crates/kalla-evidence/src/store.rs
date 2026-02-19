@@ -122,10 +122,10 @@ impl EvidenceStore {
         &self,
         run_id: &Uuid,
         records: &[UnmatchedRecord],
-        side: &str, // "left" or "right"
+        side: crate::schema::Side,
     ) -> Result<PathBuf> {
         let run_path = self.run_path(run_id);
-        let filename = format!("unmatched_{}.parquet", side);
+        let filename = format!("unmatched_{}.parquet", side.as_str());
         let output_path = run_path.join(&filename);
 
         let schema = Arc::new(Schema::new(vec![
@@ -175,7 +175,7 @@ impl EvidenceStore {
         info!(
             "Wrote {} unmatched {} records to {:?}",
             records.len(),
-            side,
+            side.as_str(),
             output_path
         );
         Ok(output_path)
@@ -212,7 +212,7 @@ impl EvidenceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::RunStatus;
+    use crate::schema::{RunStatus, Side};
     use arrow::array::Array;
     use tempfile::tempdir;
 
@@ -378,7 +378,7 @@ mod tests {
 
         let records = test_unmatched_records(4);
         let path = store
-            .write_unmatched(&metadata.run_id, &records, "left")
+            .write_unmatched(&metadata.run_id, &records, Side::Left)
             .unwrap();
 
         assert!(path.exists());
@@ -394,7 +394,7 @@ mod tests {
 
         let records = test_unmatched_records(2);
         let path = store
-            .write_unmatched(&metadata.run_id, &records, "right")
+            .write_unmatched(&metadata.run_id, &records, Side::Right)
             .unwrap();
 
         assert!(path.exists());
@@ -412,7 +412,7 @@ mod tests {
 
         let records = test_unmatched_records(3);
         let path = store
-            .write_unmatched(&metadata.run_id, &records, "left")
+            .write_unmatched(&metadata.run_id, &records, Side::Left)
             .unwrap();
 
         let file = File::open(&path).unwrap();
@@ -451,7 +451,7 @@ mod tests {
         store.init_run(&metadata).unwrap();
 
         let path = store
-            .write_unmatched(&metadata.run_id, &[], "left")
+            .write_unmatched(&metadata.run_id, &[], Side::Left)
             .unwrap();
         assert!(path.exists());
     }
@@ -578,7 +578,7 @@ mod tests {
             },
         ];
         let path = store
-            .write_unmatched(&metadata.run_id, &records, "left")
+            .write_unmatched(&metadata.run_id, &records, Side::Left)
             .unwrap();
 
         let file = File::open(&path).unwrap();

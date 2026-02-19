@@ -36,6 +36,10 @@ enum Commands {
         /// Local directory for staging evidence files
         #[arg(long, default_value = "./staging", env = "STAGING_PATH")]
         staging_path: String,
+
+        /// Maximum number of concurrent jobs
+        #[arg(long, default_value = "4", env = "MAX_CONCURRENT_JOBS")]
+        max_jobs: usize,
     },
 
     /// Run a Ballista executor that connects to a scheduler
@@ -81,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
             bind_host,
             partitions,
             staging_path,
+            max_jobs,
         } => {
             kalla_ballista::start_scheduler(kalla_ballista::SchedulerOpts {
                 bind_host,
@@ -88,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
                 http_port,
                 partitions,
                 staging_path,
+                max_concurrent_jobs: max_jobs,
             })
             .await?;
         }

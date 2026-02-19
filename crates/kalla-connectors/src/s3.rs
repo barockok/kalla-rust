@@ -23,18 +23,34 @@ use crate::filter::{build_where_clause, FilterCondition};
 use crate::SourceConnector;
 
 /// Configuration for connecting to S3-compatible storage.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+///
+/// Secrets (`access_key_id`, `secret_access_key`) are redacted in `Debug`
+/// output but included in serde serialization because the Ballista codec
+/// requires them for executor-side S3 access.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct S3Config {
     /// AWS region (e.g. "us-east-1")
     pub region: String,
-    /// Access key id
+    /// Access key id (redacted in Debug output)
     pub access_key_id: String,
-    /// Secret access key
+    /// Secret access key (redacted in Debug output)
     pub secret_access_key: String,
     /// Optional custom endpoint URL (for MinIO / LocalStack)
     pub endpoint_url: Option<String>,
     /// Allow HTTP (non-TLS) connections — useful for local MinIO
     pub allow_http: bool,
+}
+
+impl std::fmt::Debug for S3Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Config")
+            .field("region", &self.region)
+            .field("access_key_id", &"***")
+            .field("secret_access_key", &"***")
+            .field("endpoint_url", &self.endpoint_url)
+            .field("allow_http", &self.allow_http)
+            .finish()
+    }
 }
 
 impl S3Config {

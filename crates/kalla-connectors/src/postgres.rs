@@ -32,10 +32,14 @@ impl PostgresConnector {
         Ok(Self { pool })
     }
 
-    /// Register a PostgreSQL table with the DataFusion context
+    /// Register a PostgreSQL table with the DataFusion context.
     ///
-    /// This loads the table data into memory as a MemTable.
-    /// For large tables, consider using filters or pagination.
+    /// **Warning:** Loads the entire table (or filtered subset) into memory as a
+    /// `MemTable`. For large tables, use `PostgresPartitionedTable` instead, which
+    /// streams data in partitions without loading everything at once.
+    #[deprecated(
+        note = "Loads entire table into memory. Use PostgresPartitionedTable for large tables."
+    )]
     pub async fn register_table(
         &self,
         ctx: &SessionContext,
@@ -152,6 +156,7 @@ impl SourceConnector for PostgresConnector {
         where_clause: Option<&str>,
     ) -> Result<()> {
         // Delegate to the existing inherent method
+        #[allow(deprecated)]
         PostgresConnector::register_table(self, ctx, table_name, source_table, where_clause).await
     }
 

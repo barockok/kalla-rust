@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use kalla_connectors::ConnectorRegistry;
 use kalla_core::ReconciliationEngine;
 use kalla_evidence::{EvidenceStore, MatchedRecord};
 
@@ -64,6 +65,59 @@ pub struct ExecResult {
 }
 
 // ---------------------------------------------------------------------------
+// Callback payloads (B1)
+// ---------------------------------------------------------------------------
+
+/// Progress callback payload.
+#[derive(Debug, Serialize)]
+#[serde(tag = "stage")]
+pub enum ProgressCallback {
+    /// Source staging progress.
+    #[serde(rename = "staging")]
+    Staging {
+        run_id: Uuid,
+        progress: f64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+    },
+    /// Match SQL execution progress.
+    #[serde(rename = "matching")]
+    Matching {
+        run_id: Uuid,
+        progress: f64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        matched_count: Option<u64>,
+    },
+}
+
+/// Output file paths included in completion callback.
+#[derive(Debug, Serialize)]
+pub struct OutputPaths {
+    pub matched: String,
+    pub unmatched_left: String,
+    pub unmatched_right: String,
+}
+
+/// Completion callback payload.
+#[derive(Debug, Serialize)]
+pub struct CompletionCallback {
+    pub run_id: Uuid,
+    pub matched_count: u64,
+    pub unmatched_left_count: u64,
+    pub unmatched_right_count: u64,
+    pub output_paths: OutputPaths,
+}
+
+/// Error callback payload.
+#[derive(Debug, Serialize)]
+pub struct ErrorCallback {
+    pub run_id: Uuid,
+    pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Callback client
 // ---------------------------------------------------------------------------
 
@@ -74,15 +128,19 @@ pub struct CallbackClient {
 
 impl CallbackClient {
     pub fn new() -> Self {
-        Self {
-            http: reqwest::Client::new(),
-        }
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(5))
+            .build()
+            .expect("Failed to build HTTP client");
+        Self { http }
     }
 
+    /// Best-effort progress report (single attempt).
     pub async fn report_progress(
         &self,
         callback_url: &str,
-        progress: &serde_json::Value,
+        progress: &ProgressCallback,
     ) -> anyhow::Result<()> {
         self.http
             .post(format!("{}/progress", callback_url))
@@ -92,23 +150,39 @@ impl CallbackClient {
         Ok(())
     }
 
+    /// Report completion with retry and exponential backoff.
+    ///
+    /// This is the most critical callback — if it fails, the caller never learns
+    /// the job finished. Retries up to 3 times with exponential backoff.
     pub async fn report_complete(
         &self,
         callback_url: &str,
-        result: &serde_json::Value,
+        result: &CompletionCallback,
     ) -> anyhow::Result<()> {
-        self.http
-            .post(format!("{}/complete", callback_url))
-            .json(result)
-            .send()
-            .await?;
-        Ok(())
+        let url = format!("{}/complete", callback_url);
+        let mut last_err = None;
+        for attempt in 0..3u32 {
+            match self.http.post(&url).json(result).send().await {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    warn!(
+                        "Completion callback attempt {} failed: {}",
+                        attempt + 1,
+                        e
+                    );
+                    last_err = Some(e);
+                    tokio::time::sleep(Duration::from_millis(500 * 2u64.pow(attempt))).await;
+                }
+            }
+        }
+        Err(last_err.unwrap().into())
     }
 
+    /// Best-effort error report (single attempt).
     pub async fn report_error(
         &self,
         callback_url: &str,
-        error: &serde_json::Value,
+        error: &ErrorCallback,
     ) -> anyhow::Result<()> {
         self.http
             .post(format!("{}/error", callback_url))
@@ -133,6 +207,7 @@ impl Default for CallbackClient {
 #[derive(Clone)]
 pub struct RunnerMetrics {
     pub active_jobs: Gauge,
+    pub queued_jobs: Gauge,
     pub jobs_completed: Counter,
     pub jobs_failed: Counter,
     pub registry: Arc<Registry>,
@@ -147,6 +222,13 @@ impl RunnerMetrics {
             "kalla_runner_active_jobs",
             "Number of jobs currently being processed",
             active_jobs.clone(),
+        );
+
+        let queued_jobs = Gauge::default();
+        registry.register(
+            "kalla_runner_queued_jobs",
+            "Number of jobs waiting for a concurrency slot",
+            queued_jobs.clone(),
         );
 
         let jobs_completed = Counter::default();
@@ -165,6 +247,7 @@ impl RunnerMetrics {
 
         Self {
             active_jobs,
+            queued_jobs,
             jobs_completed,
             jobs_failed,
             registry: Arc::new(registry),
@@ -198,6 +281,8 @@ pub struct RunnerConfig {
     pub partitions: usize,
     /// Local directory for staging evidence files.
     pub staging_path: String,
+    /// Maximum number of jobs that can execute concurrently.
+    pub max_concurrent_jobs: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -241,9 +326,13 @@ async fn health() -> StatusCode {
     StatusCode::OK
 }
 
-/// GET /ready — readiness probe.
-async fn ready() -> StatusCode {
-    StatusCode::OK
+/// GET /ready — readiness probe. Returns 503 when the job channel is full.
+async fn ready(State(state): State<Arc<RunnerState>>) -> StatusCode {
+    if state.job_tx.capacity() > 0 {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
 /// GET /metrics — Prometheus metrics endpoint.
@@ -252,73 +341,34 @@ async fn metrics_handler(State(state): State<Arc<RunnerState>>) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Source registration
+// Source registration (via ConnectorRegistry — D1)
 // ---------------------------------------------------------------------------
 
-/// Register a source with the engine, choosing partitioned registration when
-/// a partition count > 1 is provided. Returns the total row count of the source.
-async fn register_source_partitioned(
+/// Register a source using the connector registry and count rows if needed.
+async fn register_source(
+    registry: &ConnectorRegistry,
     engine: &ReconciliationEngine,
     alias: &str,
     uri: &str,
-    num_partitions: usize,
+    partitions: usize,
 ) -> anyhow::Result<u64> {
-    if uri.starts_with("postgres://") || uri.starts_with("postgresql://") {
-        let parsed = url::Url::parse(uri)?;
-        let table_name = parsed
-            .query_pairs()
-            .find(|(k, _)| k == "table")
-            .map(|(_, v)| v.to_string())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'table' query parameter in source URI"))?;
-        let mut conn_url = parsed.clone();
-        conn_url.set_query(None);
+    let row_count = registry
+        .register_source(engine.context(), alias, uri, partitions)
+        .await?;
 
-        let table = kalla_connectors::postgres_partitioned::PostgresPartitionedTable::new(
-            conn_url.as_str(),
-            &table_name,
-            num_partitions,
-            Some("ctid".to_string()),
+    // Factories that return 0 don't know the row count at registration time.
+    // Run a COUNT query to fill in the actual value.
+    if row_count == 0 {
+        let count = run_count_query(
+            engine,
+            &format!("SELECT COUNT(*) AS cnt FROM \"{}\"", alias),
         )
-        .await?;
-        let total_rows = table.total_rows();
-        engine.context().register_table(alias, Arc::new(table))?;
-        info!(
-            "Registered PostgresPartitionedTable '{}' -> '{}'",
-            table_name, alias
-        );
-        return Ok(total_rows);
-    } else if uri.starts_with("s3://") && uri.ends_with(".csv") {
-        let s3_config = kalla_connectors::S3Config::from_env()?;
-        kalla_connectors::csv_partitioned::register(
-            engine.context(),
-            alias,
-            uri,
-            num_partitions,
-            s3_config,
-        )
-        .await?;
-    } else if uri.starts_with("s3://") {
-        // S3 listing table (parquet or other)
-        let connector = kalla_connectors::S3Connector::from_env()?;
-        connector
-            .register_csv_listing_table(engine.context(), alias, uri)
-            .await?;
-    } else if uri.ends_with(".csv") {
-        engine.register_csv(alias, uri).await?;
-    } else if uri.ends_with(".parquet") || uri.contains("/staging/") {
-        engine.register_parquet(alias, uri).await?;
-    } else {
-        anyhow::bail!("Unsupported source URI format: {}", uri);
+        .await
+        .unwrap_or(0);
+        return Ok(count);
     }
 
-    // For non-Postgres sources, count rows after registration.
-    let count = run_count_query(
-        engine,
-        &format!("SELECT COUNT(*) AS cnt FROM \"{}\"", alias),
-    )
-    .await
-    .unwrap_or(0);
-    Ok(count)
+    Ok(row_count)
 }
 
 // ---------------------------------------------------------------------------
@@ -408,15 +458,40 @@ fn extract_string_value(
     column_name: &str,
     row_idx: usize,
 ) -> Option<String> {
+    use arrow::array::*;
+
     let col_idx = batch.schema().index_of(column_name).ok()?;
     let col = batch.column(col_idx);
-    if let Some(arr) = col.as_any().downcast_ref::<arrow::array::StringArray>() {
+
+    if let Some(arr) = col.as_any().downcast_ref::<StringArray>() {
         return Some(arr.value(row_idx).to_string());
     }
-    if let Some(arr) = col.as_any().downcast_ref::<arrow::array::Int64Array>() {
+    if let Some(arr) = col.as_any().downcast_ref::<LargeStringArray>() {
         return Some(arr.value(row_idx).to_string());
     }
-    None
+    if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
+        return Some(arr.value(row_idx).to_string());
+    }
+    if let Some(arr) = col.as_any().downcast_ref::<Int32Array>() {
+        return Some(arr.value(row_idx).to_string());
+    }
+    if let Some(arr) = col.as_any().downcast_ref::<Int16Array>() {
+        return Some(arr.value(row_idx).to_string());
+    }
+    if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
+        return Some(arr.value(row_idx).to_string());
+    }
+    if let Some(arr) = col.as_any().downcast_ref::<Float32Array>() {
+        return Some(arr.value(row_idx).to_string());
+    }
+    if let Some(arr) = col.as_any().downcast_ref::<BooleanArray>() {
+        return Some(arr.value(row_idx).to_string());
+    }
+
+    // Fallback: use ArrayFormatter for any unhandled type.
+    arrow::util::display::ArrayFormatter::try_new(col.as_ref(), &Default::default())
+        .ok()
+        .map(|fmt| fmt.value(row_idx).to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -476,10 +551,11 @@ async fn execute_job(job: JobRequest, config: &RunnerConfig, metrics: &RunnerMet
             let _ = callback
                 .report_error(
                     &job.callback_url,
-                    &serde_json::json!({
-                        "run_id": run_id,
-                        "error": format!("{}", e),
-                    }),
+                    &ErrorCallback {
+                        run_id,
+                        error: format!("{}", e),
+                        stage: None,
+                    },
                 )
                 .await;
         }
@@ -550,11 +626,11 @@ async fn execute_job_inner(
     let _ = callback
         .report_progress(
             callback_url,
-            &serde_json::json!({
-                "run_id": run_id,
-                "stage": "staging",
-                "progress": 0.0
-            }),
+            &ProgressCallback::Staging {
+                run_id,
+                progress: 0.0,
+                source: None,
+            },
         )
         .await;
 
@@ -571,12 +647,18 @@ async fn execute_job_inner(
     };
 
     // Register all sources and collect row counts for unmatched calculation.
+    let connector_registry = kalla_connectors::factory::default_registry();
     let staging_start = Instant::now();
     let mut source_row_counts: HashMap<String, u64> = HashMap::new();
     for (i, source) in job.sources.iter().enumerate() {
-        let row_count =
-            register_source_partitioned(&engine, &source.alias, &source.uri, config.partitions)
-                .await?;
+        let row_count = register_source(
+            &connector_registry,
+            &engine,
+            &source.alias,
+            &source.uri,
+            config.partitions,
+        )
+        .await?;
         source_row_counts.insert(source.alias.clone(), row_count);
         info!(
             "Registered source '{}' from {} ({} rows)",
@@ -587,12 +669,11 @@ async fn execute_job_inner(
         let _ = callback
             .report_progress(
                 callback_url,
-                &serde_json::json!({
-                    "run_id": run_id,
-                    "stage": "staging",
-                    "source": source.alias,
-                    "progress": progress
-                }),
+                &ProgressCallback::Staging {
+                    run_id,
+                    progress,
+                    source: Some(source.alias.clone()),
+                },
             )
             .await;
     }
@@ -603,11 +684,11 @@ async fn execute_job_inner(
     let _ = callback
         .report_progress(
             callback_url,
-            &serde_json::json!({
-                "run_id": run_id,
-                "stage": "matching",
-                "progress": 0.0
-            }),
+            &ProgressCallback::Matching {
+                run_id,
+                progress: 0.0,
+                matched_count: None,
+            },
         )
         .await;
 
@@ -664,11 +745,11 @@ async fn execute_job_inner(
                 let _ = callback
                     .report_progress(
                         callback_url,
-                        &serde_json::json!({
-                            "run_id": run_id,
-                            "stage": "matching",
-                            "matched_count": matched_count,
-                        }),
+                        &ProgressCallback::Matching {
+                            run_id,
+                            progress: 0.0, // progress unknown during streaming
+                            matched_count: Some(matched_count),
+                        },
                     )
                     .await;
             }
@@ -677,11 +758,11 @@ async fn execute_job_inner(
             let _ = callback
                 .report_error(
                     callback_url,
-                    &serde_json::json!({
-                        "run_id": run_id,
-                        "error": format!("Match SQL failed: {}", e),
-                        "stage": "matching"
-                    }),
+                    &ErrorCallback {
+                        run_id,
+                        error: format!("Match SQL failed: {}", e),
+                        stage: Some("matching".to_string()),
+                    },
                 )
                 .await;
             return Err(e.into());
@@ -718,21 +799,21 @@ async fn execute_job_inner(
         let _ = evidence_store.write_matched(&run_id, &matched_records);
     }
 
-    // Report completion
+    // Report completion (with retry — most critical callback)
     let _ = callback
         .report_complete(
             callback_url,
-            &serde_json::json!({
-                "run_id": run_id,
-                "matched_count": matched_count,
-                "unmatched_left_count": unmatched_left,
-                "unmatched_right_count": unmatched_right,
-                "output_paths": {
-                    "matched": format!("{}/matched.parquet", job.output_path),
-                    "unmatched_left": format!("{}/unmatched_left.parquet", job.output_path),
-                    "unmatched_right": format!("{}/unmatched_right.parquet", job.output_path),
-                }
-            }),
+            &CompletionCallback {
+                run_id,
+                matched_count,
+                unmatched_left_count: unmatched_left,
+                unmatched_right_count: unmatched_right,
+                output_paths: OutputPaths {
+                    matched: format!("{}/matched.parquet", job.output_path),
+                    unmatched_left: format!("{}/unmatched_left.parquet", job.output_path),
+                    unmatched_right: format!("{}/unmatched_right.parquet", job.output_path),
+                },
+            },
         )
         .await;
 
@@ -750,7 +831,8 @@ async fn execute_job_inner(
 /// Start the HTTP runner.
 ///
 /// Binds an Axum HTTP server on the given address and spawns a job processor
-/// that executes jobs concurrently as separate tokio tasks.
+/// that executes jobs concurrently as separate tokio tasks, limited by
+/// `config.max_concurrent_jobs`.
 pub async fn start_runner(bind_addr: &str, config: RunnerConfig) -> anyhow::Result<()> {
     let runner_metrics = RunnerMetrics::new();
 
@@ -771,17 +853,24 @@ pub async fn start_runner(bind_addr: &str, config: RunnerConfig) -> anyhow::Resu
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     info!("HTTP runner listening on {}", bind_addr);
 
+    // Concurrency limiter — at most max_concurrent_jobs run in parallel.
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(config.max_concurrent_jobs));
+
     // Spawn the HTTP server
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
 
-    // Job processor loop — spawns each job as a separate tokio task for
-    // concurrent execution.
+    // Job processor loop — spawns each job as a separate tokio task,
+    // gated by the semaphore for concurrency control.
     while let Some(job) = job_rx.recv().await {
         let cfg = config.clone();
         let m = runner_metrics.clone();
+        let sem = semaphore.clone();
+        m.queued_jobs.inc();
         tokio::spawn(async move {
+            let _permit = sem.acquire().await.expect("semaphore closed");
+            m.queued_jobs.dec();
             execute_job(job, &cfg, &m).await;
         });
     }

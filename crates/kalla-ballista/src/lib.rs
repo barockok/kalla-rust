@@ -1,5 +1,6 @@
 pub mod codec;
 pub mod csv_range_scan_exec;
+pub mod error;
 pub mod postgres_scan_exec;
 pub mod runner;
 pub mod scan_lazy;
@@ -26,6 +27,8 @@ pub struct SchedulerOpts {
     pub http_port: u16,
     pub partitions: usize,
     pub staging_path: String,
+    /// Maximum number of jobs that can execute concurrently (default: 4).
+    pub max_concurrent_jobs: usize,
 }
 
 /// Start the Ballista scheduler with the Kalla physical codec **and** the
@@ -54,6 +57,7 @@ pub async fn start_scheduler(opts: SchedulerOpts) -> anyhow::Result<()> {
         grpc_port: opts.grpc_port,
         partitions: opts.partitions,
         staging_path: opts.staging_path,
+        max_concurrent_jobs: opts.max_concurrent_jobs,
     };
     let http_addr = format!("{}:{}", opts.bind_host, opts.http_port);
 

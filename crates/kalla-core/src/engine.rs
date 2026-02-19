@@ -89,12 +89,28 @@ impl ReconciliationEngine {
         Ok(Self { ctx })
     }
 
-    /// Get a reference to the underlying SessionContext
+    /// Register a pre-built `TableProvider` with the engine.
+    pub fn register_table(
+        &self,
+        name: &str,
+        table: std::sync::Arc<dyn datafusion::datasource::TableProvider>,
+    ) -> datafusion::common::Result<()> {
+        self.ctx.register_table(name, table)?;
+        Ok(())
+    }
+
+    /// Get a reference to the underlying `SessionContext`.
+    ///
+    /// Prefer using engine methods directly. This escape hatch exists for
+    /// connectors that need `SessionContext`-level operations such as
+    /// `register_object_store`.
+    #[doc(hidden)]
     pub fn context(&self) -> &SessionContext {
         &self.ctx
     }
 
     /// Get a mutable reference to the underlying SessionContext
+    #[doc(hidden)]
     pub fn context_mut(&mut self) -> &mut SessionContext {
         &mut self.ctx
     }
@@ -125,8 +141,9 @@ impl ReconciliationEngine {
         df.execute_stream().await
     }
 
-    /// Execute a reconciliation join between two tables
-    /// Returns matched records based on join conditions
+    /// Execute a reconciliation join between two tables.
+    ///
+    /// Note: `join_conditions` is raw SQL (trusted internal input from Recipe).
     pub async fn execute_join(
         &self,
         left_table: &str,
@@ -134,13 +151,15 @@ impl ReconciliationEngine {
         join_conditions: &str,
     ) -> DFResult<DataFrame> {
         let query = format!(
-            "SELECT * FROM {} AS l INNER JOIN {} AS r ON {}",
+            "SELECT * FROM \"{}\" AS l INNER JOIN \"{}\" AS r ON {}",
             left_table, right_table, join_conditions
         );
         self.sql(&query).await
     }
 
-    /// Streaming version of execute_join — returns a RecordBatch stream
+    /// Streaming version of execute_join — returns a RecordBatch stream.
+    ///
+    /// Note: `join_conditions` is raw SQL (trusted internal input from Recipe).
     pub async fn execute_join_stream(
         &self,
         left_table: &str,
@@ -148,7 +167,7 @@ impl ReconciliationEngine {
         join_conditions: &str,
     ) -> DFResult<SendableRecordBatchStream> {
         let query = format!(
-            "SELECT * FROM {} AS l INNER JOIN {} AS r ON {}",
+            "SELECT * FROM \"{}\" AS l INNER JOIN \"{}\" AS r ON {}",
             left_table, right_table, join_conditions
         );
         self.sql_stream(&query).await
@@ -163,9 +182,9 @@ impl ReconciliationEngine {
         right_key: &str,
     ) -> DFResult<DataFrame> {
         let query = format!(
-            "SELECT l.* FROM {} AS l \
-             LEFT JOIN {} AS r ON l.{} = r.{} \
-             WHERE r.{} IS NULL",
+            "SELECT l.* FROM \"{}\" AS l \
+             LEFT JOIN \"{}\" AS r ON l.\"{}\" = r.\"{}\" \
+             WHERE r.\"{}\" IS NULL",
             left_table, right_table, left_key, right_key, right_key
         );
         self.sql(&query).await
@@ -180,9 +199,9 @@ impl ReconciliationEngine {
         right_key: &str,
     ) -> DFResult<SendableRecordBatchStream> {
         let query = format!(
-            "SELECT l.* FROM {} AS l \
-             LEFT JOIN {} AS r ON l.{} = r.{} \
-             WHERE r.{} IS NULL",
+            "SELECT l.* FROM \"{}\" AS l \
+             LEFT JOIN \"{}\" AS r ON l.\"{}\" = r.\"{}\" \
+             WHERE r.\"{}\" IS NULL",
             left_table, right_table, left_key, right_key, right_key
         );
         self.sql_stream(&query).await
@@ -197,9 +216,9 @@ impl ReconciliationEngine {
         right_key: &str,
     ) -> DFResult<DataFrame> {
         let query = format!(
-            "SELECT r.* FROM {} AS r \
-             LEFT JOIN {} AS l ON r.{} = l.{} \
-             WHERE l.{} IS NULL",
+            "SELECT r.* FROM \"{}\" AS r \
+             LEFT JOIN \"{}\" AS l ON r.\"{}\" = l.\"{}\" \
+             WHERE l.\"{}\" IS NULL",
             right_table, left_table, right_key, left_key, left_key
         );
         self.sql(&query).await
@@ -214,9 +233,9 @@ impl ReconciliationEngine {
         right_key: &str,
     ) -> DFResult<SendableRecordBatchStream> {
         let query = format!(
-            "SELECT r.* FROM {} AS r \
-             LEFT JOIN {} AS l ON r.{} = l.{} \
-             WHERE l.{} IS NULL",
+            "SELECT r.* FROM \"{}\" AS r \
+             LEFT JOIN \"{}\" AS l ON r.\"{}\" = l.\"{}\" \
+             WHERE l.\"{}\" IS NULL",
             right_table, left_table, right_key, left_key, left_key
         );
         self.sql_stream(&query).await
