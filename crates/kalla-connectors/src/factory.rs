@@ -97,7 +97,7 @@ impl ConnectorFactory for PostgresFactory {
             Some(build_where_clause(filters))
         };
 
-        let table = crate::postgres_partitioned::PostgresPartitionedTable::new(
+        let table = crate::postgres::PostgresPartitionedTable::new(
             conn_url.as_str(),
             &table_name,
             partitions,

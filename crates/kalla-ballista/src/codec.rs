@@ -223,7 +223,7 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
                 // Reconstruct without connecting — schema and row count are provided.
                 // scan() now returns lazy PostgresScanExec nodes directly.
                 let table =
-                    kalla_connectors::postgres_partitioned::PostgresPartitionedTable::from_parts(
+                    kalla_connectors::postgres::PostgresPartitionedTable::from_parts(
                         conn_string,
                         pg_table,
                         schema,
@@ -283,7 +283,7 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
     ) -> DFResult<()> {
         if let Some(pg) =
             node.as_any()
-                .downcast_ref::<kalla_connectors::postgres_partitioned::PostgresPartitionedTable>()
+                .downcast_ref::<kalla_connectors::postgres::PostgresPartitionedTable>()
         {
             buf.push(LOGICAL_TAG_POSTGRES);
             let info = serde_json::json!({
