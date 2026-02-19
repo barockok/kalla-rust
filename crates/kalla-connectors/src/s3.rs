@@ -6,21 +6,15 @@
 //! table is registered with `ListingTable`.
 
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 use datafusion::datasource::file_format::csv::CsvFormat;
-use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
 };
-use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::prelude::SessionContext;
 use object_store::aws::AmazonS3Builder;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::info;
 use url::Url;
-
-use crate::filter::{build_where_clause, FilterCondition};
-use crate::SourceConnector;
 
 /// Configuration for connecting to S3-compatible storage.
 ///
@@ -128,39 +122,6 @@ impl S3Connector {
         Ok(())
     }
 
-    /// Register an S3 Parquet file as a ListingTable.
-    async fn register_listing_table(
-        &self,
-        ctx: &SessionContext,
-        table_name: &str,
-        s3_uri: &str,
-    ) -> Result<()> {
-        let (bucket, _key) = Self::parse_s3_uri(s3_uri)?;
-
-        // Make sure the object store is registered for this bucket
-        self.register_store(ctx, &bucket)?;
-
-        let table_url =
-            ListingTableUrl::parse(s3_uri).context("failed to parse S3 URI as ListingTableUrl")?;
-
-        let format = ParquetFormat::default();
-        let options = ListingOptions::new(Arc::new(format)).with_file_extension(".parquet");
-
-        let config = ListingTableConfig::new(table_url)
-            .with_listing_options(options)
-            .infer_schema(&ctx.state())
-            .await
-            .context("failed to infer schema from S3 Parquet file")?;
-
-        let table = ListingTable::try_new(config).context("failed to create ListingTable")?;
-
-        ctx.register_table(table_name, Arc::new(table))
-            .context("failed to register table with SessionContext")?;
-
-        info!("Registered S3 table '{}' from '{}'", table_name, s3_uri);
-        Ok(())
-    }
-
     /// Register an S3 CSV file as a ListingTable.
     pub async fn register_csv_listing_table(
         &self,
@@ -194,110 +155,10 @@ impl S3Connector {
     }
 }
 
-#[async_trait]
-impl SourceConnector for S3Connector {
-    async fn register_table(
-        &self,
-        ctx: &SessionContext,
-        table_name: &str,
-        source_table: &str, // s3://bucket/path/to/file.parquet
-        where_clause: Option<&str>,
-    ) -> Result<()> {
-        self.register_listing_table(ctx, table_name, source_table)
-            .await?;
-
-        // If a where clause was provided, create a filtered view on top
-        if let Some(clause) = where_clause {
-            let view_name = format!("{}_filtered", table_name);
-            let sql = format!(
-                "CREATE VIEW \"{}\" AS SELECT * FROM \"{}\" WHERE {}",
-                view_name, table_name, clause,
-            );
-            ctx.sql(&sql)
-                .await
-                .context("failed to create filtered view")?;
-            debug!(
-                "Created filtered view '{}' with WHERE {}",
-                view_name, clause
-            );
-        }
-
-        Ok(())
-    }
-
-    async fn register_scoped(
-        &self,
-        ctx: &SessionContext,
-        table_name: &str,
-        source_table: &str,
-        conditions: &[FilterCondition],
-        limit: Option<usize>,
-    ) -> Result<usize> {
-        // Deregister existing table to allow re-registration
-        let _ = ctx.deregister_table(table_name);
-
-        // First register the raw Parquet file under a temporary name
-        let raw_name = format!("_raw_{}", table_name);
-        self.register_listing_table(ctx, &raw_name, source_table)
-            .await?;
-
-        // Build a scoped query with filter conditions
-        let where_clause = build_where_clause(conditions);
-        let mut sql = format!(
-            "SELECT * FROM \"{}\"{}",
-            raw_name.replace('"', "\"\""),
-            where_clause,
-        );
-        if let Some(lim) = limit {
-            sql.push_str(&format!(" LIMIT {}", lim));
-        }
-
-        debug!("S3 scoped query: {}", sql);
-
-        // Execute and materialize into a MemTable for accurate row count
-        let df = ctx
-            .sql(&sql)
-            .await
-            .context("failed scoped query on S3 table")?;
-        let batches = df
-            .collect()
-            .await
-            .context("failed to collect S3 scoped data")?;
-        let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
-
-        if row_count > 0 {
-            let schema = batches[0].schema();
-            let mem_table = datafusion::datasource::MemTable::try_new(schema, vec![batches])?;
-            ctx.register_table(table_name, Arc::new(mem_table))
-                .context("failed to register scoped S3 table")?;
-        }
-
-        info!(
-            "Registered scoped S3 table '{}' with {} rows",
-            table_name, row_count
-        );
-        // Clean up temporary raw table
-        let _ = ctx.deregister_table(&raw_name);
-        Ok(row_count)
-    }
-
-    async fn stream_table(
-        &self,
-        ctx: &SessionContext,
-        table_name: &str,
-    ) -> Result<SendableRecordBatchStream> {
-        let df = ctx
-            .sql(&format!("SELECT * FROM \"{}\"", table_name))
-            .await
-            .context("failed to query S3 table for streaming")?;
-        Ok(df.execute_stream().await?)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filter::{FilterOp, FilterValue};
+    use crate::filter::{build_where_clause, FilterCondition, FilterOp, FilterValue};
     use arrow::array::{Float64Array, Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;

@@ -1,225 +1,100 @@
-//! Connector factory — pluggable source registration by URI scheme.
+//! Source registration — routes URIs to the appropriate connector.
 
 use anyhow::Result;
-use async_trait::async_trait;
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
 use tracing::info;
 
 use crate::filter::{build_where_clause, FilterCondition};
 
-/// A factory that can register a data source with a DataFusion `SessionContext`
-/// based on URI pattern matching.
-#[async_trait]
-pub trait ConnectorFactory: Send + Sync {
-    /// Returns `true` if this factory can handle the given URI.
-    fn can_handle(&self, uri: &str) -> bool;
-
-    /// Register the source under `alias` with the given context.
-    /// Returns the total row count of the registered source.
-    ///
-    /// Each factory decides how to handle `filters` — e.g. Postgres pushes
-    /// them into the WHERE clause, while file-based connectors may ignore them.
-    async fn register(
-        &self,
-        ctx: &SessionContext,
-        alias: &str,
-        uri: &str,
-        partitions: usize,
-        filters: &[FilterCondition],
-    ) -> Result<u64>;
-}
-
-/// Registry of connector factories. Iterates factories in order and delegates
-/// to the first one that can handle a URI.
-pub struct ConnectorRegistry {
-    factories: Vec<Arc<dyn ConnectorFactory>>,
-}
-
-impl ConnectorRegistry {
-    pub fn new(factories: Vec<Arc<dyn ConnectorFactory>>) -> Self {
-        Self { factories }
-    }
-
-    /// Register a source by finding the first factory that can handle the URI.
-    /// Filters are passed through to the factory — each connector decides
-    /// how to apply them.
-    pub async fn register_source(
-        &self,
-        ctx: &SessionContext,
-        alias: &str,
-        uri: &str,
-        partitions: usize,
-        filters: &[FilterCondition],
-    ) -> Result<u64> {
-        for factory in &self.factories {
-            if factory.can_handle(uri) {
-                return factory.register(ctx, alias, uri, partitions, filters).await;
-            }
-        }
-        anyhow::bail!("Unsupported source URI format: {}", uri);
+/// Register a data source with a DataFusion `SessionContext` based on URI.
+///
+/// Routes to the appropriate connector by inspecting the URI scheme/extension.
+/// Returns the total row count (or 0 if unknown at registration time).
+pub async fn register_source(
+    ctx: &SessionContext,
+    alias: &str,
+    uri: &str,
+    partitions: usize,
+    filters: &[FilterCondition],
+) -> Result<u64> {
+    if uri.starts_with("postgres://") || uri.starts_with("postgresql://") {
+        register_postgres(ctx, alias, uri, partitions, filters).await
+    } else if uri.starts_with("s3://") && uri.ends_with(".csv") {
+        register_s3_csv(ctx, alias, uri, partitions).await
+    } else if uri.starts_with("s3://") {
+        register_s3_parquet(ctx, alias, uri).await
+    } else if uri.ends_with(".csv") {
+        register_local_csv(ctx, alias, uri).await
+    } else {
+        register_local_parquet(ctx, alias, uri).await
     }
 }
 
-// ---------------------------------------------------------------------------
-// Built-in factory implementations
-// ---------------------------------------------------------------------------
+async fn register_postgres(
+    ctx: &SessionContext,
+    alias: &str,
+    uri: &str,
+    partitions: usize,
+    filters: &[FilterCondition],
+) -> Result<u64> {
+    let parsed = url::Url::parse(uri)?;
+    let table_name = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "table")
+        .map(|(_, v)| v.to_string())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'table' query parameter in source URI"))?;
+    let mut conn_url = parsed.clone();
+    conn_url.set_query(None);
 
-/// Factory for PostgreSQL sources (partitioned).
-pub struct PostgresFactory;
+    let where_clause = if filters.is_empty() {
+        None
+    } else {
+        Some(build_where_clause(filters))
+    };
 
-#[async_trait]
-impl ConnectorFactory for PostgresFactory {
-    fn can_handle(&self, uri: &str) -> bool {
-        uri.starts_with("postgres://") || uri.starts_with("postgresql://")
-    }
+    let table = crate::postgres::PostgresPartitionedTable::new(
+        conn_url.as_str(),
+        &table_name,
+        partitions,
+        Some("ctid".to_string()),
+        where_clause,
+    )
+    .await?;
+    let total_rows = table.total_rows();
+    ctx.register_table(alias, Arc::new(table))?;
+    info!(
+        "Registered PostgresPartitionedTable '{}' -> '{}'",
+        table_name, alias
+    );
+    Ok(total_rows)
+}
 
-    async fn register(
-        &self,
-        ctx: &SessionContext,
-        alias: &str,
-        uri: &str,
-        partitions: usize,
-        filters: &[FilterCondition],
-    ) -> Result<u64> {
-        let parsed = url::Url::parse(uri)?;
-        let table_name = parsed
-            .query_pairs()
-            .find(|(k, _)| k == "table")
-            .map(|(_, v)| v.to_string())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'table' query parameter in source URI"))?;
-        let mut conn_url = parsed.clone();
-        conn_url.set_query(None);
+async fn register_s3_csv(
+    ctx: &SessionContext,
+    alias: &str,
+    uri: &str,
+    partitions: usize,
+) -> Result<u64> {
+    let s3_config = crate::S3Config::from_env()?;
+    crate::csv_partitioned::register(ctx, alias, uri, partitions, s3_config).await?;
+    Ok(0)
+}
 
-        let where_clause = if filters.is_empty() {
-            None
-        } else {
-            Some(build_where_clause(filters))
-        };
-
-        let table = crate::postgres::PostgresPartitionedTable::new(
-            conn_url.as_str(),
-            &table_name,
-            partitions,
-            Some("ctid".to_string()),
-            where_clause,
-        )
+async fn register_s3_parquet(ctx: &SessionContext, alias: &str, uri: &str) -> Result<u64> {
+    let connector = crate::S3Connector::from_env()?;
+    connector
+        .register_csv_listing_table(ctx, alias, uri)
         .await?;
-        let total_rows = table.total_rows();
-        ctx.register_table(alias, Arc::new(table))?;
-        info!(
-            "Registered PostgresPartitionedTable '{}' -> '{}'",
-            table_name, alias
-        );
-        Ok(total_rows)
-    }
+    Ok(0)
 }
 
-/// Factory for S3 CSV sources (byte-range partitioned).
-pub struct S3CsvFactory;
-
-#[async_trait]
-impl ConnectorFactory for S3CsvFactory {
-    fn can_handle(&self, uri: &str) -> bool {
-        uri.starts_with("s3://") && uri.ends_with(".csv")
-    }
-
-    async fn register(
-        &self,
-        ctx: &SessionContext,
-        alias: &str,
-        uri: &str,
-        partitions: usize,
-        _filters: &[FilterCondition],
-    ) -> Result<u64> {
-        let s3_config = crate::S3Config::from_env()?;
-        crate::csv_partitioned::register(ctx, alias, uri, partitions, s3_config).await?;
-        Ok(0) // row count determined after registration
-    }
+async fn register_local_csv(ctx: &SessionContext, alias: &str, uri: &str) -> Result<u64> {
+    ctx.register_csv(alias, uri, Default::default()).await?;
+    Ok(0)
 }
 
-/// Factory for S3 Parquet/listing sources.
-pub struct S3ParquetFactory;
-
-#[async_trait]
-impl ConnectorFactory for S3ParquetFactory {
-    fn can_handle(&self, uri: &str) -> bool {
-        uri.starts_with("s3://") && !uri.ends_with(".csv")
-    }
-
-    async fn register(
-        &self,
-        ctx: &SessionContext,
-        alias: &str,
-        uri: &str,
-        _partitions: usize,
-        _filters: &[FilterCondition],
-    ) -> Result<u64> {
-        let connector = crate::S3Connector::from_env()?;
-        connector
-            .register_csv_listing_table(ctx, alias, uri)
-            .await?;
-        Ok(0)
-    }
-}
-
-/// Factory for local CSV files.
-pub struct LocalCsvFactory;
-
-#[async_trait]
-impl ConnectorFactory for LocalCsvFactory {
-    fn can_handle(&self, uri: &str) -> bool {
-        !uri.starts_with("s3://")
-            && !uri.starts_with("postgres://")
-            && !uri.starts_with("postgresql://")
-            && uri.ends_with(".csv")
-    }
-
-    async fn register(
-        &self,
-        ctx: &SessionContext,
-        alias: &str,
-        uri: &str,
-        _partitions: usize,
-        _filters: &[FilterCondition],
-    ) -> Result<u64> {
-        ctx.register_csv(alias, uri, Default::default()).await?;
-        Ok(0)
-    }
-}
-
-/// Factory for local Parquet files and staging directories.
-pub struct LocalParquetFactory;
-
-#[async_trait]
-impl ConnectorFactory for LocalParquetFactory {
-    fn can_handle(&self, uri: &str) -> bool {
-        !uri.starts_with("s3://")
-            && !uri.starts_with("postgres://")
-            && !uri.starts_with("postgresql://")
-            && (uri.ends_with(".parquet") || uri.contains("/staging/"))
-    }
-
-    async fn register(
-        &self,
-        ctx: &SessionContext,
-        alias: &str,
-        uri: &str,
-        _partitions: usize,
-        _filters: &[FilterCondition],
-    ) -> Result<u64> {
-        ctx.register_parquet(alias, uri, Default::default()).await?;
-        Ok(0)
-    }
-}
-
-/// Build the default registry with all built-in factories.
-pub fn default_registry() -> ConnectorRegistry {
-    ConnectorRegistry::new(vec![
-        Arc::new(PostgresFactory),
-        Arc::new(S3CsvFactory),
-        Arc::new(S3ParquetFactory),
-        Arc::new(LocalCsvFactory),
-        Arc::new(LocalParquetFactory),
-    ])
+async fn register_local_parquet(ctx: &SessionContext, alias: &str, uri: &str) -> Result<u64> {
+    ctx.register_parquet(alias, uri, Default::default()).await?;
+    Ok(0)
 }

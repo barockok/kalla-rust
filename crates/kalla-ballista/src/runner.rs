@@ -22,7 +22,6 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use kalla_connectors::ConnectorRegistry;
 use kalla_core::ReconciliationEngine;
 use kalla_evidence::{EvidenceStore, MatchedRecord};
 
@@ -339,21 +338,20 @@ async fn metrics_handler(State(state): State<Arc<RunnerState>>) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Source registration (via ConnectorRegistry — D1)
+// Source registration
 // ---------------------------------------------------------------------------
 
-/// Register a source using the connector registry and count rows if needed.
+/// Register a source and count rows if needed.
 async fn register_source(
-    registry: &ConnectorRegistry,
     engine: &ReconciliationEngine,
     alias: &str,
     uri: &str,
     partitions: usize,
     filters: &[kalla_connectors::FilterCondition],
 ) -> anyhow::Result<u64> {
-    let row_count = registry
-        .register_source(engine.context(), alias, uri, partitions, filters)
-        .await?;
+    let row_count =
+        kalla_connectors::register_source(engine.context(), alias, uri, partitions, filters)
+            .await?;
 
     // Factories that return 0 don't know the row count at registration time.
     // Run a COUNT query to fill in the actual value.
@@ -646,12 +644,10 @@ async fn execute_job_inner(
     };
 
     // Register all sources and collect row counts for unmatched calculation.
-    let connector_registry = kalla_connectors::factory::default_registry();
     let staging_start = Instant::now();
     let mut source_row_counts: HashMap<String, u64> = HashMap::new();
     for (i, source) in job.sources.iter().enumerate() {
         let row_count = register_source(
-            &connector_registry,
             &engine,
             &source.alias,
             &source.uri,
