@@ -165,11 +165,7 @@ impl CallbackClient {
             match self.http.post(&url).json(result).send().await {
                 Ok(_) => return Ok(()),
                 Err(e) => {
-                    warn!(
-                        "Completion callback attempt {} failed: {}",
-                        attempt + 1,
-                        e
-                    );
+                    warn!("Completion callback attempt {} failed: {}", attempt + 1, e);
                     last_err = Some(e);
                     tokio::time::sleep(Duration::from_millis(500 * 2u64.pow(attempt))).await;
                 }

@@ -26,15 +26,22 @@ pub struct RecipeResolution {
 ///
 /// `file_uris` maps source aliases to uploaded file URIs for file-type sources
 /// that don't have a persistent URI in the recipe.
-pub fn resolve_recipe(
-    recipe: &Recipe,
-    file_uris: &HashMap<String, String>,
-) -> RecipeResolution {
+pub fn resolve_recipe(recipe: &Recipe, file_uris: &HashMap<String, String>) -> RecipeResolution {
     let mut sources = Vec::new();
     let mut primary_keys = HashMap::new();
 
-    resolve_source(&recipe.sources.left, file_uris, &mut sources, &mut primary_keys);
-    resolve_source(&recipe.sources.right, file_uris, &mut sources, &mut primary_keys);
+    resolve_source(
+        &recipe.sources.left,
+        file_uris,
+        &mut sources,
+        &mut primary_keys,
+    );
+    resolve_source(
+        &recipe.sources.right,
+        file_uris,
+        &mut sources,
+        &mut primary_keys,
+    );
 
     RecipeResolution {
         match_sql: recipe.match_sql.clone(),
