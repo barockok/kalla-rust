@@ -6,9 +6,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum SourceType {
-    /// Persistent remote source (Postgres, BigQuery, Elasticsearch)
+    /// Persistent remote source (Postgres, Elasticsearch)
     Postgres,
-    Bigquery,
     Elasticsearch,
     /// Disposable file source — schema stored, file uploaded each execution
     File,
@@ -20,7 +19,7 @@ pub struct RecipeSource {
     pub alias: String,
     #[serde(rename = "type")]
     pub source_type: SourceType,
-    /// Connection URI for persistent sources (postgres://, bigquery://)
+    /// Connection URI for persistent sources (postgres://)
     /// None for file sources (file is uploaded at execution time)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uri: Option<String>,
@@ -99,7 +98,6 @@ mod tests {
     fn test_source_type_serialization() {
         let types = vec![
             (SourceType::Postgres, "\"postgres\""),
-            (SourceType::Bigquery, "\"bigquery\""),
             (SourceType::Elasticsearch, "\"elasticsearch\""),
             (SourceType::File, "\"file\""),
         ];

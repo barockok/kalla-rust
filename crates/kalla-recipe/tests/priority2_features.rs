@@ -90,7 +90,6 @@ fn test_recipe_validation_sources_need_primary_keys() {
 fn test_all_source_types_deserialize() {
     for (json_val, expected) in [
         ("\"postgres\"", SourceType::Postgres),
-        ("\"bigquery\"", SourceType::Bigquery),
         ("\"elasticsearch\"", SourceType::Elasticsearch),
         ("\"file\"", SourceType::File),
     ] {

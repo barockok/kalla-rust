@@ -1,19 +1,10 @@
-//! S3 connector for DataFusion
+//! S3 utilities for kalla connectors
 //!
-//! Reads Parquet files from S3 (or S3-compatible stores like MinIO) and
-//! registers them as DataFusion tables.  Predicate pushdown is handled by
-//! DataFusion's built-in Parquet pruning — no extra work needed once the
-//! table is registered with `ListingTable`.
+//! Provides `S3Config` (credentials / endpoint) and `parse_s3_uri` (bucket/key
+//! extraction).  The actual S3 object-store construction lives in
+//! `csv_partitioned::build_store` which consumes `S3Config`.
 
 use anyhow::{Context, Result};
-use datafusion::datasource::file_format::csv::CsvFormat;
-use datafusion::datasource::listing::{
-    ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
-};
-use datafusion::prelude::SessionContext;
-use object_store::aws::AmazonS3Builder;
-use std::sync::Arc;
-use tracing::info;
 use url::Url;
 
 /// Configuration for connecting to S3-compatible storage.
@@ -65,94 +56,17 @@ impl S3Config {
     }
 }
 
-/// S3 connector that registers Parquet files from S3 as DataFusion tables.
-pub struct S3Connector {
-    config: S3Config,
-}
-
-impl S3Connector {
-    /// Create a new S3Connector with the given configuration.
-    pub fn new(config: S3Config) -> Self {
-        Self { config }
-    }
-
-    /// Create an S3Connector from environment variables.
-    pub fn from_env() -> Result<Self> {
-        Ok(Self::new(S3Config::from_env()?))
-    }
-
-    /// Parse an `s3://bucket/key` URI into (bucket, key).
-    pub fn parse_s3_uri(uri: &str) -> Result<(String, String)> {
-        let url = Url::parse(uri).context("invalid S3 URI")?;
-        anyhow::ensure!(url.scheme() == "s3", "URI scheme must be s3://");
-        let bucket = url
-            .host_str()
-            .context("missing bucket in S3 URI")?
-            .to_string();
-        // path() starts with '/', strip the leading slash
-        let key = url.path().trim_start_matches('/').to_string();
-        anyhow::ensure!(!key.is_empty(), "missing object key in S3 URI");
-        Ok((bucket, key))
-    }
-
-    /// Build an `object_store::aws::AmazonS3` instance for the given bucket.
-    fn build_store(&self, bucket: &str) -> Result<object_store::aws::AmazonS3> {
-        let mut builder = AmazonS3Builder::new()
-            .with_region(&self.config.region)
-            .with_bucket_name(bucket)
-            .with_access_key_id(&self.config.access_key_id)
-            .with_secret_access_key(&self.config.secret_access_key);
-
-        if let Some(ref endpoint) = self.config.endpoint_url {
-            builder = builder.with_endpoint(endpoint);
-        }
-        if self.config.allow_http {
-            builder = builder.with_allow_http(true);
-        }
-
-        builder.build().context("failed to build S3 object store")
-    }
-
-    /// Register the object store for a bucket with the given SessionContext.
-    fn register_store(&self, ctx: &SessionContext, bucket: &str) -> Result<()> {
-        let store = self.build_store(bucket)?;
-        let s3_url = Url::parse(&format!("s3://{}", bucket))
-            .context("failed to construct S3 URL for store registration")?;
-        ctx.register_object_store(&s3_url, Arc::new(store));
-        Ok(())
-    }
-
-    /// Register an S3 CSV file as a ListingTable.
-    pub async fn register_csv_listing_table(
-        &self,
-        ctx: &SessionContext,
-        table_name: &str,
-        s3_uri: &str,
-    ) -> Result<()> {
-        let (bucket, _key) = Self::parse_s3_uri(s3_uri)?;
-
-        self.register_store(ctx, &bucket)?;
-
-        let table_url =
-            ListingTableUrl::parse(s3_uri).context("failed to parse S3 URI as ListingTableUrl")?;
-
-        let format = CsvFormat::default().with_has_header(true);
-        let options = ListingOptions::new(Arc::new(format)).with_file_extension(".csv");
-
-        let config = ListingTableConfig::new(table_url)
-            .with_listing_options(options)
-            .infer_schema(&ctx.state())
-            .await
-            .context("failed to infer schema from S3 CSV file")?;
-
-        let table = ListingTable::try_new(config).context("failed to create ListingTable")?;
-
-        ctx.register_table(table_name, Arc::new(table))
-            .context("failed to register table with SessionContext")?;
-
-        info!("Registered S3 CSV table '{}' from '{}'", table_name, s3_uri);
-        Ok(())
-    }
+/// Parse an `s3://bucket/key` URI into (bucket, key).
+pub fn parse_s3_uri(uri: &str) -> Result<(String, String)> {
+    let url = Url::parse(uri).context("invalid S3 URI")?;
+    anyhow::ensure!(url.scheme() == "s3", "URI scheme must be s3://");
+    let bucket = url
+        .host_str()
+        .context("missing bucket in S3 URI")?
+        .to_string();
+    let key = url.path().trim_start_matches('/').to_string();
+    anyhow::ensure!(!key.is_empty(), "missing object key in S3 URI");
+    Ok((bucket, key))
 }
 
 #[cfg(test)]
@@ -163,41 +77,18 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use std::fs;
-
-    fn test_config() -> S3Config {
-        S3Config {
-            region: "us-east-1".to_string(),
-            access_key_id: "test-key".to_string(),
-            secret_access_key: "test-secret".to_string(),
-            endpoint_url: Some("http://localhost:9000".to_string()),
-            allow_http: true,
-        }
-    }
-
-    #[test]
-    fn test_s3_connector_creation() {
-        let config = test_config();
-        let connector = S3Connector::new(config.clone());
-        assert_eq!(connector.config.region, "us-east-1");
-        assert_eq!(connector.config.access_key_id, "test-key");
-        assert_eq!(
-            connector.config.endpoint_url,
-            Some("http://localhost:9000".to_string())
-        );
-        assert!(connector.config.allow_http);
-    }
+    use std::sync::Arc;
 
     #[test]
     fn test_parse_s3_uri_valid() {
-        let (bucket, key) =
-            S3Connector::parse_s3_uri("s3://my-bucket/path/to/file.parquet").unwrap();
+        let (bucket, key) = parse_s3_uri("s3://my-bucket/path/to/file.parquet").unwrap();
         assert_eq!(bucket, "my-bucket");
         assert_eq!(key, "path/to/file.parquet");
     }
 
     #[test]
     fn test_parse_s3_uri_root_key() {
-        let (bucket, key) = S3Connector::parse_s3_uri("s3://bucket/file.parquet").unwrap();
+        let (bucket, key) = parse_s3_uri("s3://bucket/file.parquet").unwrap();
         assert_eq!(bucket, "bucket");
         assert_eq!(key, "file.parquet");
     }
@@ -205,40 +96,47 @@ mod tests {
     #[test]
     fn test_parse_s3_uri_nested() {
         let (bucket, key) =
-            S3Connector::parse_s3_uri("s3://data/year=2024/month=01/data.parquet").unwrap();
+            parse_s3_uri("s3://data/year=2024/month=01/data.parquet").unwrap();
         assert_eq!(bucket, "data");
         assert_eq!(key, "year=2024/month=01/data.parquet");
     }
 
     #[test]
     fn test_parse_s3_uri_no_key() {
-        let result = S3Connector::parse_s3_uri("s3://bucket/");
+        let result = parse_s3_uri("s3://bucket/");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_s3_uri_no_bucket() {
-        let result = S3Connector::parse_s3_uri("s3:///key");
+        let result = parse_s3_uri("s3:///key");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_s3_uri_wrong_scheme() {
-        let result = S3Connector::parse_s3_uri("http://bucket/key");
+        let result = parse_s3_uri("http://bucket/key");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_s3_uri_invalid() {
-        let result = S3Connector::parse_s3_uri("not a uri");
+        let result = parse_s3_uri("not a uri");
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_build_store() {
-        let connector = S3Connector::new(test_config());
-        let store = connector.build_store("my-bucket");
-        assert!(store.is_ok());
+    fn test_s3_config_defaults() {
+        let config = S3Config {
+            region: "eu-west-1".to_string(),
+            access_key_id: "ak".to_string(),
+            secret_access_key: "sk".to_string(),
+            endpoint_url: None,
+            allow_http: false,
+        };
+        assert_eq!(config.region, "eu-west-1");
+        assert!(config.endpoint_url.is_none());
+        assert!(!config.allow_http);
     }
 
     /// Helper: write a small Parquet file and return its path.
@@ -270,12 +168,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_local_parquet_as_listing_table() {
-        // Use a local Parquet file to verify the ListingTable registration path
-        // (no actual S3 needed).
         let tmp = tempfile::tempdir().unwrap();
         let parquet_path = write_test_parquet(tmp.path());
 
-        let ctx = SessionContext::new();
+        let ctx = datafusion::prelude::SessionContext::new();
         ctx.register_parquet("test_t", &parquet_path, Default::default())
             .await
             .unwrap();
@@ -293,12 +189,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_filter_conditions_applied_via_sql() {
-        // Verify that filter conditions translate correctly when applied as SQL
-        // over a registered table (mimics the register_scoped path).
         let tmp = tempfile::tempdir().unwrap();
         let parquet_path = write_test_parquet(tmp.path());
 
-        let ctx = SessionContext::new();
+        let ctx = datafusion::prelude::SessionContext::new();
         ctx.register_parquet("raw", &parquet_path, Default::default())
             .await
             .unwrap();
@@ -314,7 +208,6 @@ mod tests {
         let df = ctx.sql(&sql).await.unwrap();
         let batches = df.collect().await.unwrap();
         let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
-        // Only Bob (200) and Carol (300) match >= 200
         assert_eq!(row_count, 2);
     }
 
@@ -323,7 +216,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let parquet_path = write_test_parquet(tmp.path());
 
-        let ctx = SessionContext::new();
+        let ctx = datafusion::prelude::SessionContext::new();
         ctx.register_parquet("raw2", &parquet_path, Default::default())
             .await
             .unwrap();
@@ -349,7 +242,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let parquet_path = write_test_parquet(tmp.path());
 
-        let ctx = SessionContext::new();
+        let ctx = datafusion::prelude::SessionContext::new();
         ctx.register_parquet("stream_t", &parquet_path, Default::default())
             .await
             .unwrap();
@@ -361,20 +254,5 @@ mod tests {
             total += batch.unwrap().num_rows();
         }
         assert_eq!(total, 3);
-    }
-
-    #[test]
-    fn test_s3_config_defaults() {
-        let config = S3Config {
-            region: "eu-west-1".to_string(),
-            access_key_id: "ak".to_string(),
-            secret_access_key: "sk".to_string(),
-            endpoint_url: None,
-            allow_http: false,
-        };
-        let connector = S3Connector::new(config);
-        assert_eq!(connector.config.region, "eu-west-1");
-        assert!(connector.config.endpoint_url.is_none());
-        assert!(!connector.config.allow_http);
     }
 }

@@ -71,15 +71,15 @@ pub struct TableCodecEntry {
 /// Returns codec entries for all known [`ExecutionPlan`] types.
 pub fn exec_codecs() -> Vec<ExecCodecEntry> {
     vec![
-        crate::postgres::postgres_exec_codec_entry(),
-        crate::csv_partitioned::csv_exec_codec_entry(),
+        crate::postgres_connector::postgres_exec_codec_entry(),
+        crate::csv_connector::csv_exec_codec_entry(),
     ]
 }
 
 /// Returns codec entries for all known [`TableProvider`] types.
 pub fn table_codecs() -> Vec<TableCodecEntry> {
     vec![
-        crate::postgres::postgres_table_codec_entry(),
-        crate::csv_partitioned::csv_table_codec_entry(),
+        crate::postgres_connector::postgres_table_codec_entry(),
+        crate::csv_connector::csv_table_codec_entry(),
     ]
 }

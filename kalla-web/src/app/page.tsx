@@ -100,7 +100,7 @@ export default function Home() {
               <div>
                 <h4 className="font-medium">Connect Your Data</h4>
                 <p className="text-sm text-muted-foreground">
-                  Upload CSV files or connect to Postgres, S3, or BigQuery
+                  Upload CSV files or connect to Postgres or S3
                 </p>
               </div>
             </div>

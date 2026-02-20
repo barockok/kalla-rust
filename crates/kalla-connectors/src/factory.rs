@@ -22,8 +22,6 @@ pub async fn register_source(
         register_postgres(ctx, alias, uri, partitions, filters).await
     } else if uri.starts_with("s3://") && uri.ends_with(".csv") {
         register_s3_csv(ctx, alias, uri, partitions).await
-    } else if uri.starts_with("s3://") {
-        register_s3_parquet(ctx, alias, uri).await
     } else if uri.ends_with(".csv") {
         register_local_csv(ctx, alias, uri).await
     } else {
@@ -53,7 +51,7 @@ async fn register_postgres(
         Some(build_where_clause(filters))
     };
 
-    let table = crate::postgres::PostgresPartitionedTable::new(
+    let table = crate::postgres_connector::PostgresPartitionedTable::new(
         conn_url.as_str(),
         &table_name,
         partitions,
@@ -77,15 +75,7 @@ async fn register_s3_csv(
     partitions: usize,
 ) -> Result<u64> {
     let s3_config = crate::S3Config::from_env()?;
-    crate::csv_partitioned::register(ctx, alias, uri, partitions, s3_config).await?;
-    Ok(0)
-}
-
-async fn register_s3_parquet(ctx: &SessionContext, alias: &str, uri: &str) -> Result<u64> {
-    let connector = crate::S3Connector::from_env()?;
-    connector
-        .register_csv_listing_table(ctx, alias, uri)
-        .await?;
+    crate::csv_connector::register(ctx, alias, uri, partitions, s3_config).await?;
     Ok(0)
 }
 

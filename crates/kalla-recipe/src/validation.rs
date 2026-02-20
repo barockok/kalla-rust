@@ -63,7 +63,7 @@ fn validate_source(source: &crate::schema::RecipeSource, errors: &mut Vec<Valida
                 ));
             }
         }
-        SourceType::Postgres | SourceType::Bigquery | SourceType::Elasticsearch => {
+        SourceType::Postgres | SourceType::Elasticsearch => {
             if source.uri.as_ref().is_none_or(|u| u.trim().is_empty()) {
                 errors.push(ValidationError::PersistentSourceMissingUri(
                     source.alias.clone(),
@@ -249,8 +249,8 @@ mod tests {
                 },
                 right: RecipeSource {
                     alias: "b".to_string(),
-                    source_type: SourceType::Bigquery,
-                    uri: Some("bigquery://project/dataset".to_string()),
+                    source_type: SourceType::Elasticsearch,
+                    uri: Some("http://localhost:9200/index".to_string()),
                     schema: None,
                     primary_key: vec!["id".to_string()],
                 },

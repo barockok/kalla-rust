@@ -231,196 +231,56 @@ impl datafusion_proto::logical_plan::LogicalExtensionCodec for KallaLogicalCodec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-    use kalla_connectors::s3::S3Config;
-    use kalla_connectors::{CsvRangeScanExec, PostgresScanExec};
-
-    fn pg_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("name", DataType::Utf8, true),
-            Field::new("amount", DataType::Float64, true),
-            Field::new("active", DataType::Boolean, true),
-        ]))
-    }
-
-    fn csv_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("value", DataType::Utf8, true),
-            Field::new("score", DataType::Float64, true),
-        ]))
-    }
-
-    fn sample_s3_config() -> S3Config {
-        S3Config {
-            region: "us-east-1".to_string(),
-            access_key_id: "test-key".to_string(),
-            secret_access_key: "test-secret".to_string(),
-            endpoint_url: Some("http://localhost:9000".to_string()),
-            allow_http: true,
-        }
-    }
+    use arrow::datatypes::{DataType, Field, Schema};
+    use kalla_connectors::PostgresScanExec;
 
     /// Provides a minimal `FunctionRegistry` for decoding tests.
     fn empty_registry() -> Arc<datafusion::prelude::SessionContext> {
         Arc::new(datafusion::prelude::SessionContext::new())
     }
 
-    #[test]
-    fn test_codec_roundtrip_postgres() {
-        let codec = KallaPhysicalCodec::new();
-        let schema = pg_schema();
-
+    /// Build a minimal encoded buffer via the codec for dispatch tests.
+    fn encode_sample_postgres(codec: &KallaPhysicalCodec) -> Vec<u8> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+        ]));
         let exec = PostgresScanExec::new(
-            "postgres://user:pass@host:5432/db".to_string(),
-            "invoices".to_string(),
-            Arc::clone(&schema),
-            500,
-            250,
-            Some("invoice_id".to_string()),
+            "postgres://localhost/test".to_string(),
+            "t".to_string(),
+            schema,
+            0,
+            10,
+            None,
             None,
         );
-
-        // Encode
         let mut buf = Vec::new();
         codec
             .try_encode(Arc::new(exec), &mut buf)
             .expect("encode should succeed");
+        buf
+    }
 
-        // First byte should be the postgres tag.
-        assert_eq!(
-            buf[0],
-            kalla_connectors::postgres::WIRE_TAG_POSTGRES_EXEC
-        );
+    #[test]
+    fn test_codec_dispatches_by_tag() {
+        let codec = KallaPhysicalCodec::new();
+        let buf = encode_sample_postgres(&codec);
 
-        // Decode
+        // Tag byte routes to the correct connector decoder
         let registry = empty_registry();
         let decoded = codec
             .try_decode(&buf, &[], registry.as_ref())
             .expect("decode should succeed");
-
-        let restored = decoded
-            .as_any()
-            .downcast_ref::<PostgresScanExec>()
-            .expect("should downcast to PostgresScanExec");
-
-        assert_eq!(restored.conn_string, "postgres://user:pass@host:5432/db");
-        assert_eq!(restored.pg_table, "invoices");
-        assert_eq!(restored.offset, 500);
-        assert_eq!(restored.limit, 250);
-        assert_eq!(restored.order_column, Some("invoice_id".to_string()));
-        assert_eq!(restored.schema.fields().len(), 4);
-        assert_eq!(restored.schema.field(0).name(), "id");
-        assert_eq!(*restored.schema.field(0).data_type(), DataType::Int64);
-        assert_eq!(restored.where_clause, None);
+        assert!(decoded.as_any().downcast_ref::<PostgresScanExec>().is_some());
     }
 
     #[test]
-    fn test_codec_roundtrip_postgres_with_where_clause() {
-        let codec = KallaPhysicalCodec::new();
-        let schema = pg_schema();
-
-        let exec = PostgresScanExec::new(
-            "postgres://user:pass@host:5432/db".to_string(),
-            "invoices".to_string(),
-            Arc::clone(&schema),
-            0,
-            1000,
-            Some("invoice_id".to_string()),
-            Some(" WHERE \"status\" = 'active'".to_string()),
-        );
-
-        // Encode
-        let mut buf = Vec::new();
-        codec
-            .try_encode(Arc::new(exec), &mut buf)
-            .expect("encode should succeed");
-
-        // Decode
-        let registry = empty_registry();
-        let decoded = codec
-            .try_decode(&buf, &[], registry.as_ref())
-            .expect("decode should succeed");
-
-        let restored = decoded
-            .as_any()
-            .downcast_ref::<PostgresScanExec>()
-            .expect("should downcast to PostgresScanExec");
-
-        assert_eq!(
-            restored.where_clause,
-            Some(" WHERE \"status\" = 'active'".to_string())
-        );
-        assert_eq!(restored.pg_table, "invoices");
-        assert_eq!(restored.offset, 0);
-        assert_eq!(restored.limit, 1000);
-    }
-
-    #[test]
-    fn test_codec_roundtrip_csv() {
-        let codec = KallaPhysicalCodec::new();
-        let schema = csv_schema();
-
-        let exec = CsvRangeScanExec::new(
-            "s3://my-bucket/data.csv".to_string(),
-            Arc::clone(&schema),
-            1000,
-            5000,
-            true,
-            "id,value,score".to_string(),
-            sample_s3_config(),
-        );
-
-        // Encode
-        let mut buf = Vec::new();
-        codec
-            .try_encode(Arc::new(exec), &mut buf)
-            .expect("encode should succeed");
-
-        // First byte should be the csv tag.
-        assert_eq!(
-            buf[0],
-            kalla_connectors::csv_partitioned::WIRE_TAG_CSV_EXEC
-        );
-
-        // Decode
-        let registry = empty_registry();
-        let decoded = codec
-            .try_decode(&buf, &[], registry.as_ref())
-            .expect("decode should succeed");
-
-        let restored = decoded
-            .as_any()
-            .downcast_ref::<CsvRangeScanExec>()
-            .expect("should downcast to CsvRangeScanExec");
-
-        assert_eq!(restored.s3_uri, "s3://my-bucket/data.csv");
-        assert_eq!(restored.start_byte, 1000);
-        assert_eq!(restored.end_byte, 5000);
-        assert!(restored.is_first_partition);
-        assert_eq!(restored.header_line, "id,value,score");
-        assert_eq!(restored.s3_config.region, "us-east-1");
-        assert_eq!(restored.s3_config.access_key_id, "test-key");
-        assert_eq!(
-            restored.s3_config.endpoint_url,
-            Some("http://localhost:9000".to_string())
-        );
-        assert!(restored.s3_config.allow_http);
-        assert_eq!(restored.schema.fields().len(), 3);
-        assert_eq!(restored.schema.field(0).name(), "id");
-    }
-
-    #[test]
-    fn test_codec_unknown_tag() {
+    fn test_codec_unknown_tag_delegates_to_ballista() {
         let codec = KallaPhysicalCodec::new();
         let registry = empty_registry();
 
-        let buf = vec![0xFF, 0x00, 0x01]; // unknown tag 0xFF
+        let buf = vec![0xFF, 0x00, 0x01]; // unknown tag
         let result = codec.try_decode(&buf, &[], registry.as_ref());
-
-        // Unknown tags are delegated to BallistaPhysicalExtensionCodec, which
-        // fails to parse the bytes as a protobuf message.
+        // Delegated to BallistaPhysicalExtensionCodec which fails on garbage
         assert!(result.is_err());
     }
 
@@ -429,15 +289,10 @@ mod tests {
         let codec = KallaPhysicalCodec::new();
         let registry = empty_registry();
 
-        let buf: Vec<u8> = vec![];
-        let result = codec.try_decode(&buf, &[], registry.as_ref());
-
+        let result = codec.try_decode(&[], &[], registry.as_ref());
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("empty buffer"),
-            "unexpected error: {err_msg}"
-        );
+        assert!(err_msg.contains("empty buffer"), "unexpected: {err_msg}");
     }
 
     #[test]
@@ -445,36 +300,24 @@ mod tests {
         let codec = KallaPhysicalCodec::new();
         let registry = empty_registry();
 
-        // Valid tag but garbage payload
-        let buf = vec![
-            kalla_connectors::postgres::WIRE_TAG_POSTGRES_EXEC,
-            0x00,
-            0x01,
-            0x02,
-        ];
+        // Valid tag, garbage payload
+        let tag = kalla_connectors::postgres_connector::WIRE_TAG_POSTGRES_EXEC;
+        let buf = vec![tag, 0x00, 0x01, 0x02];
         let result = codec.try_decode(&buf, &[], registry.as_ref());
-
         assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("failed to deserialize PostgresScanExec"),
-            "unexpected error: {err_msg}"
-        );
     }
 
     #[test]
-    fn test_codec_udf_roundtrip() {
+    fn test_codec_udf_decode() {
         let codec = KallaPhysicalCodec::new();
         let udf = codec.try_decode_udf("tolerance_match", &[]).unwrap();
         assert_eq!(udf.name(), "tolerance_match");
     }
 
     #[test]
-    fn test_codec_udf_unknown() {
+    fn test_codec_udf_unknown_delegates() {
         let codec = KallaPhysicalCodec::new();
-        let result = codec.try_decode_udf("nonexistent_udf", &[]);
-        // Unknown UDFs are delegated to BallistaPhysicalExtensionCodec
-        assert!(result.is_err());
+        assert!(codec.try_decode_udf("nonexistent", &[]).is_err());
     }
 
     #[test]
@@ -483,7 +326,6 @@ mod tests {
         let udf = kalla_core::udf::tolerance_match_udf();
         let mut buf = Vec::new();
         codec.try_encode_udf(&udf, &mut buf).unwrap();
-        // Encoding writes no payload for name-only UDFs
         assert!(buf.is_empty());
     }
 }

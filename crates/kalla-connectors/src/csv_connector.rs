@@ -36,7 +36,7 @@ use object_store::{GetOptions, GetRange, ObjectStore};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use crate::s3::{S3Config, S3Connector};
+use crate::s3::S3Config;
 
 // ===========================================================================
 // Partition helpers
@@ -145,7 +145,7 @@ impl CsvByteRangeTable {
         num_partitions: usize,
         s3_config: S3Config,
     ) -> anyhow::Result<Self> {
-        let (bucket, key) = S3Connector::parse_s3_uri(s3_uri)?;
+        let (bucket, key) = crate::s3::parse_s3_uri(s3_uri)?;
         let store = build_store(&s3_config, &bucket)?;
         let path = ObjectPath::from(key.as_str());
 
@@ -584,7 +584,7 @@ async fn fetch_csv_range(
     header_line: &str,
     s3_config: &S3Config,
 ) -> anyhow::Result<arrow::array::RecordBatch> {
-    let (bucket, key) = S3Connector::parse_s3_uri(s3_uri)?;
+    let (bucket, key) = crate::s3::parse_s3_uri(s3_uri)?;
     let store = build_store(s3_config, &bucket)?;
     let path = ObjectPath::from(key.as_str());
 
