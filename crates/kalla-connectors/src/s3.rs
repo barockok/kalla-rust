@@ -95,8 +95,7 @@ mod tests {
 
     #[test]
     fn test_parse_s3_uri_nested() {
-        let (bucket, key) =
-            parse_s3_uri("s3://data/year=2024/month=01/data.parquet").unwrap();
+        let (bucket, key) = parse_s3_uri("s3://data/year=2024/month=01/data.parquet").unwrap();
         assert_eq!(bucket, "data");
         assert_eq!(key, "year=2024/month=01/data.parquet");
     }

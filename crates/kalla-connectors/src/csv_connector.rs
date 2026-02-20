@@ -272,10 +272,7 @@ impl CsvByteRangeTable {
     }
 
     /// Deserialize from bytes + schema into a `CsvByteRangeTable`.
-    pub fn wire_deserialize(
-        buf: &[u8],
-        schema: SchemaRef,
-    ) -> datafusion::error::Result<Self> {
+    pub fn wire_deserialize(buf: &[u8], schema: SchemaRef) -> datafusion::error::Result<Self> {
         let info: serde_json::Value = serde_json::from_slice(buf).map_err(|e| {
             datafusion::error::DataFusionError::Internal(format!(
                 "failed to deserialize CsvByteRangeTable: {e}"
@@ -284,9 +281,7 @@ impl CsvByteRangeTable {
 
         let s3_uri = info["s3_uri"]
             .as_str()
-            .ok_or_else(|| {
-                datafusion::error::DataFusionError::Internal("missing s3_uri".into())
-            })?
+            .ok_or_else(|| datafusion::error::DataFusionError::Internal("missing s3_uri".into()))?
             .to_string();
         let total_size = info["total_size"].as_u64().unwrap_or(0);
         let num_partitions = info["num_partitions"].as_u64().unwrap_or(1) as usize;
@@ -360,7 +355,10 @@ impl TableProvider for CsvByteRangeTable {
 }
 
 /// Build an `object_store::aws::AmazonS3` instance for the given bucket.
-pub(crate) fn build_store(config: &S3Config, bucket: &str) -> anyhow::Result<object_store::aws::AmazonS3> {
+pub(crate) fn build_store(
+    config: &S3Config,
+    bucket: &str,
+) -> anyhow::Result<object_store::aws::AmazonS3> {
     let mut builder = AmazonS3Builder::new()
         .with_region(&config.region)
         .with_bucket_name(bucket)

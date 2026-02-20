@@ -241,9 +241,7 @@ mod tests {
 
     /// Build a minimal encoded buffer via the codec for dispatch tests.
     fn encode_sample_postgres(codec: &KallaPhysicalCodec) -> Vec<u8> {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-        ]));
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let exec = PostgresScanExec::new(
             "postgres://localhost/test".to_string(),
             "t".to_string(),
@@ -270,7 +268,10 @@ mod tests {
         let decoded = codec
             .try_decode(&buf, &[], registry.as_ref())
             .expect("decode should succeed");
-        assert!(decoded.as_any().downcast_ref::<PostgresScanExec>().is_some());
+        assert!(decoded
+            .as_any()
+            .downcast_ref::<PostgresScanExec>()
+            .is_some());
     }
 
     #[test]

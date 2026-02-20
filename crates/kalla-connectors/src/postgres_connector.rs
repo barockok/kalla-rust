@@ -214,10 +214,7 @@ impl PostgresPartitionedTable {
     }
 
     /// Deserialize from bytes + schema into a `PostgresPartitionedTable`.
-    pub fn wire_deserialize(
-        buf: &[u8],
-        schema: SchemaRef,
-    ) -> datafusion::error::Result<Self> {
+    pub fn wire_deserialize(buf: &[u8], schema: SchemaRef) -> datafusion::error::Result<Self> {
         let info: serde_json::Value = serde_json::from_slice(buf).map_err(|e| {
             datafusion::error::DataFusionError::Internal(format!(
                 "failed to deserialize PostgresPartitionedTable: {e}"
@@ -232,9 +229,7 @@ impl PostgresPartitionedTable {
             .to_string();
         let pg_table = info["pg_table"]
             .as_str()
-            .ok_or_else(|| {
-                datafusion::error::DataFusionError::Internal("missing pg_table".into())
-            })?
+            .ok_or_else(|| datafusion::error::DataFusionError::Internal("missing pg_table".into()))?
             .to_string();
         let total_rows = info["total_rows"].as_u64().unwrap_or(0);
         let num_partitions = info["num_partitions"].as_u64().unwrap_or(1) as usize;
@@ -1010,5 +1005,4 @@ mod tests {
         );
         assert_eq!(parse_data_type("SomeWeirdType"), DataType::Utf8);
     }
-
 }
