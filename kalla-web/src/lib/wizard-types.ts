@@ -45,6 +45,34 @@ export interface SampleData {
   totalRows: number;
 }
 
+export type PatternType = "1:1" | "1:N" | "N:M";
+
+export interface DetectedPattern {
+  type: PatternType;
+  description: string;
+  confidence: number;
+}
+
+export interface PrimaryKeys {
+  source_a: string[];
+  source_b: string[];
+}
+
+export interface InferredRule {
+  id: string;
+  name: string;
+  sql: string;
+  description: string;
+  confidence: number;
+  evidence: Record<string, unknown>[];
+}
+
+export type RuleStatus = "pending" | "accepted" | "rejected";
+
+export interface RuleWithStatus extends InferredRule {
+  status: RuleStatus;
+}
+
 export interface WizardState {
   step: WizardStep;
   leftSource: WizardSource | null;
@@ -62,6 +90,10 @@ export interface WizardState {
   nlFilterExplanation: string;
   sampleLeft: SampleData | null;
   sampleRight: SampleData | null;
+  detectedPattern: DetectedPattern | null;
+  primaryKeys: PrimaryKeys | null;
+  inferredRules: RuleWithStatus[];
+  builtRecipeSql: string | null;
   loading: Record<string, boolean>;
   errors: Record<string, string | null>;
 }
@@ -83,6 +115,10 @@ export const INITIAL_WIZARD_STATE: WizardState = {
   nlFilterExplanation: "",
   sampleLeft: null,
   sampleRight: null,
+  detectedPattern: null,
+  primaryKeys: null,
+  inferredRules: [],
+  builtRecipeSql: null,
   loading: {},
   errors: {},
 };
@@ -100,4 +136,9 @@ export type WizardAction =
   | { type: "SET_SOURCE_FILTERS_RIGHT"; filters: FilterCondition[] }
   | { type: "SET_SAMPLE"; side: "left" | "right"; data: SampleData }
   | { type: "SET_LOADING"; key: string; value: boolean }
-  | { type: "SET_ERROR"; key: string; error: string | null };
+  | { type: "SET_ERROR"; key: string; error: string | null }
+  | { type: "SET_INFERRED_RULES"; pattern: DetectedPattern; primaryKeys: PrimaryKeys; rules: RuleWithStatus[] }
+  | { type: "ACCEPT_RULE"; id: string }
+  | { type: "REJECT_RULE"; id: string }
+  | { type: "ADD_CUSTOM_RULE"; rule: RuleWithStatus }
+  | { type: "SET_RECIPE_SQL"; sql: string };

@@ -56,6 +56,34 @@ function wizardReducer(state: WizardState, action: WizardAction): WizardState {
       return { ...state, loading: { ...state.loading, [action.key]: action.value } };
     case "SET_ERROR":
       return { ...state, errors: { ...state.errors, [action.key]: action.error } };
+    case "SET_INFERRED_RULES":
+      return {
+        ...state,
+        detectedPattern: action.pattern,
+        primaryKeys: action.primaryKeys,
+        inferredRules: action.rules,
+      };
+    case "ACCEPT_RULE":
+      return {
+        ...state,
+        inferredRules: state.inferredRules.map((r) =>
+          r.id === action.id ? { ...r, status: "accepted" as const } : r,
+        ),
+      };
+    case "REJECT_RULE":
+      return {
+        ...state,
+        inferredRules: state.inferredRules.map((r) =>
+          r.id === action.id ? { ...r, status: "rejected" as const } : r,
+        ),
+      };
+    case "ADD_CUSTOM_RULE":
+      return {
+        ...state,
+        inferredRules: [...state.inferredRules, action.rule],
+      };
+    case "SET_RECIPE_SQL":
+      return { ...state, builtRecipeSql: action.sql };
     default:
       return state;
   }
