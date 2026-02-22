@@ -5,6 +5,8 @@ import { WizardShell } from "@/components/wizard/WizardShell";
 import { SelectSources } from "@/components/wizard/steps/SelectSources";
 import { SampleData } from "@/components/wizard/steps/SampleData";
 import { AIRules } from "@/components/wizard/steps/AIRules";
+import { RunParameters } from "@/components/wizard/steps/RunParameters";
+import { ReviewSave } from "@/components/wizard/steps/ReviewSave";
 
 function WizardContent() {
   const { state } = useWizard();
@@ -36,6 +38,20 @@ function WizardContent() {
         <div>
           <div className="mt-6">
             <AIRules />
+          </div>
+        </div>
+      )}
+      {state.step === 4 && (
+        <div>
+          <div className="mt-6">
+            <RunParameters />
+          </div>
+        </div>
+      )}
+      {state.step === 5 && (
+        <div>
+          <div className="mt-6">
+            <ReviewSave />
           </div>
         </div>
       )}
