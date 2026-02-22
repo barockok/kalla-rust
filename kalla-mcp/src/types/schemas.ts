@@ -61,6 +61,6 @@ export const InferredRuleSchema = z.object({
   sql: z.string(),
   description: z.string(),
   confidence: z.number().min(0).max(1),
-  evidence: z.array(z.record(z.unknown())).optional().default([]),
+  evidence: z.array(z.record(z.unknown())).default([]),
 });
 export type InferredRule = z.infer<typeof InferredRuleSchema>;

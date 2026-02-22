@@ -14,7 +14,7 @@ function getClient(): Anthropic {
 
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
 
-export function parseJsonResponse<T>(text: string, schema: z.ZodSchema<T>): T {
+export function parseJsonResponse<T>(text: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>): T {
   const fenced = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
   const jsonStr = fenced ? fenced[1].trim() : text.trim();
 
@@ -35,7 +35,7 @@ export function parseJsonResponse<T>(text: string, schema: z.ZodSchema<T>): T {
 export async function callClaude<T>(
   systemPrompt: string,
   userMessage: string,
-  outputSchema: z.ZodSchema<T>,
+  outputSchema: z.ZodType<T, z.ZodTypeDef, unknown>,
 ): Promise<T> {
   const client = getClient();
 
