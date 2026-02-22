@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import {
   SlidersHorizontal,
   Sparkles,
-  Calendar,
+  Calendar as CalendarIcon,
   DollarSign,
   ArrowRight,
   Landmark,
@@ -26,6 +26,13 @@ import {
   Loader2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { Calendar } from "@/components/ui/calendar";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { format, parse } from "date-fns";
 import type { ColumnInfo } from "@/lib/chat-types";
 import type {
   FieldMapping,
@@ -51,7 +58,7 @@ function rowsToRecords(
 }
 
 const FILTER_ICONS: Record<string, LucideIcon> = {
-  date_range: Calendar,
+  date_range: CalendarIcon,
   amount_range: DollarSign,
 };
 
@@ -519,35 +526,83 @@ export function FilterCard() {
                 {/* Value input */}
                 {filter.type === "date_range" && (
                   <div className="flex items-center gap-3">
-                    <Input
-                      type="date"
-                      className="flex-1"
-                      value={filter.value?.[0] ?? ""}
-                      onChange={(e) =>
-                        dispatch({
-                          type: "UPDATE_COMMON_FILTER",
-                          id: filter.id,
-                          updates: {
-                            value: [e.target.value, filter.value?.[1] ?? ""],
-                          },
-                        })
-                      }
-                    />
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className="flex-1 justify-start text-left font-normal"
+                        >
+                          <CalendarIcon className="mr-2 h-4 w-4" />
+                          {filter.value?.[0]
+                            ? format(
+                                parse(filter.value[0], "yyyy-MM-dd", new Date()),
+                                "MMM d, yyyy",
+                              )
+                            : "Start date"}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={
+                            filter.value?.[0]
+                              ? parse(filter.value[0], "yyyy-MM-dd", new Date())
+                              : undefined
+                          }
+                          onSelect={(date) =>
+                            dispatch({
+                              type: "UPDATE_COMMON_FILTER",
+                              id: filter.id,
+                              updates: {
+                                value: [
+                                  date ? format(date, "yyyy-MM-dd") : "",
+                                  filter.value?.[1] ?? "",
+                                ],
+                              },
+                            })
+                          }
+                        />
+                      </PopoverContent>
+                    </Popover>
                     <span className="text-xs text-muted-foreground">to</span>
-                    <Input
-                      type="date"
-                      className="flex-1"
-                      value={filter.value?.[1] ?? ""}
-                      onChange={(e) =>
-                        dispatch({
-                          type: "UPDATE_COMMON_FILTER",
-                          id: filter.id,
-                          updates: {
-                            value: [filter.value?.[0] ?? "", e.target.value],
-                          },
-                        })
-                      }
-                    />
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className="flex-1 justify-start text-left font-normal"
+                        >
+                          <CalendarIcon className="mr-2 h-4 w-4" />
+                          {filter.value?.[1]
+                            ? format(
+                                parse(filter.value[1], "yyyy-MM-dd", new Date()),
+                                "MMM d, yyyy",
+                              )
+                            : "End date"}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={
+                            filter.value?.[1]
+                              ? parse(filter.value[1], "yyyy-MM-dd", new Date())
+                              : undefined
+                          }
+                          onSelect={(date) =>
+                            dispatch({
+                              type: "UPDATE_COMMON_FILTER",
+                              id: filter.id,
+                              updates: {
+                                value: [
+                                  filter.value?.[0] ?? "",
+                                  date ? format(date, "yyyy-MM-dd") : "",
+                                ],
+                              },
+                            })
+                          }
+                        />
+                      </PopoverContent>
+                    </Popover>
                   </div>
                 )}
 
