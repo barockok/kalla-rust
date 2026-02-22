@@ -4,12 +4,14 @@ import { parseNlFilter } from "./tools/parse-nl-filter.js";
 import { inferRules } from "./tools/infer-rules.js";
 import { buildRecipe } from "./tools/build-recipe.js";
 import { nlToSql } from "./tools/nl-to-sql.js";
+import { previewMatch } from "./tools/preview-match.js";
 import {
   DetectFieldMappingsInputSchema,
   ParseNlFilterInputSchema,
   InferRulesInputSchema,
   BuildRecipeInputSchema,
   NlToSqlInputSchema,
+  PreviewMatchInputSchema,
 } from "./types/tool-io.js";
 
 export function createServer(): McpServer {
@@ -85,6 +87,21 @@ export function createServer(): McpServer {
     async (args) => {
       try {
         const result = await nlToSql.handler(args);
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }], isError: true };
+      }
+    },
+  );
+
+  server.tool(
+    previewMatch.name,
+    previewMatch.description,
+    PreviewMatchInputSchema.shape,
+    async (args) => {
+      try {
+        const result = await previewMatch.handler(args);
         return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
