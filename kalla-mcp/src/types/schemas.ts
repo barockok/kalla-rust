@@ -39,3 +39,28 @@ export const SuggestedFilterSchema = z.object({
   field_b: z.string(),
 });
 export type SuggestedFilter = z.infer<typeof SuggestedFilterSchema>;
+
+export const PatternTypeSchema = z.enum(["1:1", "1:N", "N:M"]);
+export type PatternType = z.infer<typeof PatternTypeSchema>;
+
+export const DetectedPatternSchema = z.object({
+  type: PatternTypeSchema,
+  description: z.string(),
+  confidence: z.number().min(0).max(1),
+});
+export type DetectedPattern = z.infer<typeof DetectedPatternSchema>;
+
+export const PrimaryKeysSchema = z.object({
+  source_a: z.array(z.string()),
+  source_b: z.array(z.string()),
+});
+export type PrimaryKeys = z.infer<typeof PrimaryKeysSchema>;
+
+export const InferredRuleSchema = z.object({
+  name: z.string(),
+  sql: z.string(),
+  description: z.string(),
+  confidence: z.number().min(0).max(1),
+  evidence: z.array(z.record(z.unknown())).optional().default([]),
+});
+export type InferredRule = z.infer<typeof InferredRuleSchema>;
