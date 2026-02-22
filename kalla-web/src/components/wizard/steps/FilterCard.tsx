@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 import {
   SlidersHorizontal,
   Sparkles,
@@ -21,6 +22,8 @@ import {
   ArrowRight,
   Landmark,
   FileText,
+  Search,
+  Loader2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { ColumnInfo } from "@/lib/chat-types";
@@ -332,6 +335,65 @@ export function FilterCard() {
     dispatch,
   ]);
 
+  /* --- Load Sample handler --- */
+
+  async function handleLoadSample() {
+    if (!leftSource || !rightSource) return;
+
+    dispatch({ type: "SET_LOADING", key: "loadSample", value: true });
+    dispatch({ type: "SET_ERROR", key: "loadSample", error: null });
+
+    try {
+      const leftConditions = commonFilters
+        .filter((f) => f.value && f.value[0] && f.value[1])
+        .map((f) => ({
+          column: f.field_a,
+          op: "between" as const,
+          value: f.value!,
+        }));
+
+      const rightConditions = commonFilters
+        .filter((f) => f.value && f.value[0] && f.value[1])
+        .map((f) => ({
+          column: f.field_b,
+          op: "between" as const,
+          value: f.value!,
+        }));
+
+      const [resLeft, resRight] = await Promise.all([
+        fetch(`/api/sources/${leftSource.alias}/load-scoped`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conditions: leftConditions, limit: 50 }),
+        }).then((r) => r.json()),
+        fetch(`/api/sources/${rightSource.alias}/load-scoped`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conditions: rightConditions, limit: 50 }),
+        }).then((r) => r.json()),
+      ]);
+
+      dispatch({
+        type: "SET_SAMPLE",
+        side: "left",
+        data: { columns: resLeft.columns, rows: resLeft.rows, totalRows: resLeft.total_rows },
+      });
+      dispatch({
+        type: "SET_SAMPLE",
+        side: "right",
+        data: { columns: resRight.columns, rows: resRight.rows, totalRows: resRight.total_rows },
+      });
+    } catch (err) {
+      dispatch({
+        type: "SET_ERROR",
+        key: "loadSample",
+        error: err instanceof Error ? err.message : "Failed to load sample data",
+      });
+    } finally {
+      dispatch({ type: "SET_LOADING", key: "loadSample", value: false });
+    }
+  }
+
   /* --- Render helpers --- */
 
   const isLoading = loading.detectMappings;
@@ -536,6 +598,25 @@ export function FilterCard() {
 
         {/* Source-Specific Filters */}
         <SourceSpecificFilters />
+
+        {/* Load Sample Button */}
+        {state.errors.loadSample && (
+          <p className="mt-3 text-sm text-destructive">{state.errors.loadSample}</p>
+        )}
+        <div className="mt-5">
+          <Button
+            className="w-full"
+            onClick={handleLoadSample}
+            disabled={state.loading.loadSample}
+          >
+            {state.loading.loadSample ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Search className="mr-2 h-4 w-4" />
+            )}
+            Load Sample
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );

@@ -3,6 +3,7 @@
 import { useWizard } from "@/components/wizard/wizard-context";
 import { Button } from "@/components/ui/button";
 import { FilterCard } from "./FilterCard";
+import { SamplePreview } from "./SamplePreview";
 import { ArrowLeft, ArrowRight, Landmark, FileText } from "lucide-react";
 
 export function SampleData() {
@@ -30,7 +31,8 @@ export function SampleData() {
       {/* Filter card */}
       <FilterCard />
 
-      {/* Sample preview — added in Task 6 */}
+      {/* Sample preview */}
+      <SamplePreview />
 
       {/* Footer: Back / Continue */}
       <div className="flex justify-between border-t pt-6">
