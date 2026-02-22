@@ -61,10 +61,17 @@ export async function callMcpTool(
     throw new Error(`No text content in MCP tool response for ${toolName}`);
   }
 
-  const parsed = JSON.parse(textContent.text);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(textContent.text);
+  } catch {
+    // MCP SDK returns plain-text error messages (not JSON)
+    throw new Error(textContent.text);
+  }
 
   if (result.isError) {
-    throw new Error(parsed.error || `MCP tool ${toolName} failed`);
+    const err = parsed as Record<string, unknown>;
+    throw new Error((err.error as string) || `MCP tool ${toolName} failed`);
   }
 
   return parsed;
