@@ -101,3 +101,38 @@ export const NlToSqlOutputSchema = z.object({
   confidence: z.number().min(0).max(1),
 });
 export type NlToSqlOutput = z.infer<typeof NlToSqlOutputSchema>;
+
+// ── preview_match ────────────────────────────────────
+export const PreviewMatchInputSchema = z.object({
+  match_sql: z.string(),
+  sample_a: z.array(z.record(z.unknown())),
+  sample_b: z.array(z.record(z.unknown())),
+  schema_a: SourceSchemaSchema,
+  schema_b: SourceSchemaSchema,
+  primary_keys: PrimaryKeysSchema,
+  rules: z.array(z.object({
+    name: z.string(),
+    sql: z.string(),
+    description: z.string(),
+  })),
+});
+export type PreviewMatchInput = z.infer<typeof PreviewMatchInputSchema>;
+
+export const MatchPreviewRowSchema = z.object({
+  left_row: z.record(z.unknown()),
+  right_rows: z.array(z.record(z.unknown())),
+  status: z.enum(["matched", "unmatched", "partial"]),
+});
+
+export const MatchPreviewSummarySchema = z.object({
+  total_left: z.number(),
+  total_right: z.number(),
+  matched: z.number(),
+  unmatched: z.number(),
+});
+
+export const PreviewMatchOutputSchema = z.object({
+  matches: z.array(MatchPreviewRowSchema),
+  summary: MatchPreviewSummarySchema,
+});
+export type PreviewMatchOutput = z.infer<typeof PreviewMatchOutputSchema>;
