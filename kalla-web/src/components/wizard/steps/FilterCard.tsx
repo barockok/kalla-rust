@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useWizard } from "@/components/wizard/wizard-context";
 import { callAI } from "@/lib/ai-client";
 import { Card, CardContent } from "@/components/ui/card";
@@ -19,6 +19,8 @@ import {
   Calendar,
   DollarSign,
   ArrowRight,
+  Landmark,
+  FileText,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { ColumnInfo } from "@/lib/chat-types";
@@ -65,6 +67,172 @@ function buildCommonFilters(suggestedFilters: SuggestedFilter[]): CommonFilter[]
     field_b: sf.field_b,
     value: null,
   }));
+}
+
+/* ------------------------------------------------------------------ */
+/*  NLFilterInput                                                      */
+/* ------------------------------------------------------------------ */
+
+function NLFilterInput() {
+  const { state, dispatch } = useWizard();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function handleChange(text: string) {
+    dispatch({ type: "SET_NL_TEXT", text });
+
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (!text.trim()) return;
+
+    timerRef.current = setTimeout(async () => {
+      if (!state.schemaLeft || !state.schemaRight || !state.leftSource || !state.rightSource) return;
+
+      dispatch({ type: "SET_LOADING", key: "parseNlFilter", value: true });
+      dispatch({ type: "SET_ERROR", key: "parseNlFilter", error: null });
+
+      try {
+        const result = await callAI<{
+          filters: Array<{ source: string; column: string; op: string; value: unknown }>;
+          explanation: string;
+        }>("parse_nl_filter", {
+          text,
+          schema_a: { alias: state.leftSource!.alias, columns: state.schemaLeft },
+          schema_b: { alias: state.rightSource!.alias, columns: state.schemaRight },
+          current_mappings: state.fieldMappings,
+        });
+
+        // Merge NL filter results into common filters
+        const updatedFilters = [...state.commonFilters];
+        for (const f of result.filters) {
+          const col = [...(state.schemaLeft || []), ...(state.schemaRight || [])].find(
+            (c) => c.name === f.column,
+          );
+          if (!col) continue;
+
+          const isDate = col.data_type.includes("date") || col.data_type.includes("timestamp");
+          const isNumeric =
+            col.data_type.includes("numeric") ||
+            col.data_type.includes("decimal") ||
+            col.data_type.includes("int");
+
+          const targetType = isDate ? "date_range" : isNumeric ? "amount_range" : null;
+          if (!targetType) continue;
+
+          const existing = updatedFilters.find((cf) => cf.type === targetType);
+          if (existing && f.op === "between" && Array.isArray(f.value)) {
+            existing.value = [String(f.value[0]), String(f.value[1])];
+          } else if (existing && (f.op === "gt" || f.op === "gte")) {
+            existing.value = [String(f.value), existing.value?.[1] || ""];
+          } else if (existing && (f.op === "lt" || f.op === "lte")) {
+            existing.value = [existing.value?.[0] || "", String(f.value)];
+          }
+        }
+
+        dispatch({ type: "SET_NL_RESULT", filters: updatedFilters, explanation: result.explanation });
+      } catch (err) {
+        dispatch({
+          type: "SET_ERROR",
+          key: "parseNlFilter",
+          error: err instanceof Error ? err.message : "Failed to parse filter",
+        });
+      } finally {
+        dispatch({ type: "SET_LOADING", key: "parseNlFilter", value: false });
+      }
+    }, 500);
+  }
+
+  return (
+    <div className="mt-4">
+      <div className="flex items-center gap-2 rounded-lg border-[1.5px] border-input px-3 py-2.5">
+        <Sparkles className="h-4 w-4 shrink-0 text-blue-500" />
+        <input
+          type="text"
+          className="flex-1 bg-transparent text-xs outline-none placeholder:italic placeholder:text-muted-foreground"
+          placeholder="Adjust filters in your own words..."
+          value={state.nlFilterText}
+          onChange={(e) => handleChange(e.target.value)}
+        />
+        {state.loading.parseNlFilter && (
+          <div className="h-3 w-3 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+        )}
+      </div>
+      {state.nlFilterExplanation && (
+        <p className="mt-1.5 text-[11px] text-muted-foreground">{state.nlFilterExplanation}</p>
+      )}
+      {state.errors.parseNlFilter && (
+        <p className="mt-1.5 text-[11px] text-destructive">{state.errors.parseNlFilter}</p>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  SourceSpecificFilters                                              */
+/* ------------------------------------------------------------------ */
+
+function SourceSpecificFilters() {
+  const { state } = useWizard();
+  const { leftSource, rightSource, schemaLeft, schemaRight } = state;
+
+  if (!leftSource || !rightSource || !schemaLeft || !schemaRight) return null;
+
+  const usedLeft = new Set(state.commonFilters.map((f) => f.field_a));
+  const usedRight = new Set(state.commonFilters.map((f) => f.field_b));
+  const extraLeft = schemaLeft.filter((c) => !usedLeft.has(c.name));
+  const extraRight = schemaRight.filter((c) => !usedRight.has(c.name));
+
+  return (
+    <div>
+      <h4 className="mb-3 text-[13px] font-semibold">Source-Specific Filters</h4>
+      <div className="grid grid-cols-2 gap-6">
+        <div>
+          <div className="mb-2 flex items-center gap-2">
+            <Landmark className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="text-xs font-semibold">{leftSource.alias}</span>
+          </div>
+          {extraLeft.slice(0, 2).map((col) => (
+            <div key={col.name} className="mb-2">
+              <label className="mb-1 block text-[10px] font-medium text-muted-foreground">
+                {col.name}
+              </label>
+              <Select>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder={`All ${col.name}s`} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__" className="text-xs">
+                    All
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          ))}
+        </div>
+        <div>
+          <div className="mb-2 flex items-center gap-2">
+            <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="text-xs font-semibold">{rightSource.alias}</span>
+          </div>
+          {extraRight.slice(0, 2).map((col) => (
+            <div key={col.name} className="mb-2">
+              <label className="mb-1 block text-[10px] font-medium text-muted-foreground">
+                {col.name}
+              </label>
+              <Select>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder={`All ${col.name}s`} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__" className="text-xs">
+                    All
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -360,7 +528,14 @@ export function FilterCard() {
             );
           })}
 
-        {/* NL input — added in Task 5 */}
+        {/* NL Override Input */}
+        {!isLoading && commonFilters.length > 0 && <NLFilterInput />}
+
+        {/* Divider */}
+        <div className="my-5 h-px bg-border" />
+
+        {/* Source-Specific Filters */}
+        <SourceSpecificFilters />
       </CardContent>
     </Card>
   );
