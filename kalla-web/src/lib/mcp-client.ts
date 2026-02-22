@@ -25,6 +25,7 @@ export async function getMcpClient(): Promise<Client> {
         ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || "",
         ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL || "",
         ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL || "",
+        LLM_API_URL: process.env.LLM_API_URL || "",
       } as Record<string, string>,
     });
 

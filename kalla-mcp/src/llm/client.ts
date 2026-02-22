@@ -7,7 +7,7 @@ function getClient(): Anthropic {
   if (anthropicClient) return anthropicClient;
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
-  const baseURL = process.env.ANTHROPIC_BASE_URL || undefined;
+  const baseURL = process.env.ANTHROPIC_BASE_URL || process.env.LLM_API_URL || undefined;
   anthropicClient = new Anthropic({ apiKey, ...(baseURL ? { baseURL } : {}) });
   return anthropicClient;
 }
