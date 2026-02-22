@@ -2,6 +2,7 @@
 
 import { WizardProvider, useWizard } from "@/components/wizard/wizard-context";
 import { WizardShell } from "@/components/wizard/WizardShell";
+import { SelectSources } from "@/components/wizard/steps/SelectSources";
 
 function WizardContent() {
   const { state } = useWizard();
@@ -13,6 +14,9 @@ function WizardContent() {
           <p className="mt-1 text-sm text-muted-foreground">
             Choose the two data sources to reconcile.
           </p>
+          <div className="mt-6">
+            <SelectSources />
+          </div>
         </div>
       )}
       {state.step === 2 && (
