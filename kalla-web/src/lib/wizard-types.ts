@@ -73,6 +73,24 @@ export interface RuleWithStatus extends InferredRule {
   status: RuleStatus;
 }
 
+export interface MatchPreviewRow {
+  left_row: Record<string, unknown>;
+  right_rows: Record<string, unknown>[];
+  status: "matched" | "unmatched" | "partial";
+}
+
+export interface MatchPreviewSummary {
+  total_left: number;
+  total_right: number;
+  matched: number;
+  unmatched: number;
+}
+
+export interface MatchPreviewResult {
+  matches: MatchPreviewRow[];
+  summary: MatchPreviewSummary;
+}
+
 export interface WizardState {
   step: WizardStep;
   leftSource: WizardSource | null;
@@ -94,6 +112,10 @@ export interface WizardState {
   primaryKeys: PrimaryKeys | null;
   inferredRules: RuleWithStatus[];
   builtRecipeSql: string | null;
+  runtimeFieldsLeft: string[];
+  runtimeFieldsRight: string[];
+  recipeName: string;
+  matchPreviewResult: MatchPreviewResult | null;
   loading: Record<string, boolean>;
   errors: Record<string, string | null>;
 }
@@ -119,6 +141,10 @@ export const INITIAL_WIZARD_STATE: WizardState = {
   primaryKeys: null,
   inferredRules: [],
   builtRecipeSql: null,
+  runtimeFieldsLeft: [],
+  runtimeFieldsRight: [],
+  recipeName: "",
+  matchPreviewResult: null,
   loading: {},
   errors: {},
 };
@@ -141,4 +167,7 @@ export type WizardAction =
   | { type: "ACCEPT_RULE"; id: string }
   | { type: "REJECT_RULE"; id: string }
   | { type: "ADD_CUSTOM_RULE"; rule: RuleWithStatus }
-  | { type: "SET_RECIPE_SQL"; sql: string };
+  | { type: "SET_RECIPE_SQL"; sql: string }
+  | { type: "TOGGLE_RUNTIME_FIELD"; side: "left" | "right"; field: string }
+  | { type: "SET_RECIPE_NAME"; name: string }
+  | { type: "SET_MATCH_PREVIEW"; result: MatchPreviewResult };

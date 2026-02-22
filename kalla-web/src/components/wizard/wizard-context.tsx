@@ -84,6 +84,18 @@ function wizardReducer(state: WizardState, action: WizardAction): WizardState {
       };
     case "SET_RECIPE_SQL":
       return { ...state, builtRecipeSql: action.sql };
+    case "TOGGLE_RUNTIME_FIELD": {
+      const key = action.side === "left" ? "runtimeFieldsLeft" : "runtimeFieldsRight";
+      const current = state[key];
+      const next = current.includes(action.field)
+        ? current.filter((f) => f !== action.field)
+        : [...current, action.field];
+      return { ...state, [key]: next };
+    }
+    case "SET_RECIPE_NAME":
+      return { ...state, recipeName: action.name };
+    case "SET_MATCH_PREVIEW":
+      return { ...state, matchPreviewResult: action.result };
     default:
       return state;
   }
