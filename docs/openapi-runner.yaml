@@ -1,0 +1,275 @@
+openapi: 3.0.3
+info:
+  title: Kalla Runner API
+  description: >
+    Rust reconciliation engine built on DataFusion and Ballista. Accepts
+    reconciliation jobs, executes SQL matching queries against registered data
+    sources, and writes matched/unmatched results to Parquet files. Progress
+    is reported via HTTP callbacks.
+  version: 0.1.0
+
+servers:
+  - url: http://localhost:50050
+    description: Local development
+
+tags:
+  - name: Health
+    description: Health and readiness probes
+  - name: Jobs
+    description: Submit reconciliation jobs
+
+paths:
+  # ── Health ───────────────────────────────────────────────
+  /health:
+    get:
+      operationId: healthCheck
+      tags: [Health]
+      summary: Health check
+      description: Returns 200 OK if the server is running.
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: OK
+
+  /ready:
+    get:
+      operationId: readinessCheck
+      tags: [Health]
+      summary: Readiness check
+      description: Returns 200 OK when the runner is ready to accept jobs.
+      responses:
+        "200":
+          description: Server is ready
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: OK
+
+  /metrics:
+    get:
+      operationId: getMetrics
+      tags: [Health]
+      summary: Prometheus metrics
+      description: Returns Prometheus-format metrics for monitoring.
+      responses:
+        "200":
+          description: Metrics payload
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  # ── Jobs ─────────────────────────────────────────────────
+  /api/jobs:
+    post:
+      operationId: submitJob
+      tags: [Jobs]
+      summary: Submit a reconciliation job
+      description: >
+        Submits a reconciliation job for asynchronous execution. The job is
+        queued and executed in the background. Progress and results are reported
+        via callbacks to the provided callback_url.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JobRequest"
+            example:
+              run_id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+              callback_url: http://localhost:3001/api/worker
+              match_sql: >-
+                SELECT l.invoice_id, r.payment_id
+                FROM left_src l
+                JOIN right_src r
+                  ON l.invoice_id = r.reference_number
+                  AND tolerance_match(l.amount, r.paid_amount, 0.02)
+              sources:
+                - alias: left_src
+                  uri: "postgres://user:pass@localhost:5432/db?table=invoices"
+                - alias: right_src
+                  uri: "postgres://user:pass@localhost:5432/db?table=payments"
+              output_path: /data/runs/a1b2c3d4
+              primary_keys:
+                left_src: [invoice_id]
+                right_src: [payment_id]
+      responses:
+        "200":
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobAccepted"
+        "500":
+          description: Queue full or internal error
+          content:
+            text/plain:
+              schema:
+                type: string
+
+# ════════════════════════════════════════════════════════════
+# Components
+# ════════════════════════════════════════════════════════════
+components:
+  schemas:
+    # ── Job ──────────────────────────────────────────────
+    JobRequest:
+      type: object
+      required: [run_id, callback_url, match_sql, sources, output_path, primary_keys]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+          description: Unique identifier for this run
+        callback_url:
+          type: string
+          format: uri
+          description: URL to receive progress and completion callbacks
+        match_sql:
+          type: string
+          description: >
+            DataFusion SQL query for matching records. Source aliases are used
+            as table names. The built-in `tolerance_match(a, b, threshold)`
+            UDF is available.
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResolvedSource"
+          description: Resolved data sources to register with DataFusion
+        output_path:
+          type: string
+          description: Directory path for output Parquet files
+        primary_keys:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: Maps each source alias to its primary key column(s)
+
+    ResolvedSource:
+      type: object
+      required: [alias, uri]
+      properties:
+        alias:
+          type: string
+          description: Table alias used in match_sql
+          example: left_src
+        uri:
+          type: string
+          description: >
+            Data source URI. Supported schemes: postgres:// (partitioned table
+            reads), s3://.../*.csv (byte-range CSV), local *.csv, local Parquet.
+          example: "postgres://user:pass@localhost:5432/db?table=invoices"
+        filters:
+          type: array
+          items:
+            $ref: "#/components/schemas/FilterCondition"
+          description: Optional pre-filters applied at source registration
+
+    FilterCondition:
+      type: object
+      required: [column, op, value]
+      properties:
+        column:
+          type: string
+          description: Column name to filter on
+        op:
+          type: string
+          enum: [eq, neq, gt, gte, lt, lte, between, in, like]
+          description: Filter operator
+        value:
+          description: >
+            Comparison value. String or number for scalar operators.
+            Array of two values for `between`. Array of values for `in`.
+
+    JobAccepted:
+      type: object
+      required: [run_id, status]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          example: accepted
+
+    # ── Callbacks (documented for reference) ─────────────
+    # These are the payloads the runner POSTs to the callback_url.
+    # They are not endpoints on this server but are documented here
+    # as schemas for consumers.
+
+    ProgressCallback:
+      type: object
+      description: >
+        Sent during job execution to report staging or matching progress.
+        POSTed to {callback_url}/progress.
+      required: [run_id, stage]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        stage:
+          type: string
+          enum: [staging, matching]
+        progress:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Progress fraction
+        source:
+          type: string
+          description: Source alias (staging stage only)
+        matched_count:
+          type: integer
+          description: Records matched so far (matching stage only)
+
+    CompletionCallback:
+      type: object
+      description: >
+        Sent when the job finishes successfully.
+        POSTed to {callback_url}/complete.
+      required: [run_id, matched_count, unmatched_left_count, unmatched_right_count, output_paths]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        matched_count:
+          type: integer
+        unmatched_left_count:
+          type: integer
+        unmatched_right_count:
+          type: integer
+        output_paths:
+          type: object
+          required: [matched, unmatched_left, unmatched_right]
+          properties:
+            matched:
+              type: string
+              description: Path to matched.parquet
+            unmatched_left:
+              type: string
+              description: Path to unmatched_left.parquet
+            unmatched_right:
+              type: string
+              description: Path to unmatched_right.parquet
+
+    ErrorCallback:
+      type: object
+      description: >
+        Sent when the job fails.
+        POSTed to {callback_url}/error.
+      required: [run_id, error]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        error:
+          type: string
+          description: Error message

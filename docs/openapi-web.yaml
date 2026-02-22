@@ -1,0 +1,940 @@
+openapi: 3.0.3
+info:
+  title: Kalla Web API
+  description: >
+    Next.js orchestration layer for managing data sources, reconciliation
+    recipes, runs, CSV uploads, and chat-based recipe building.
+  version: 0.1.0
+
+servers:
+  - url: http://localhost:3001
+    description: Local development
+
+tags:
+  - name: Sources
+    description: Register and inspect data sources
+  - name: Recipes
+    description: Create and manage reconciliation recipes
+  - name: Runs
+    description: Execute reconciliation runs and track progress
+  - name: Uploads
+    description: Upload and preview CSV files via S3
+  - name: Chat
+    description: Chat-based recipe building agent
+  - name: Worker Callbacks
+    description: Internal endpoints for runner status reporting
+
+paths:
+  # ── Sources ──────────────────────────────────────────────
+  /api/sources:
+    get:
+      operationId: listSources
+      tags: [Sources]
+      summary: List all data sources
+      description: Returns all registered data sources, ordered by creation date (newest first).
+      responses:
+        "200":
+          description: List of sources
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Source"
+
+    post:
+      operationId: registerSource
+      tags: [Sources]
+      summary: Register or update a data source
+      description: Upserts a data source by alias.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterSourceRequest"
+      responses:
+        "200":
+          description: Source registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /api/sources/{alias}/preview:
+    get:
+      operationId: previewSource
+      tags: [Sources]
+      summary: Preview source schema and sample rows
+      parameters:
+        - name: alias
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+            maximum: 100
+      responses:
+        "200":
+          description: Source preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourcePreview"
+        "400":
+          description: Table name cannot be extracted from URI
+        "404":
+          description: Source not found
+
+  /api/sources/{alias}/load-scoped:
+    post:
+      operationId: loadScopedData
+      tags: [Sources]
+      summary: Load filtered rows from a source
+      parameters:
+        - name: alias
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoadScopedRequest"
+      responses:
+        "200":
+          description: Filtered rows
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourcePreview"
+        "400":
+          description: Unknown column or operator
+        "404":
+          description: Source not found
+
+  # ── Recipes ──────────────────────────────────────────────
+  /api/recipes:
+    get:
+      operationId: listRecipes
+      tags: [Recipes]
+      summary: List all recipes
+      description: Returns all recipes, ordered by creation date (newest first).
+      responses:
+        "200":
+          description: List of recipes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Recipe"
+
+    post:
+      operationId: createRecipe
+      tags: [Recipes]
+      summary: Create or update a recipe
+      description: Upserts a recipe by recipe_id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Recipe"
+      responses:
+        "200":
+          description: Recipe saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /api/recipes/{id}:
+    get:
+      operationId: getRecipe
+      tags: [Recipes]
+      summary: Get a recipe by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Recipe details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Recipe"
+        "404":
+          description: Recipe not found
+
+  # ── Runs ─────────────────────────────────────────────────
+  /api/runs:
+    get:
+      operationId: listRuns
+      tags: [Runs]
+      summary: List all runs
+      description: Returns all runs, ordered by creation date (newest first).
+      responses:
+        "200":
+          description: List of runs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RunSummary"
+
+    post:
+      operationId: createRun
+      tags: [Runs]
+      summary: Create and dispatch a reconciliation run
+      description: >
+        Creates a run from either a stored recipe_id or an inline recipe object,
+        resolves source URIs, and dispatches the job to the runner.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRunRequest"
+      responses:
+        "200":
+          description: Run submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateRunResponse"
+        "400":
+          description: Neither recipe_id nor recipe provided
+        "404":
+          description: Recipe not found
+        "502":
+          description: Job dispatch to runner failed
+
+  /api/runs/{id}:
+    get:
+      operationId: getRun
+      tags: [Runs]
+      summary: Get run details with progress
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Run details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunDetail"
+        "404":
+          description: Run not found
+
+  # ── Uploads ──────────────────────────────────────────────
+  /api/uploads/presign:
+    post:
+      operationId: presignUpload
+      tags: [Uploads]
+      summary: Request a presigned S3 upload URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PresignRequest"
+      responses:
+        "200":
+          description: Presigned URL for direct upload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresignResponse"
+
+  /api/uploads/preview:
+    post:
+      operationId: previewUpload
+      tags: [Uploads]
+      summary: Preview an uploaded CSV
+      description: Returns column names and sample rows from an uploaded CSV in S3.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [s3_uri]
+              properties:
+                s3_uri:
+                  type: string
+                  description: S3 URI of the uploaded file
+      responses:
+        "200":
+          description: CSV preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CsvPreview"
+        "400":
+          description: Invalid S3 URI
+        "404":
+          description: File not found
+
+  /api/uploads/{uploadId}/confirm:
+    post:
+      operationId: confirmUpload
+      tags: [Uploads]
+      summary: Confirm and finalize a file upload
+      parameters:
+        - name: uploadId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [s3_uri, filename]
+              properties:
+                s3_uri:
+                  type: string
+                filename:
+                  type: string
+      responses:
+        "200":
+          description: Upload confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfirmUploadResponse"
+        "400":
+          description: Empty CSV
+        "404":
+          description: File not found
+
+  # ── Chat ─────────────────────────────────────────────────
+  /api/chat/sessions:
+    post:
+      operationId: createChatSession
+      tags: [Chat]
+      summary: Create a new chat session
+      responses:
+        "200":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatSessionInfo"
+
+  /api/chat/sessions/{id}:
+    get:
+      operationId: getChatSession
+      tags: [Chat]
+      summary: Get chat session with message history
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatSession"
+        "404":
+          description: Session not found
+
+  /api/chat:
+    post:
+      operationId: sendChatMessage
+      tags: [Chat]
+      summary: Send a message to the chat agent
+      description: >
+        Send a text message or card response. Creates a new session if
+        session_id is not provided.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatMessageRequest"
+      responses:
+        "200":
+          description: Agent response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatMessageResponse"
+
+  # ── Worker Callbacks ─────────────────────────────────────
+  /api/worker/progress:
+    post:
+      operationId: workerProgress
+      tags: [Worker Callbacks]
+      summary: Report job progress
+      description: Called by the runner to report staging or matching progress.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerProgress"
+      responses:
+        "200":
+          description: Acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+
+  /api/worker/complete:
+    post:
+      operationId: workerComplete
+      tags: [Worker Callbacks]
+      summary: Report job completion
+      description: Called by the runner when a job finishes successfully.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerComplete"
+      responses:
+        "200":
+          description: Acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+
+  /api/worker/error:
+    post:
+      operationId: workerError
+      tags: [Worker Callbacks]
+      summary: Report job error
+      description: Called by the runner when a job fails.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerError"
+      responses:
+        "200":
+          description: Acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+
+# ════════════════════════════════════════════════════════════
+# Components
+# ════════════════════════════════════════════════════════════
+components:
+  schemas:
+    # ── Source ────────────────────────────────────────────
+    Source:
+      type: object
+      required: [alias, uri, source_type, status]
+      properties:
+        alias:
+          type: string
+          example: invoices
+        uri:
+          type: string
+          example: "postgres://host:5432/db?table=invoices"
+        source_type:
+          type: string
+          enum: [postgres, elasticsearch, file]
+        status:
+          type: string
+          example: connected
+
+    RegisterSourceRequest:
+      type: object
+      required: [alias, uri, source_type]
+      properties:
+        alias:
+          type: string
+        uri:
+          type: string
+        source_type:
+          type: string
+          enum: [postgres, elasticsearch, file]
+
+    ColumnMeta:
+      type: object
+      required: [name, data_type, nullable]
+      properties:
+        name:
+          type: string
+        data_type:
+          type: string
+        nullable:
+          type: boolean
+
+    SourcePreview:
+      type: object
+      required: [alias, columns, rows, total_rows, preview_rows]
+      properties:
+        alias:
+          type: string
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/ColumnMeta"
+        rows:
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+        total_rows:
+          type: integer
+        preview_rows:
+          type: integer
+
+    LoadScopedRequest:
+      type: object
+      properties:
+        conditions:
+          type: array
+          items:
+            $ref: "#/components/schemas/FilterCondition"
+        limit:
+          type: integer
+          default: 200
+          maximum: 1000
+
+    FilterCondition:
+      type: object
+      required: [column, op, value]
+      properties:
+        column:
+          type: string
+        op:
+          type: string
+          enum: [eq, neq, gt, gte, lt, lte, between, in, like]
+        value:
+          description: >
+            String or number for scalar operators. Array of two values for
+            `between`. Array of values for `in`.
+
+    # ── Recipe ───────────────────────────────────────────
+    Recipe:
+      type: object
+      required: [recipe_id, name, match_sql, sources]
+      properties:
+        recipe_id:
+          type: string
+          example: invoice-payment-match
+        name:
+          type: string
+          example: Invoice-Payment Reconciliation
+        description:
+          type: string
+        match_sql:
+          type: string
+        match_description:
+          type: string
+        sources:
+          type: object
+          properties:
+            left:
+              $ref: "#/components/schemas/RecipeSource"
+            right:
+              $ref: "#/components/schemas/RecipeSource"
+
+    RecipeSource:
+      type: object
+      required: [alias, type, primary_key]
+      properties:
+        alias:
+          type: string
+        type:
+          type: string
+          enum: [postgres, elasticsearch, file]
+        uri:
+          type: string
+          description: Required for persistent sources (postgres, elasticsearch)
+        schema:
+          type: array
+          items:
+            type: string
+          description: Required for file sources
+        primary_key:
+          type: array
+          items:
+            type: string
+
+    # ── Run ──────────────────────────────────────────────
+    RunSummary:
+      type: object
+      required: [run_id, recipe_id, status]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        recipe_id:
+          type: string
+        status:
+          type: string
+          enum: [submitted, running, completed, failed]
+        matched_count:
+          type: integer
+        unmatched_left_count:
+          type: integer
+        unmatched_right_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateRunRequest:
+      type: object
+      properties:
+        recipe_id:
+          type: string
+          description: Fetch recipe from database (provide this OR recipe)
+        recipe:
+          $ref: "#/components/schemas/Recipe"
+          description: Inline recipe (provide this OR recipe_id)
+        resolved_sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResolvedSource"
+          description: Optional source URI overrides
+
+    ResolvedSource:
+      type: object
+      required: [alias, uri]
+      properties:
+        alias:
+          type: string
+        uri:
+          type: string
+        filters:
+          type: array
+          items:
+            $ref: "#/components/schemas/FilterCondition"
+
+    CreateRunResponse:
+      type: object
+      required: [run_id, status]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          example: submitted
+
+    RunDetail:
+      type: object
+      required: [run_id, recipe_id, status]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        recipe_id:
+          type: string
+        status:
+          type: string
+          enum: [submitted, running, completed, failed]
+        matched_count:
+          type: integer
+        unmatched_left_count:
+          type: integer
+        unmatched_right_count:
+          type: integer
+        output_matched:
+          type: string
+          nullable: true
+        output_unmatched_left:
+          type: string
+          nullable: true
+        output_unmatched_right:
+          type: string
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        latest_progress:
+          $ref: "#/components/schemas/RunProgress"
+          nullable: true
+
+    RunProgress:
+      type: object
+      properties:
+        stage:
+          type: string
+          enum: [staging, matching]
+        progress:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        matched_count:
+          type: integer
+        total_left:
+          type: integer
+        total_right:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+
+    # ── Upload ───────────────────────────────────────────
+    PresignRequest:
+      type: object
+      required: [filename, session_id]
+      properties:
+        filename:
+          type: string
+          description: Must end with .csv
+          example: payments.csv
+        session_id:
+          type: string
+
+    PresignResponse:
+      type: object
+      required: [upload_id, presigned_url, s3_uri]
+      properties:
+        upload_id:
+          type: string
+          format: uuid
+        presigned_url:
+          type: string
+          format: uri
+        s3_uri:
+          type: string
+
+    CsvPreview:
+      type: object
+      required: [columns, row_count, sample]
+      properties:
+        columns:
+          type: array
+          items:
+            type: string
+        row_count:
+          type: integer
+        sample:
+          type: array
+          items:
+            type: object
+            additionalProperties:
+              type: string
+
+    ConfirmUploadResponse:
+      type: object
+      required: [upload_id, filename, s3_uri, columns, row_count]
+      properties:
+        upload_id:
+          type: string
+        filename:
+          type: string
+        s3_uri:
+          type: string
+        columns:
+          type: array
+          items:
+            type: string
+        row_count:
+          type: integer
+
+    # ── Chat ─────────────────────────────────────────────
+    ChatSessionInfo:
+      type: object
+      required: [session_id, phase, status]
+      properties:
+        session_id:
+          type: string
+        phase:
+          type: string
+          example: initial
+        status:
+          type: string
+          example: active
+
+    ChatSession:
+      type: object
+      description: Full session state including message history
+      properties:
+        session_id:
+          type: string
+        phase:
+          type: string
+        status:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+
+    ChatMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+
+    FileAttachment:
+      type: object
+      required: [filename, columns, row_count, s3_uri]
+      properties:
+        filename:
+          type: string
+        columns:
+          type: array
+          items:
+            type: string
+        row_count:
+          type: integer
+        s3_uri:
+          type: string
+
+    CardResponse:
+      type: object
+      required: [action, card_id]
+      properties:
+        action:
+          type: string
+          example: confirm
+        card_id:
+          type: string
+        value:
+          description: Optional value for the action
+
+    ChatMessageRequest:
+      type: object
+      properties:
+        session_id:
+          type: string
+          description: Creates new session if omitted
+        message:
+          type: string
+          description: User text message
+        card_response:
+          $ref: "#/components/schemas/CardResponse"
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileAttachment"
+
+    ChatMessageResponse:
+      type: object
+      required: [session_id, phase, status, message]
+      properties:
+        session_id:
+          type: string
+        phase:
+          type: string
+        status:
+          type: string
+        message:
+          $ref: "#/components/schemas/ChatMessage"
+        recipe_draft:
+          $ref: "#/components/schemas/Recipe"
+
+    # ── Worker Callbacks ─────────────────────────────────
+    WorkerProgress:
+      type: object
+      required: [run_id, stage]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        stage:
+          type: string
+          enum: [staging, matching]
+        progress:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        matched_count:
+          type: integer
+        total_left:
+          type: integer
+        total_right:
+          type: integer
+
+    WorkerComplete:
+      type: object
+      required: [run_id, matched_count, unmatched_left_count, unmatched_right_count, output_paths]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        matched_count:
+          type: integer
+        unmatched_left_count:
+          type: integer
+        unmatched_right_count:
+          type: integer
+        output_paths:
+          type: object
+          required: [matched, unmatched_left, unmatched_right]
+          properties:
+            matched:
+              type: string
+            unmatched_left:
+              type: string
+            unmatched_right:
+              type: string
+
+    WorkerError:
+      type: object
+      required: [run_id, error]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        error:
+          type: string
+
+    # ── Shared ───────────────────────────────────────────
+    SuccessResponse:
+      type: object
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+
+    OkResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
