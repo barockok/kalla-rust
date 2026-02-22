@@ -56,13 +56,18 @@ function wizardReducer(state: WizardState, action: WizardAction): WizardState {
       return { ...state, loading: { ...state.loading, [action.key]: action.value } };
     case "SET_ERROR":
       return { ...state, errors: { ...state.errors, [action.key]: action.error } };
-    case "SET_INFERRED_RULES":
+    case "SET_INFERRED_RULES": {
+      const aliasA = state.leftSource?.alias ?? "Source A";
+      const aliasB = state.rightSource?.alias ?? "Source B";
+      const defaultName = `${aliasA}-to-${aliasB} Recon`;
       return {
         ...state,
         detectedPattern: action.pattern,
         primaryKeys: action.primaryKeys,
         inferredRules: action.rules,
+        recipeName: state.recipeName || defaultName,
       };
+    }
     case "ACCEPT_RULE":
       return {
         ...state,
