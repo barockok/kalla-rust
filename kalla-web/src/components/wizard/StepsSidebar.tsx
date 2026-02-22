@@ -35,7 +35,14 @@ export function StepsSidebar() {
                 <p className={cn("text-sm leading-6", isActive ? "font-semibold text-foreground" : "font-medium text-muted-foreground")}>
                   {s.title}
                 </p>
-                {s.description && <p className="text-xs text-muted-foreground">{s.description}</p>}
+                {s.step === 1 && state.leftSource && state.rightSource && (
+                  <p className="text-xs text-muted-foreground">
+                    {state.leftSource.alias} &amp; {state.rightSource.alias}
+                  </p>
+                )}
+                {s.step !== 1 && s.description && (
+                  <p className="text-xs text-muted-foreground">{s.description}</p>
+                )}
               </div>
             </div>
           );

@@ -16,6 +16,20 @@ export default function Home() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+        <Link href="/recipes/new">
+          <Card className="cursor-pointer transition-colors hover:bg-accent">
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Plus className="h-5 w-5 text-primary" />
+                <CardTitle className="text-base">New Recipe</CardTitle>
+              </div>
+              <CardDescription>
+                Create a new reconciliation recipe using the guided wizard
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Quick Start</CardTitle>
