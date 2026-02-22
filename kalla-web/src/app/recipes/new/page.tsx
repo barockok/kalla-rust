@@ -3,6 +3,7 @@
 import { WizardProvider, useWizard } from "@/components/wizard/wizard-context";
 import { WizardShell } from "@/components/wizard/WizardShell";
 import { SelectSources } from "@/components/wizard/steps/SelectSources";
+import { SampleData } from "@/components/wizard/steps/SampleData";
 
 function WizardContent() {
   const { state } = useWizard();
@@ -25,6 +26,9 @@ function WizardContent() {
           <p className="mt-1 text-sm text-muted-foreground">
             Narrow down transactions to build a representative sample for AI analysis.
           </p>
+          <div className="mt-6">
+            <SampleData />
+          </div>
         </div>
       )}
     </div>
