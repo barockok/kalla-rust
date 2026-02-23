@@ -39,6 +39,28 @@ export interface CommonFilter {
   value: [string, string] | null;
 }
 
+export interface SourceConfig {
+  mode: "db" | "csv";
+  loaded: boolean;
+  originalAlias: string;
+  activeAlias: string;
+  csvFileName?: string;
+  csvFileSize?: number;
+  csvRowCount?: number;
+  csvColCount?: number;
+}
+
+export interface FilterChip {
+  id: string;
+  label: string;
+  icon: string;
+  scope: "both" | "left" | "right";
+  type: string;
+  field_a?: string;
+  field_b?: string;
+  value: [string, string] | string | null;
+}
+
 export interface SampleData {
   columns: ColumnInfo[];
   rows: string[][];
@@ -116,6 +138,10 @@ export interface WizardState {
   runtimeFieldsRight: string[];
   recipeName: string;
   matchPreviewResult: MatchPreviewResult | null;
+  sourceConfigLeft: SourceConfig | null;
+  sourceConfigRight: SourceConfig | null;
+  filterChips: FilterChip[];
+  sourcesExpanded: boolean;
   loading: Record<string, boolean>;
   errors: Record<string, string | null>;
 }
@@ -145,6 +171,10 @@ export const INITIAL_WIZARD_STATE: WizardState = {
   runtimeFieldsRight: [],
   recipeName: "",
   matchPreviewResult: null,
+  sourceConfigLeft: null,
+  sourceConfigRight: null,
+  filterChips: [],
+  sourcesExpanded: true,
   loading: {},
   errors: {},
 };
@@ -170,4 +200,8 @@ export type WizardAction =
   | { type: "SET_RECIPE_SQL"; sql: string }
   | { type: "TOGGLE_RUNTIME_FIELD"; side: "left" | "right"; field: string }
   | { type: "SET_RECIPE_NAME"; name: string }
-  | { type: "SET_MATCH_PREVIEW"; result: MatchPreviewResult };
+  | { type: "SET_MATCH_PREVIEW"; result: MatchPreviewResult }
+  | { type: "SET_SOURCE_CONFIG"; side: "left" | "right"; config: SourceConfig }
+  | { type: "SET_FILTER_CHIPS"; chips: FilterChip[] }
+  | { type: "REMOVE_FILTER_CHIP"; chipId: string }
+  | { type: "TOGGLE_SOURCES_EXPANDED" };
