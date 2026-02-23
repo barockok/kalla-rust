@@ -101,6 +101,16 @@ function wizardReducer(state: WizardState, action: WizardAction): WizardState {
       return { ...state, recipeName: action.name };
     case "SET_MATCH_PREVIEW":
       return { ...state, matchPreviewResult: action.result };
+    case "SET_SOURCE_CONFIG":
+      return action.side === "left"
+        ? { ...state, sourceConfigLeft: action.config }
+        : { ...state, sourceConfigRight: action.config };
+    case "SET_FILTER_CHIPS":
+      return { ...state, filterChips: action.chips };
+    case "REMOVE_FILTER_CHIP":
+      return { ...state, filterChips: state.filterChips.filter((c) => c.id !== action.chipId) };
+    case "TOGGLE_SOURCES_EXPANDED":
+      return { ...state, sourcesExpanded: !state.sourcesExpanded };
     default:
       return state;
   }
