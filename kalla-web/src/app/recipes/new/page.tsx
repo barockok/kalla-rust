@@ -3,7 +3,7 @@
 import { WizardProvider, useWizard } from "@/components/wizard/wizard-context";
 import { WizardShell } from "@/components/wizard/WizardShell";
 import { SelectSources } from "@/components/wizard/steps/SelectSources";
-import { SampleData } from "@/components/wizard/steps/SampleData";
+import { SampleDataV2 } from "@/components/wizard/steps/v2";
 import { AIRules } from "@/components/wizard/steps/AIRules";
 import { RunParameters } from "@/components/wizard/steps/RunParameters";
 import { ReviewSave } from "@/components/wizard/steps/ReviewSave";
@@ -30,7 +30,7 @@ function WizardContent() {
             Narrow down transactions to build a representative sample for AI analysis.
           </p>
           <div className="mt-6">
-            <SampleData />
+            <SampleDataV2 />
           </div>
         </div>
       )}
