@@ -91,8 +91,8 @@ export function SampleDataV2() {
       try {
         const result = await callAI<ParsedFilter[]>("parse_nl_filter", {
           text,
-          schema_a: schemaLeft,
-          schema_b: schemaRight,
+          schema_a: { alias: leftAlias, columns: schemaLeft },
+          schema_b: { alias: rightAlias, columns: schemaRight },
           current_mappings: fieldMappings,
         });
         const chips: FilterChip[] = result.map((f) => ({
