@@ -10,14 +10,17 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import type { ColumnInfo } from "@/lib/chat-types";
+import { ValuePreviewPopover } from "./ValuePreviewPopover";
 
 interface Props {
   columns: ColumnInfo[];
   selected: string[];
   onToggle: (colName: string) => void;
+  rows?: string[][];
 }
 
-export function FieldSelectorPopover({ columns, selected, onToggle }: Props) {
+export function FieldSelectorPopover({ columns, selected, onToggle, rows }: Props) {
+  const colIndexMap = new Map(columns.map((col, idx) => [col.name, idx]));
   const [search, setSearch] = useState("");
 
   const filtered = columns.filter((col) =>
@@ -35,7 +38,7 @@ export function FieldSelectorPopover({ columns, selected, onToggle }: Props) {
           <Settings className="h-3.5 w-3.5" />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-[220px] p-2" align="end">
+      <PopoverContent className="w-[220px] p-2" align="end" modal={false}>
         <Input
           placeholder="Search columns..."
           value={search}
@@ -46,20 +49,36 @@ export function FieldSelectorPopover({ columns, selected, onToggle }: Props) {
           {filtered.map((col) => {
             const isSelected = selected.includes(col.name);
             return (
-              <button
-                key={col.name}
-                type="button"
-                onClick={() => onToggle(col.name)}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted"
-              >
-                <span className="flex-1 truncate text-left">{col.name}</span>
-                <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+              <div key={col.name} className="relative flex items-center gap-1 rounded-md hover:bg-muted">
+                {rows ? (
+                  <ValuePreviewPopover
+                    column={col}
+                    values={rows.map((row) => row[colIndexMap.get(col.name) ?? 0])}
+                  >
+                    <span className="flex-1 truncate text-left text-xs cursor-default hover:underline px-2 py-1.5">
+                      {col.name}
+                    </span>
+                  </ValuePreviewPopover>
+                ) : (
+                  <span className="flex-1 truncate text-left text-xs px-2 py-1.5">
+                    {col.name}
+                  </span>
+                )}
+                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
                   {col.data_type}
                 </Badge>
-                {isSelected && (
+                {isSelected ? (
                   <Check className="h-3.5 w-3.5 shrink-0 text-green-500" />
+                ) : (
+                  <span className="h-3.5 w-3.5 shrink-0" />
                 )}
-              </button>
+                <button
+                  type="button"
+                  onClick={() => onToggle(col.name)}
+                  className="absolute inset-0"
+                  aria-label={`Toggle ${col.name}`}
+                />
+              </div>
             );
           })}
         </div>

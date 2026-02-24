@@ -82,6 +82,7 @@ function SampleTable({
             columns={sample.columns}
             selected={visibleCols}
             onToggle={onToggleCol}
+            rows={sample.rows}
           />
         </div>
       </div>
