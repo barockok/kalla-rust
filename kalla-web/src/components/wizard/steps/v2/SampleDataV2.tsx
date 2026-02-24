@@ -174,12 +174,14 @@ export function SampleDataV2() {
     if (!sourceConfigLeft?.activeAlias || !sourceConfigRight?.activeAlias) return;
 
     const timer = setTimeout(async () => {
-      const buildConditions = (side: "left" | "right") =>
-        filterChips
+      const buildConditions = (side: "left" | "right") => {
+        const schema = side === "left" ? schemaLeft : schemaRight;
+        const validCols = new Set(schema?.map((c) => c.name) ?? []);
+        return filterChips
           .filter((c) => c.scope === "both" || c.scope === side)
           .map((c) => {
             const column = side === "left" ? c.field_a : c.field_b;
-            if (!column) return null;
+            if (!column || !validCols.has(column)) return null;
             // Map chip type to load-scoped op
             if (c.type === "date_range" && Array.isArray(c.value)) {
               return { column, op: "between", value: c.value };
@@ -193,6 +195,7 @@ export function SampleDataV2() {
             return null;
           })
           .filter(Boolean);
+      };
 
       const loadSide = async (side: "left" | "right", alias: string) => {
         const conditions = buildConditions(side);
@@ -228,7 +231,7 @@ export function SampleDataV2() {
     }, 500);
 
     return () => clearTimeout(timer);
-  }, [filterChips, sourceConfigLeft?.activeAlias, sourceConfigRight?.activeAlias, dispatch]);
+  }, [filterChips, sourceConfigLeft?.activeAlias, sourceConfigRight?.activeAlias, schemaLeft, schemaRight, dispatch]);
 
   /* ---------------------------------------------------------------- */
   /*  Toggle sources expansion                                         */
