@@ -109,10 +109,10 @@ function SourceCard({
           body: JSON.stringify({ filename: file.name, session_id: "wizard" }),
         });
         if (!presignRes.ok) throw new Error("Presign failed");
-        const { upload_url, s3_uri } = await presignRes.json();
+        const { presigned_url, s3_uri } = await presignRes.json();
 
         // 2. Upload to S3
-        const putRes = await fetch(upload_url, {
+        const putRes = await fetch(presigned_url, {
           method: "PUT",
           body: file,
         });

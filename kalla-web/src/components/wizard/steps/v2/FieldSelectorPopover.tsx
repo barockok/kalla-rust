@@ -28,7 +28,7 @@ export function FieldSelectorPopover({ columns, selected, onToggle, rows }: Prop
   );
 
   return (
-    <Popover>
+    <Popover modal={false}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -38,7 +38,7 @@ export function FieldSelectorPopover({ columns, selected, onToggle, rows }: Prop
           <Settings className="h-3.5 w-3.5" />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-[220px] p-2" align="end" modal={false}>
+      <PopoverContent className="w-[220px] p-2" align="end">
         <Input
           placeholder="Search columns..."
           value={search}
@@ -49,13 +49,19 @@ export function FieldSelectorPopover({ columns, selected, onToggle, rows }: Prop
           {filtered.map((col) => {
             const isSelected = selected.includes(col.name);
             return (
-              <div key={col.name} className="relative flex items-center gap-1 rounded-md hover:bg-muted">
+              <button
+                key={col.name}
+                type="button"
+                onClick={() => onToggle(col.name)}
+                className="flex w-full items-center gap-1 rounded-md hover:bg-muted"
+                aria-label={`Toggle ${col.name}`}
+              >
                 {rows ? (
                   <ValuePreviewPopover
                     column={col}
                     values={rows.map((row) => row[colIndexMap.get(col.name) ?? 0])}
                   >
-                    <span className="flex-1 truncate text-left text-xs cursor-default hover:underline px-2 py-1.5">
+                    <span className="relative z-10 flex-1 truncate text-left text-xs cursor-default hover:underline px-2 py-1.5">
                       {col.name}
                     </span>
                   </ValuePreviewPopover>
@@ -72,13 +78,7 @@ export function FieldSelectorPopover({ columns, selected, onToggle, rows }: Prop
                 ) : (
                   <span className="h-3.5 w-3.5 shrink-0" />
                 )}
-                <button
-                  type="button"
-                  onClick={() => onToggle(col.name)}
-                  className="absolute inset-0"
-                  aria-label={`Toggle ${col.name}`}
-                />
-              </div>
+              </button>
             );
           })}
         </div>

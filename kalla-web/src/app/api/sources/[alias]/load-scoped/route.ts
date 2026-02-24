@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import pool from '@/lib/db';
+import { getObject, UPLOADS_BUCKET } from '@/lib/s3-client';
+import { parse } from 'csv-parse/sync';
 
 interface FilterCondition {
   column: string;
@@ -17,38 +19,115 @@ const VALID_OPS: Record<string, string> = {
   like: 'LIKE',
 };
 
-/**
- * POST /api/sources/:alias/load-scoped
- *
- * Load filtered rows from a registered data source.
- * Body: { conditions: FilterCondition[], limit?: number }
- */
-export async function POST(
-  request: Request,
-  { params }: { params: Promise<{ alias: string }> },
+/* ------------------------------------------------------------------ */
+/*  CSV source handler                                                 */
+/* ------------------------------------------------------------------ */
+
+async function loadCsvSource(
+  alias: string,
+  uri: string,
+  conditions: FilterCondition[],
+  limit: number,
 ) {
-  const { alias } = await params;
-  const body = await request.json();
-  const conditions: FilterCondition[] = body.conditions || [];
-  const limit = Math.min(Number(body.limit || 200), 1000);
+  const prefix = `s3://${UPLOADS_BUCKET}/`;
+  if (!uri.startsWith(prefix)) {
+    return NextResponse.json({ error: `Invalid CSV URI: ${uri}` }, { status: 400 });
+  }
+  const key = uri.slice(prefix.length);
 
-  // Look up the source by alias
-  const { rows: sources } = await pool.query(
-    'SELECT alias, uri, source_type FROM sources WHERE alias = $1',
-    [alias],
-  );
-
-  if (sources.length === 0) {
-    return NextResponse.json({ error: `Source '${alias}' not found` }, { status: 404 });
+  const stream = await getObject(key);
+  if (!stream) {
+    return NextResponse.json({ error: 'CSV file not found in S3' }, { status: 404 });
   }
 
-  const source = sources[0];
+  // Read stream
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (value) chunks.push(value);
+    if (done) break;
+  }
+  const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
+  const buffer = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset);
+    offset += chunk.length;
+  }
+  const csvText = new TextDecoder().decode(buffer);
 
-  // Extract table name from URI
-  const tableMatch = source.uri.match(/[?&]table=([^&]+)/);
+  const records: Record<string, string>[] = parse(csvText, {
+    columns: true,
+    skip_empty_lines: true,
+  });
+
+  if (records.length === 0) {
+    return NextResponse.json({
+      alias,
+      columns: [],
+      rows: [],
+      total_rows: 0,
+      preview_rows: 0,
+    });
+  }
+
+  const colNames = Object.keys(records[0]);
+  const columns = colNames.map((name) => ({
+    name,
+    data_type: 'text',
+    nullable: true,
+  }));
+
+  // Apply in-memory filters
+  let filtered = records;
+  for (const cond of conditions) {
+    if (!colNames.includes(cond.column)) continue; // skip unknown columns
+    filtered = filtered.filter((row) => {
+      const cellVal = row[cond.column] ?? '';
+      if (cond.op === 'eq') return cellVal === String(cond.value);
+      if (cond.op === 'neq') return cellVal !== String(cond.value);
+      if (cond.op === 'like') {
+        const pattern = String(cond.value).replace(/%/g, '.*').replace(/_/g, '.');
+        return new RegExp(pattern, 'i').test(cellVal);
+      }
+      if (cond.op === 'between' && Array.isArray(cond.value) && cond.value.length === 2) {
+        return cellVal >= String(cond.value[0]) && cellVal <= String(cond.value[1]);
+      }
+      if (cond.op === 'gte') return cellVal >= String(cond.value);
+      if (cond.op === 'lte') return cellVal <= String(cond.value);
+      if (cond.op === 'gt') return cellVal > String(cond.value);
+      if (cond.op === 'lt') return cellVal < String(cond.value);
+      return true;
+    });
+  }
+
+  const limited = filtered.slice(0, limit);
+  const rows = limited.map((row) => colNames.map((col) => row[col] ?? ''));
+
+  return NextResponse.json({
+    alias,
+    columns,
+    rows,
+    total_rows: filtered.length,
+    preview_rows: rows.length,
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/*  DB source handler                                                  */
+/* ------------------------------------------------------------------ */
+
+async function loadDbSource(
+  alias: string,
+  uri: string,
+  conditions: FilterCondition[],
+  limit: number,
+) {
+  const tableMatch = uri.match(/[?&]table=([^&]+)/);
   if (!tableMatch) {
     return NextResponse.json(
-      { error: `Cannot extract table from URI: ${source.uri}` },
+      { error: `Cannot extract table from URI: ${uri}` },
       { status: 400 },
     );
   }
@@ -58,7 +137,6 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid table name' }, { status: 400 });
   }
 
-  // Get column info
   const { rows: columnRows } = await pool.query(
     `SELECT column_name, data_type, is_nullable
      FROM information_schema.columns
@@ -75,13 +153,11 @@ export async function POST(
 
   const validColumns = new Set(columns.map((c) => c.name));
 
-  // Build WHERE clause from conditions
   const whereParts: string[] = [];
   const values: unknown[] = [];
   let paramIdx = 1;
 
   for (const cond of conditions) {
-    // Validate column name exists
     if (!validColumns.has(cond.column)) {
       return NextResponse.json(
         { error: `Unknown column: ${cond.column}` },
@@ -104,7 +180,6 @@ export async function POST(
       if (!sqlOp) {
         return NextResponse.json({ error: `Unknown operator: ${cond.op}` }, { status: 400 });
       }
-      // Cast to text for comparison to handle date strings against date columns
       whereParts.push(`${colRef}::text ${sqlOp} $${paramIdx}`);
       values.push(cond.value);
       paramIdx++;
@@ -113,14 +188,12 @@ export async function POST(
 
   const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
 
-  // Query with filters
   values.push(limit);
   const { rows: dataRows } = await pool.query(
     `SELECT * FROM "${tableName}" ${whereClause} LIMIT $${paramIdx}`,
     values,
   );
 
-  // Convert to string[][] format
   const colNames = columns.map((c) => c.name);
   const rows = dataRows.map((row) =>
     colNames.map((col) => (row[col] === null ? '' : String(row[col]))),
@@ -133,4 +206,41 @@ export async function POST(
     total_rows: rows.length,
     preview_rows: rows.length,
   });
+}
+
+/* ------------------------------------------------------------------ */
+/*  Route handler                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * POST /api/sources/:alias/load-scoped
+ *
+ * Load filtered rows from a registered data source (DB or CSV).
+ * Body: { conditions: FilterCondition[], limit?: number }
+ */
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ alias: string }> },
+) {
+  const { alias } = await params;
+  const body = await request.json();
+  const conditions: FilterCondition[] = body.conditions || [];
+  const limit = Math.min(Number(body.limit || 200), 1000);
+
+  const { rows: sources } = await pool.query(
+    'SELECT alias, uri, source_type FROM sources WHERE alias = $1',
+    [alias],
+  );
+
+  if (sources.length === 0) {
+    return NextResponse.json({ error: `Source '${alias}' not found` }, { status: 404 });
+  }
+
+  const source = sources[0];
+
+  if (source.source_type === 'csv') {
+    return loadCsvSource(alias, source.uri, conditions, limit);
+  }
+
+  return loadDbSource(alias, source.uri, conditions, limit);
 }

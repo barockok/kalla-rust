@@ -2,10 +2,10 @@
 
 import { Badge } from "@/components/ui/badge";
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
 import type { ColumnInfo } from "@/lib/chat-types";
 
 interface Props {
@@ -19,9 +19,9 @@ export function ValuePreviewPopover({ column, values, children }: Props) {
   const distinctCount = new Set(values).size;
 
   return (
-    <Popover>
-      <PopoverTrigger asChild>{children}</PopoverTrigger>
-      <PopoverContent className="w-[200px] p-3" align="start">
+    <HoverCard openDelay={300} closeDelay={100}>
+      <HoverCardTrigger asChild>{children}</HoverCardTrigger>
+      <HoverCardContent className="w-[200px] p-3" align="start" side="right">
         <div className="mb-2 flex items-center gap-2">
           <span className="text-xs font-medium">{column.name}</span>
           <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
@@ -41,7 +41,7 @@ export function ValuePreviewPopover({ column, values, children }: Props) {
         <div className="mt-2 text-[10px] text-muted-foreground">
           {distinctCount} distinct values
         </div>
-      </PopoverContent>
-    </Popover>
+      </HoverCardContent>
+    </HoverCard>
   );
 }
