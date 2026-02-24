@@ -15,15 +15,14 @@ import { SamplePreviewV2 } from "./SamplePreviewV2";
 /*  NL filter AI response shape                                        */
 /* ------------------------------------------------------------------ */
 
-interface ParsedFilter {
-  id: string;
-  label: string;
-  icon: string;
-  scope: "both" | "left" | "right";
-  type: string;
-  field_a?: string;
-  field_b?: string;
-  value: [string, string] | string | null;
+interface NLFilterResponse {
+  filters: Array<{
+    source: string;       // "source_a" | "source_b" | "both"
+    column: string;
+    op: string;           // "between" | "gte" | "lte" | "like" | "eq" etc.
+    value: unknown;
+  }>;
+  explanation: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -89,22 +88,59 @@ export function SampleDataV2() {
       dispatch({ type: "SET_LOADING", key: "nlFilter", value: true });
       dispatch({ type: "SET_ERROR", key: "nlFilter", error: null });
       try {
-        const result = await callAI<ParsedFilter[]>("parse_nl_filter", {
+        const result = await callAI<NLFilterResponse>("parse_nl_filter", {
           text,
           schema_a: { alias: leftAlias, columns: schemaLeft },
           schema_b: { alias: rightAlias, columns: schemaRight },
           current_mappings: fieldMappings,
         });
-        const chips: FilterChip[] = result.map((f) => ({
-          id: f.id,
-          label: f.label,
-          icon: f.icon,
-          scope: f.scope,
-          type: f.type,
-          field_a: f.field_a,
-          field_b: f.field_b,
-          value: f.value,
-        }));
+
+        // Transform AI response filters into FilterChip[]
+        const chips: FilterChip[] = result.filters.map((f, i) => {
+          // Determine scope from source field
+          const scope: FilterChip["scope"] =
+            f.source === "both" ? "both"
+            : f.source === "source_a" ? "left"
+            : f.source === "source_b" ? "right"
+            : "both";
+
+          // Determine icon from data type/op
+          const col = [...(schemaLeft ?? []), ...(schemaRight ?? [])].find(
+            (c) => c.name === f.column,
+          );
+          const isDate = col?.data_type?.includes("date") || col?.data_type?.includes("timestamp");
+          const isNumeric = col?.data_type?.includes("numeric") || col?.data_type?.includes("decimal") || col?.data_type?.includes("int");
+          const icon = isDate ? "calendar" : isNumeric ? "dollar-sign" : "type";
+
+          // Determine chip type
+          const type = f.op === "between" ? "date_range"
+            : (f.op === "gte" || f.op === "lte" || f.op === "gt" || f.op === "lt") ? "amount_range"
+            : "text_match";
+
+          // Build label from op + value
+          const label = `${f.column} ${f.op} ${Array.isArray(f.value) ? f.value.join(" – ") : String(f.value ?? "")}`;
+
+          // Assign field_a/field_b based on scope
+          const field_a = scope !== "right" ? f.column : undefined;
+          const field_b = scope !== "left" ? f.column : undefined;
+
+          const value = Array.isArray(f.value) && f.value.length === 2
+            ? [String(f.value[0]), String(f.value[1])] as [string, string]
+            : f.value != null ? String(f.value)
+            : null;
+
+          return {
+            id: `chip-${Date.now()}-${i}`,
+            label,
+            icon,
+            scope,
+            type,
+            field_a,
+            field_b,
+            value,
+          };
+        });
+
         dispatch({ type: "SET_FILTER_CHIPS", chips: [...filterChips, ...chips] });
       } catch (err) {
         dispatch({
@@ -141,12 +177,22 @@ export function SampleDataV2() {
       const buildConditions = (side: "left" | "right") =>
         filterChips
           .filter((c) => c.scope === "both" || c.scope === side)
-          .map((c) => ({
-            type: c.type,
-            field: side === "left" ? c.field_a : c.field_b,
-            value: c.value,
-          }))
-          .filter((c) => c.field);
+          .map((c) => {
+            const column = side === "left" ? c.field_a : c.field_b;
+            if (!column) return null;
+            // Map chip type to load-scoped op
+            if (c.type === "date_range" && Array.isArray(c.value)) {
+              return { column, op: "between", value: c.value };
+            }
+            if (c.type === "amount_range" && c.value != null) {
+              return { column, op: "gte", value: c.value };
+            }
+            if (c.type === "text_match" && c.value != null) {
+              return { column, op: "like", value: `%${c.value}%` };
+            }
+            return null;
+          })
+          .filter(Boolean);
 
       const loadSide = async (side: "left" | "right", alias: string) => {
         const conditions = buildConditions(side);
