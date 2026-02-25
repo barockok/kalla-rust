@@ -129,14 +129,14 @@ pub fn build_scoped_loader(
     s3_config: &S3Config,
 ) -> anyhow::Result<Box<dyn ScopedLoader>> {
     match source_type {
-        "csv" => {
+        "csv" | "csv_upload" => {
             info!("Building CsvLoader for URI: {}", uri);
             Ok(Box::new(CsvLoader {
                 s3_uri: uri.to_string(),
                 s3_config: s3_config.clone(),
             }))
         }
-        _ => {
+        "postgres" | "postgresql" => {
             let parsed = url::Url::parse(uri)
                 .map_err(|e| anyhow::anyhow!("Invalid source URI: {}", e))?;
             let table_name = parsed
@@ -152,12 +152,13 @@ pub fn build_scoped_loader(
             info!(
                 "Building PostgresLoader for table '{}' at {}",
                 table_name,
-                conn_url.as_str()
+                conn_url.host_str().unwrap_or("unknown")
             );
             Ok(Box::new(PostgresLoader {
                 conn_string: conn_url.to_string(),
                 table_name,
             }))
         }
+        other => Err(anyhow::anyhow!("Unsupported source type: '{}'", other)),
     }
 }
