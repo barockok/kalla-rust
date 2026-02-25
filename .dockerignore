@@ -28,6 +28,9 @@ testdata/
 kalla-web/node_modules
 kalla-web/.next
 
+# MCP server (built separately)
+kalla-mcp/node_modules
+
 # Worktrees
 .worktrees/
 

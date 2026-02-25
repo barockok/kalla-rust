@@ -14,8 +14,8 @@
 services:
   app:
     build:
-      context: ./kalla-web
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: kalla-web/Dockerfile
     ports:
       - "3000:3000"
     environment:
