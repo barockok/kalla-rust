@@ -44,6 +44,7 @@ export function SampleDataV2() {
     schemaRight,
     fieldMappings,
     loading,
+    errors,
   } = state;
 
   const autoCollapsedRef = useRef(false);
@@ -97,10 +98,13 @@ export function SampleDataV2() {
 
         // Transform AI response filters into FilterChip[]
         const chips: FilterChip[] = result.filters.flatMap((f, i) => {
-          // Determine which sides this filter targets
+          // Determine which side this filter targets
+          // AI may return source as alias name ("invoices") or generic ("source_a"/"source_b"/"both")
+          const isLeft = f.source === leftAlias || f.source === "source_a";
+          const isRight = f.source === rightAlias || f.source === "source_b";
           const sides: Array<{ scope: FilterChip["scope"]; alias: string; fieldKey: "field_a" | "field_b" }> =
-            f.source === "source_a" ? [{ scope: "left", alias: leftAlias, fieldKey: "field_a" }]
-            : f.source === "source_b" ? [{ scope: "right", alias: rightAlias, fieldKey: "field_b" }]
+            isLeft ? [{ scope: "left", alias: leftAlias, fieldKey: "field_a" }]
+            : isRight ? [{ scope: "right", alias: rightAlias, fieldKey: "field_b" }]
             : [
                 { scope: "left", alias: leftAlias, fieldKey: "field_a" },
                 { scope: "right", alias: rightAlias, fieldKey: "field_b" },
@@ -275,6 +279,7 @@ export function SampleDataV2() {
         onSubmit={handleFilterSubmit}
         onRemoveChip={handleRemoveChip}
         loading={!!loading.nlFilter}
+        error={errors.nlFilter ?? null}
       />
 
       {/* Sample Preview */}
