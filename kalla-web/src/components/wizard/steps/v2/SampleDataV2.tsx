@@ -96,13 +96,15 @@ export function SampleDataV2() {
         });
 
         // Transform AI response filters into FilterChip[]
-        const chips: FilterChip[] = result.filters.map((f, i) => {
-          // Determine scope from source field
-          const scope: FilterChip["scope"] =
-            f.source === "both" ? "both"
-            : f.source === "source_a" ? "left"
-            : f.source === "source_b" ? "right"
-            : "both";
+        const chips: FilterChip[] = result.filters.flatMap((f, i) => {
+          // Determine which sides this filter targets
+          const sides: Array<{ scope: FilterChip["scope"]; alias: string; fieldKey: "field_a" | "field_b" }> =
+            f.source === "source_a" ? [{ scope: "left", alias: leftAlias, fieldKey: "field_a" }]
+            : f.source === "source_b" ? [{ scope: "right", alias: rightAlias, fieldKey: "field_b" }]
+            : [
+                { scope: "left", alias: leftAlias, fieldKey: "field_a" },
+                { scope: "right", alias: rightAlias, fieldKey: "field_b" },
+              ];
 
           // Determine icon from data type/op
           const col = [...(schemaLeft ?? []), ...(schemaRight ?? [])].find(
@@ -120,27 +122,24 @@ export function SampleDataV2() {
           // Build label from op + value
           const label = `${f.column} ${f.op} ${Array.isArray(f.value) ? f.value.join(" – ") : String(f.value ?? "")}`;
 
-          // Assign field_a/field_b based on scope
-          const field_a = scope !== "right" ? f.column : undefined;
-          const field_b = scope !== "left" ? f.column : undefined;
-
           const value = Array.isArray(f.value) && f.value.length === 2
             ? [String(f.value[0]), String(f.value[1])] as [string, string]
             : f.value != null ? String(f.value)
             : null;
 
-          return {
-            id: `chip-${Date.now()}-${i}`,
+          return sides.map((s, j) => ({
+            id: `chip-${Date.now()}-${i}-${j}`,
             label,
             icon,
-            scope,
+            scope: s.scope,
             type,
-            field_a,
-            field_b,
+            field_a: s.fieldKey === "field_a" ? f.column : undefined,
+            field_b: s.fieldKey === "field_b" ? f.column : undefined,
             value,
             op: f.op,
             rawValue: f.value,
-          };
+            sourceLabel: s.alias,
+          }));
         });
 
         dispatch({ type: "SET_FILTER_CHIPS", chips: [...filterChips, ...chips] });
@@ -154,7 +153,7 @@ export function SampleDataV2() {
         dispatch({ type: "SET_LOADING", key: "nlFilter", value: false });
       }
     },
-    [dispatch, schemaLeft, schemaRight, fieldMappings, filterChips],
+    [dispatch, schemaLeft, schemaRight, fieldMappings, filterChips, leftAlias, rightAlias],
   );
 
   /* ---------------------------------------------------------------- */

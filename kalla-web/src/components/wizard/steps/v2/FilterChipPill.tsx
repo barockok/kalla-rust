@@ -22,7 +22,7 @@ interface Props {
 
 export function FilterChipPill({ chip, onRemove }: Props) {
   const Icon = iconMap[chip.icon] ?? Type;
-  const scopeLabel = chip.scope.charAt(0).toUpperCase() + chip.scope.slice(1);
+  const scopeLabel = chip.sourceLabel ?? (chip.scope.charAt(0).toUpperCase() + chip.scope.slice(1));
 
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-[11px] font-medium">

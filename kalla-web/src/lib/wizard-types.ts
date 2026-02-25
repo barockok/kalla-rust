@@ -63,6 +63,8 @@ export interface FilterChip {
   op?: string;
   /** Original value from AI — preserved for array values (in operator) */
   rawValue?: unknown;
+  /** Human-readable source label(s) for display on the chip */
+  sourceLabel?: string;
 }
 
 export interface SampleData {
