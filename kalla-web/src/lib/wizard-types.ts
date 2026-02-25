@@ -59,6 +59,10 @@ export interface FilterChip {
   field_a?: string;
   field_b?: string;
   value: [string, string] | string | null;
+  /** Original operator from AI (eq, neq, in, like, between, gt, gte, lt, lte) */
+  op?: string;
+  /** Original value from AI — preserved for array values (in operator) */
+  rawValue?: unknown;
 }
 
 export interface SampleData {

@@ -29,17 +29,30 @@ export const PARSE_NL_FILTER_SYSTEM = `You translate natural language filter des
 Rules:
 - Use the mapped column names when the user refers to a concept (e.g., "date" → use the actual column name per source)
 - If a filter applies to a mapped pair, create conditions for BOTH sources using their respective column names
-- Operators: eq, neq, gt, gte, lt, lte, between, in, like
-- For date ranges use "between" with ISO date strings
-- For amounts use numeric values (not strings)
 - The "source" field should be the source alias
+
+Operator selection (choose the most specific operator):
+- "eq": exact match — use for "equals", "is", "equal to", exact ID/name lookups. value is a string or number.
+- "neq": not equal — use for "not", "isn't", "exclude". value is a string or number.
+- "gt" / "gte" / "lt" / "lte": comparisons — use for "greater than", "at least", "less than", "at most", "after", "before". value is a string or number.
+- "between": range — use for "between X and Y", "from X to Y". value is an array of exactly 2 strings: ["start", "end"].
+- "in": set membership — use for "one of", "any of", "in [list]", multiple exact values. value is an array of strings: ["val1", "val2", ...].
+- "like": pattern match — ONLY use when the user explicitly asks for partial/fuzzy/contains matching (e.g., "contains", "starts with", "like"). value is a string with SQL wildcards (% and _). Do NOT use "like" for exact matches.
+
+Value formatting:
+- For date values use ISO date strings (e.g., "2024-01-15")
+- For numeric comparisons use numbers (e.g., 1000), not strings
+- For "in" operator, always use an array even for a single value: ["val"]
+- For "between" operator, always use a 2-element array: ["start", "end"]
+
+IMPORTANT: Default to "eq" for exact value matches. Only use "like" when the user explicitly wants partial/pattern matching.
 
 Return ONLY valid JSON. No explanation outside the JSON structure.
 
 Required JSON shape:
 {
   "filters": [
-    { "source": "source_alias", "column": "column_name", "op": "operator", "value": "..." }
+    { "source": "source_alias", "column": "column_name", "op": "eq", "value": "exact_value" }
   ],
   "explanation": "Brief human-readable summary of what was parsed"
 }`;

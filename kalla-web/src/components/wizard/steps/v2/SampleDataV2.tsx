@@ -138,6 +138,8 @@ export function SampleDataV2() {
             field_a,
             field_b,
             value,
+            op: f.op,
+            rawValue: f.value,
           };
         });
 
@@ -182,7 +184,11 @@ export function SampleDataV2() {
           .map((c) => {
             const column = side === "left" ? c.field_a : c.field_b;
             if (!column || !validCols.has(column)) return null;
-            // Map chip type to load-scoped op
+            // Use original AI op/value when available
+            if (c.op && c.rawValue !== undefined) {
+              return { column, op: c.op, value: c.rawValue };
+            }
+            // Fallback: map chip type to load-scoped op
             if (c.type === "date_range" && Array.isArray(c.value)) {
               return { column, op: "between", value: c.value };
             }
