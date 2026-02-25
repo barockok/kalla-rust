@@ -7,8 +7,24 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
+const s3Endpoint = process.env.S3_ENDPOINT ?? "http://localhost:9000";
+
 export const s3 = new S3Client({
-  endpoint: process.env.S3_ENDPOINT ?? "http://localhost:9000",
+  endpoint: s3Endpoint,
+  credentials: {
+    accessKeyId: process.env.S3_ACCESS_KEY ?? "minioadmin",
+    secretAccessKey: process.env.S3_SECRET_KEY ?? "minioadmin",
+  },
+  forcePathStyle: true,
+  region: process.env.S3_REGION ?? "us-east-1",
+});
+
+// Public endpoint for presigned URLs (browser needs to reach this directly).
+// Falls back to S3_ENDPOINT for local dev where both are localhost.
+const s3PublicEndpoint = process.env.S3_PUBLIC_ENDPOINT ?? s3Endpoint;
+
+const s3Public = new S3Client({
+  endpoint: s3PublicEndpoint,
   credentials: {
     accessKeyId: process.env.S3_ACCESS_KEY ?? "minioadmin",
     secretAccessKey: process.env.S3_SECRET_KEY ?? "minioadmin",
@@ -29,7 +45,7 @@ export async function createPresignedUploadUrl(key: string): Promise<string> {
     Bucket: UPLOADS_BUCKET,
     Key: key,
   });
-  return getSignedUrl(s3, command, { expiresIn: 3600 });
+  return getSignedUrl(s3Public, command, { expiresIn: 3600 });
 }
 
 /**
