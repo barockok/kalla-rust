@@ -1,6 +1,7 @@
 pub mod codec;
 pub mod error;
 pub mod runner;
+pub(crate) mod sources;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

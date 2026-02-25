@@ -35,6 +35,14 @@ services:
     environment:
       RUST_LOG: ${RUST_LOG:-info}
       BALLISTA_PARTITIONS: "8"
+      DATABASE_URL: postgres://kalla:kalla_secret@postgres:5432/kalla
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      AWS_ENDPOINT_URL: http://minio:9000
+      AWS_ALLOW_HTTP: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   executor-1:

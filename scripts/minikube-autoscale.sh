@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/sh
 # minikube-autoscale.sh — Local Kubernetes autoscale demo for Kalla
 #
 # Demonstrates Ballista executor autoscaling using minikube + HPA.

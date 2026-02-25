@@ -752,6 +752,142 @@ pub fn csv_table_codec_entry() -> crate::wire::TableCodecEntry {
 }
 
 // ===========================================================================
+// Scoped CSV loading (used by the load-scoped HTTP endpoint)
+// ===========================================================================
+
+use crate::filter::{FilterCondition, FilterOp, FilterValue};
+
+/// Read a CSV file from S3, apply in-memory filters, and return structured data.
+///
+/// Returns `(column_names, rows_as_strings, total_filtered_count)`.
+/// Each row is a `Vec<String>` with values in column order.
+pub async fn load_csv_scoped(
+    s3_uri: &str,
+    s3_config: &S3Config,
+    conditions: &[FilterCondition],
+    limit: usize,
+) -> anyhow::Result<(Vec<String>, Vec<Vec<String>>, usize)> {
+    let (bucket, key) = crate::s3::parse_s3_uri(s3_uri)?;
+    let store = build_store(s3_config, &bucket)?;
+    let path = ObjectPath::from(key.as_str());
+
+    // Read full CSV file
+    let result = store
+        .get(&path)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read CSV from S3: {}", e))?;
+    let bytes = result
+        .bytes()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read CSV bytes: {}", e))?;
+
+    let csv_text = std::str::from_utf8(&bytes)
+        .map_err(|e| anyhow::anyhow!("CSV is not valid UTF-8: {}", e))?;
+
+    // Parse CSV into records
+    let mut rdr = csv::ReaderBuilder::new().from_reader(csv_text.as_bytes());
+    let headers: Vec<String> = rdr
+        .headers()
+        .map_err(|e| anyhow::anyhow!("failed to read CSV headers: {}", e))?
+        .iter()
+        .map(|h| h.trim().to_string())
+        .collect();
+
+    let mut all_rows: Vec<Vec<String>> = Vec::new();
+    for record in rdr.records() {
+        let record = record.map_err(|e| anyhow::anyhow!("CSV parse error: {}", e))?;
+        let row: Vec<String> = record.iter().map(|f| f.to_string()).collect();
+        all_rows.push(row);
+    }
+
+    // Apply in-memory filters
+    let filtered: Vec<Vec<String>> = all_rows
+        .into_iter()
+        .filter(|row| {
+            conditions.iter().all(|cond| {
+                let col_idx = match headers.iter().position(|h| h == &cond.column) {
+                    Some(idx) => idx,
+                    None => return true, // skip unknown columns
+                };
+                let cell = row.get(col_idx).map(|s| s.as_str()).unwrap_or("");
+                matches_filter(cell, &cond.op, &cond.value)
+            })
+        })
+        .collect();
+
+    let total = filtered.len();
+    let limited: Vec<Vec<String>> = filtered.into_iter().take(limit).collect();
+
+    Ok((headers, limited, total))
+}
+
+/// Check whether a cell value matches a filter condition (string comparison).
+fn matches_filter(cell: &str, op: &FilterOp, value: &FilterValue) -> bool {
+    match (op, value) {
+        (FilterOp::Eq, FilterValue::String(v)) => cell == v,
+        (FilterOp::Eq, FilterValue::Number(v)) => cell == format_num(*v).as_str(),
+        (FilterOp::Neq, FilterValue::String(v)) => cell != v,
+        (FilterOp::Neq, FilterValue::Number(v)) => cell != format_num(*v).as_str(),
+        (FilterOp::Gt, FilterValue::String(v)) => cell > v.as_str(),
+        (FilterOp::Gt, FilterValue::Number(v)) => cell > format_num(*v).as_str(),
+        (FilterOp::Gte, FilterValue::String(v)) => cell >= v.as_str(),
+        (FilterOp::Gte, FilterValue::Number(v)) => cell >= format_num(*v).as_str(),
+        (FilterOp::Lt, FilterValue::String(v)) => cell < v.as_str(),
+        (FilterOp::Lt, FilterValue::Number(v)) => cell < format_num(*v).as_str(),
+        (FilterOp::Lte, FilterValue::String(v)) => cell <= v.as_str(),
+        (FilterOp::Lte, FilterValue::Number(v)) => cell <= format_num(*v).as_str(),
+        (FilterOp::Between, FilterValue::Range([from, to])) => cell >= from.as_str() && cell <= to.as_str(),
+        (FilterOp::In, FilterValue::StringArray(vals)) => vals.iter().any(|v| cell == v),
+        (FilterOp::Like, FilterValue::String(pattern)) => sql_like_match(cell, pattern),
+        _ => true, // fallback for mismatched op/value
+    }
+}
+
+/// Simple SQL LIKE pattern matching (case-insensitive).
+/// `%` matches any sequence, `_` matches any single character.
+fn sql_like_match(text: &str, pattern: &str) -> bool {
+    let text = text.to_lowercase();
+    let pattern = pattern.to_lowercase();
+    let t = text.as_bytes();
+    let p = pattern.as_bytes();
+    let (tlen, plen) = (t.len(), p.len());
+
+    // DP: dp[j] = can pattern[..j] match text[..i]
+    let mut dp = vec![false; plen + 1];
+    dp[0] = true;
+    // Leading %'s match empty string
+    for j in 0..plen {
+        if p[j] == b'%' {
+            dp[j + 1] = dp[j];
+        } else {
+            break;
+        }
+    }
+
+    for i in 0..tlen {
+        let mut new_dp = vec![false; plen + 1];
+        for j in 0..plen {
+            if p[j] == b'%' {
+                // % matches zero (new_dp[j]) or one+ chars (dp[j+1])
+                new_dp[j + 1] = new_dp[j] || dp[j + 1];
+            } else if p[j] == b'_' || p[j] == t[i] {
+                new_dp[j + 1] = dp[j];
+            }
+        }
+        dp = new_dp;
+    }
+    dp[plen]
+}
+
+fn format_num(n: f64) -> String {
+    if n == n.floor() {
+        format!("{}", n as i64)
+    } else {
+        format!("{}", n)
+    }
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 

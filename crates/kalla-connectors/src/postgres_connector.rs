@@ -764,6 +764,106 @@ pub fn postgres_table_codec_entry() -> crate::wire::TableCodecEntry {
 }
 
 // ===========================================================================
+// Scoped load (ephemeral pool, filtered SELECT, text-cast rows)
+// ===========================================================================
+
+/// Column metadata returned by `load_db_scoped`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ColumnMeta {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
+}
+
+/// Load filtered rows from a Postgres table using a dedicated connection.
+///
+/// Creates an ephemeral pool from `conn_string`, queries `information_schema`
+/// for column metadata, builds a filtered SELECT, and returns structured data.
+/// Returns `(columns, rows_as_strings, row_count)`.
+pub async fn load_db_scoped(
+    conn_string: &str,
+    table_name: &str,
+    conditions: &[crate::filter::FilterCondition],
+    limit: usize,
+) -> anyhow::Result<(Vec<ColumnMeta>, Vec<Vec<String>>, usize)> {
+    // Validate table name to prevent SQL injection (it is interpolated into format!)
+    if !table_name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_')
+    {
+        anyhow::bail!("Invalid table name: '{}'", table_name);
+    }
+
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(conn_string)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to connect to source DB: {}", e))?;
+
+    // Query column metadata
+    let meta_rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT column_name, data_type, is_nullable \
+         FROM information_schema.columns \
+         WHERE table_name = $1 AND table_schema = 'public' \
+         ORDER BY ordinal_position",
+    )
+    .bind(table_name)
+    .fetch_all(&pool)
+    .await?;
+
+    if meta_rows.is_empty() {
+        pool.close().await;
+        anyhow::bail!("Table '{}' not found or has no columns", table_name);
+    }
+
+    let columns: Vec<ColumnMeta> = meta_rows
+        .iter()
+        .map(|(name, dt, nullable)| ColumnMeta {
+            name: name.clone(),
+            data_type: dt.clone(),
+            nullable: nullable == "YES",
+        })
+        .collect();
+
+    // Build SELECT with all columns cast to ::text
+    let select_cols: String = columns
+        .iter()
+        .map(|c| format!("\"{}\"::text", c.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let where_clause = crate::filter::build_where_clause(conditions);
+
+    let sql = format!(
+        "SELECT {} FROM \"{}\" {} LIMIT {}",
+        select_cols, table_name, where_clause, limit
+    );
+
+    debug!("load_db_scoped query: {}", sql);
+
+    let data_rows: Vec<PgRow> = sqlx::query(&sql).fetch_all(&pool).await?;
+    pool.close().await;
+
+    let rows: Vec<Vec<String>> = data_rows
+        .iter()
+        .map(|row| {
+            columns
+                .iter()
+                .enumerate()
+                .map(|(i, _)| {
+                    row.try_get::<Option<String>, _>(i)
+                        .unwrap_or(None)
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .collect();
+
+    let count = rows.len();
+    Ok((columns, rows, count))
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 

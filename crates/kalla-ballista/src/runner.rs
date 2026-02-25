@@ -286,9 +286,11 @@ pub struct RunnerConfig {
 // Shared state
 // ---------------------------------------------------------------------------
 
-struct RunnerState {
+pub(crate) struct RunnerState {
     job_tx: mpsc::Sender<JobRequest>,
     runner_metrics: RunnerMetrics,
+    pub(crate) db_pool: sqlx::PgPool,
+    pub(crate) s3_config: kalla_connectors::S3Config,
 }
 
 // ---------------------------------------------------------------------------
@@ -832,15 +834,43 @@ async fn execute_job_inner(
 pub async fn start_runner(bind_addr: &str, config: RunnerConfig) -> anyhow::Result<()> {
     let runner_metrics = RunnerMetrics::new();
 
+    // Initialize database pool
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://kalla:kalla_secret@localhost:5432/kalla".to_string());
+    let db_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to connect to database: {}", e))?;
+    info!("Connected to database for load-scoped queries");
+
+    // Initialize S3 config (warn but don't fail if not set — only needed for CSV sources)
+    let s3_config = kalla_connectors::S3Config::from_env().unwrap_or_else(|e| {
+        warn!("S3 config not available ({}), CSV source loading will fail", e);
+        kalla_connectors::S3Config {
+            region: "us-east-1".to_string(),
+            access_key_id: String::new(),
+            secret_access_key: String::new(),
+            endpoint_url: None,
+            allow_http: false,
+        }
+    });
+
     let (job_tx, mut job_rx) = mpsc::channel::<JobRequest>(64);
 
     let state = Arc::new(RunnerState {
         job_tx,
         runner_metrics: runner_metrics.clone(),
+        db_pool,
+        s3_config,
     });
 
     let app = Router::new()
         .route("/api/jobs", post(submit_job))
+        .route(
+            "/api/sources/:alias/load-scoped",
+            post(crate::sources::load_scoped),
+        )
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/metrics", get(metrics_handler))

@@ -25,6 +25,9 @@ reqwest.workspace = true
 uuid.workspace = true
 prometheus-client.workspace = true
 
+sqlx.workspace = true
+serde_json.workspace = true
+
 kalla-connectors.workspace = true
 kalla-core.workspace = true
 kalla-recipe.workspace = true
