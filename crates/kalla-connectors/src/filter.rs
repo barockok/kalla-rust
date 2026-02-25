@@ -26,7 +26,6 @@ pub enum FilterOp {
 pub enum FilterValue {
     String(String),
     Number(f64),
-    Range([String; 2]),
     StringArray(Vec<String>),
 }
 
@@ -72,12 +71,12 @@ impl FilterCondition {
             (FilterOp::Lte, FilterValue::String(v)) => {
                 format!("{} <= '{}'", col, sanitize_sql_string(v))
             }
-            (FilterOp::Between, FilterValue::Range([from, to])) => {
+            (FilterOp::Between, FilterValue::StringArray(vals)) if vals.len() == 2 => {
                 format!(
                     "{} BETWEEN '{}' AND '{}'",
                     col,
-                    sanitize_sql_string(from),
-                    sanitize_sql_string(to)
+                    sanitize_sql_string(&vals[0]),
+                    sanitize_sql_string(&vals[1])
                 )
             }
             (FilterOp::In, FilterValue::StringArray(vals)) => {
@@ -239,7 +238,7 @@ mod tests {
         let sql = fc(
             "invoice_date",
             FilterOp::Between,
-            FilterValue::Range(["2024-01-01".to_string(), "2024-01-31".to_string()]),
+            FilterValue::StringArray(vec!["2024-01-01".to_string(), "2024-01-31".to_string()]),
         )
         .to_sql_where();
         assert_eq!(
@@ -364,15 +363,15 @@ mod tests {
 
     // --- Deserialization tests ---
     #[test]
-    fn test_between_deserializes_as_range() {
+    fn test_between_deserializes_as_array() {
         let json = r#"{"column":"date","op":"between","value":["2024-01-01","2024-01-31"]}"#;
         let condition: FilterCondition = serde_json::from_str(json).unwrap();
         match &condition.value {
-            FilterValue::Range([from, to]) => {
-                assert_eq!(from, "2024-01-01");
-                assert_eq!(to, "2024-01-31");
+            FilterValue::StringArray(vals) if vals.len() == 2 => {
+                assert_eq!(vals[0], "2024-01-01");
+                assert_eq!(vals[1], "2024-01-31");
             }
-            other => panic!("Expected Range, got {:?}", other),
+            other => panic!("Expected StringArray with 2 elements, got {:?}", other),
         }
     }
 
@@ -430,7 +429,7 @@ mod tests {
         let sql = fc(
             "date",
             FilterOp::Between,
-            FilterValue::Range([
+            FilterValue::StringArray(vec![
                 "2024'; DROP TABLE x; --".to_string(),
                 "2024-12-31".to_string(),
             ]),
