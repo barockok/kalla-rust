@@ -11,12 +11,14 @@ pub mod factory;
 pub mod filter;
 pub mod postgres_connector;
 pub mod s3;
+pub mod scoped;
 pub mod wire;
 
 pub use csv_connector::{CsvByteRangeTable, CsvRangeScanExec};
 pub use error::ConnectorError;
 pub use factory::register_source;
 pub use filter::{build_where_clause, FilterCondition, FilterOp, FilterValue};
-pub use postgres_connector::{PostgresPartitionedTable, PostgresScanExec};
+pub use postgres_connector::{ColumnMeta, PostgresPartitionedTable, PostgresScanExec};
 pub use s3::{parse_s3_uri, S3Config};
+pub use scoped::{build_scoped_loader, ScopedLoader, ScopedResult};
 pub use wire::{exec_codecs, table_codecs, ExecCodecEntry, TableCodecEntry};
