@@ -6,6 +6,13 @@ import {
   type WizardAction,
   INITIAL_WIZARD_STATE,
 } from "@/lib/wizard-types";
+import type { ColumnInfo } from "@/lib/chat-types";
+
+/** Return true when the column list has structurally changed. */
+function columnsChanged(prev: ColumnInfo[] | null, next: ColumnInfo[]): boolean {
+  if (!prev || prev.length !== next.length) return true;
+  return prev.some((c, i) => c.name !== next[i].name || c.data_type !== next[i].data_type);
+}
 
 function wizardReducer(state: WizardState, action: WizardAction): WizardState {
   switch (action.type) {
@@ -48,10 +55,18 @@ function wizardReducer(state: WizardState, action: WizardAction): WizardState {
       return { ...state, sourceFiltersLeft: action.filters };
     case "SET_SOURCE_FILTERS_RIGHT":
       return { ...state, sourceFiltersRight: action.filters };
-    case "SET_SAMPLE":
+    case "SET_SAMPLE": {
+      const schemaKey = action.side === "left" ? "schemaLeft" : "schemaRight" as const;
+      const prevSchema = state[schemaKey];
+      // Preserve reference equality when columns haven't structurally changed
+      // to avoid re-triggering effects that depend on schema.
+      const nextSchema = columnsChanged(prevSchema, action.data.columns)
+        ? action.data.columns
+        : prevSchema;
       return action.side === "left"
-        ? { ...state, sampleLeft: action.data, schemaLeft: action.data.columns }
-        : { ...state, sampleRight: action.data, schemaRight: action.data.columns };
+        ? { ...state, sampleLeft: action.data, schemaLeft: nextSchema }
+        : { ...state, sampleRight: action.data, schemaRight: nextSchema };
+    }
     case "SET_LOADING":
       return { ...state, loading: { ...state.loading, [action.key]: action.value } };
     case "SET_ERROR":

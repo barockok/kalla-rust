@@ -23,6 +23,8 @@ pub struct LoadScopedRequest {
     #[serde(default)]
     pub conditions: Vec<kalla_connectors::FilterCondition>,
     pub limit: Option<usize>,
+    /// Optional S3 URI for ephemeral CSV sources (skips DB lookup).
+    pub csv_uri: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -52,27 +54,37 @@ pub(crate) async fn load_scoped(
 ) -> Result<Json<LoadScopedResponse>, (StatusCode, Json<serde_json::Value>)> {
     let limit = req.limit.unwrap_or(200).min(1000);
 
-    // Look up source from the `sources` table (metadata DB only)
-    let source: sqlx::postgres::PgRow =
-        sqlx::query("SELECT alias, uri, source_type FROM sources WHERE alias = $1")
-            .bind(&alias)
-            .fetch_optional(&state.db_pool)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": format!("DB error: {}", e) })),
-                )
-            })?
-            .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({ "error": format!("Source '{}' not found", alias) })),
-                )
-            })?;
-
-    let source_type: String = source.get("source_type");
-    let uri: String = source.get("uri");
+    // Resolve source type + URI: ephemeral CSV via csv_uri, or DB lookup
+    let (source_type, uri) = if let Some(csv_uri) = &req.csv_uri {
+        // Validate s3:// prefix to prevent SSRF
+        if !csv_uri.starts_with("s3://") {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "csv_uri must start with s3://" })),
+            ));
+        }
+        ("csv".to_string(), csv_uri.clone())
+    } else {
+        // Look up source from the `sources` table (metadata DB only)
+        let source: sqlx::postgres::PgRow =
+            sqlx::query("SELECT alias, uri, source_type FROM sources WHERE alias = $1")
+                .bind(&alias)
+                .fetch_optional(&state.db_pool)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "error": format!("DB error: {}", e) })),
+                    )
+                })?
+                .ok_or_else(|| {
+                    (
+                        StatusCode::NOT_FOUND,
+                        Json(serde_json::json!({ "error": format!("Source '{}' not found", alias) })),
+                    )
+                })?;
+        (source.get("source_type"), source.get("uri"))
+    };
 
     info!(
         "load_scoped: alias={}, type={}, conditions={}, limit={}",

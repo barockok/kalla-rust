@@ -49,6 +49,17 @@ export function SampleDataV2() {
 
   const autoCollapsedRef = useRef(false);
 
+  // Refs for values used inside the auto-refresh effect that should NOT
+  // trigger re-fires (they're read-only lookups, not triggers).
+  const schemaLeftRef = useRef(schemaLeft);
+  schemaLeftRef.current = schemaLeft;
+  const schemaRightRef = useRef(schemaRight);
+  schemaRightRef.current = schemaRight;
+  const sourceConfigLeftRef = useRef(sourceConfigLeft);
+  sourceConfigLeftRef.current = sourceConfigLeft;
+  const sourceConfigRightRef = useRef(sourceConfigRight);
+  sourceConfigRightRef.current = sourceConfigRight;
+
   const leftAlias = leftSource?.alias ?? "Source A";
   const rightAlias = rightSource?.alias ?? "Source B";
   const canContinue = sampleLeft !== null && sampleRight !== null;
@@ -175,12 +186,15 @@ export function SampleDataV2() {
   /*  Auto-refresh preview (debounced 500ms)                           */
   /* ---------------------------------------------------------------- */
 
+  const leftAliasDep = sourceConfigLeft?.activeAlias;
+  const rightAliasDep = sourceConfigRight?.activeAlias;
+
   useEffect(() => {
-    if (!sourceConfigLeft?.activeAlias || !sourceConfigRight?.activeAlias) return;
+    if (!leftAliasDep || !rightAliasDep) return;
 
     const timer = setTimeout(async () => {
       const buildConditions = (side: "left" | "right") => {
-        const schema = side === "left" ? schemaLeft : schemaRight;
+        const schema = side === "left" ? schemaLeftRef.current : schemaRightRef.current;
         const validCols = new Set(schema?.map((c) => c.name) ?? []);
         return filterChips
           .filter((c) => c.scope === "both" || c.scope === side)
@@ -206,15 +220,17 @@ export function SampleDataV2() {
           .filter(Boolean);
       };
 
-      const loadSide = async (side: "left" | "right", alias: string) => {
+      const loadSide = async (side: "left" | "right", alias: string, csvUri?: string) => {
         const conditions = buildConditions(side);
         try {
+          const body: Record<string, unknown> = { conditions, limit: 200 };
+          if (csvUri) body.csv_uri = csvUri;
           const res = await fetch(
             `/api/sources/${encodeURIComponent(alias)}/load-scoped`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ conditions, limit: 200 }),
+              body: JSON.stringify(body),
             },
           );
           if (!res.ok) return;
@@ -233,14 +249,20 @@ export function SampleDataV2() {
         }
       };
 
+      const cfgLeft = sourceConfigLeftRef.current;
+      const cfgRight = sourceConfigRightRef.current;
       await Promise.all([
-        loadSide("left", sourceConfigLeft.activeAlias),
-        loadSide("right", sourceConfigRight.activeAlias),
+        loadSide("left", leftAliasDep, cfgLeft?.csvS3Uri),
+        loadSide("right", rightAliasDep, cfgRight?.csvS3Uri),
       ]);
     }, 500);
 
     return () => clearTimeout(timer);
-  }, [filterChips, sourceConfigLeft?.activeAlias, sourceConfigRight?.activeAlias, schemaLeft, schemaRight, dispatch]);
+    // Only re-fire when filter chips change or the active alias changes.
+    // Schema and sourceConfig are accessed via refs to avoid infinite loops
+    // (SET_SAMPLE updates schema → new ref → effect re-fires → loop).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterChips, leftAliasDep, rightAliasDep, dispatch]);
 
   /* ---------------------------------------------------------------- */
   /*  Toggle sources expansion                                         */

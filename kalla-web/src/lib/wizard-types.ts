@@ -44,6 +44,7 @@ export interface SourceConfig {
   loaded: boolean;
   originalAlias: string;
   activeAlias: string;
+  csvS3Uri?: string;
   csvFileName?: string;
   csvFileSize?: number;
   csvRowCount?: number;

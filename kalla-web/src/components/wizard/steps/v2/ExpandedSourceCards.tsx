@@ -118,22 +118,13 @@ function SourceCard({
         });
         if (!putRes.ok) throw new Error("Upload to S3 failed");
 
-        // 3. Register CSV source
-        const registerRes = await fetch("/api/sources/register-csv", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ s3_uri, original_alias: alias }),
-        });
-        if (!registerRes.ok) throw new Error("CSV registration failed");
-        const { alias: csvAlias } = await registerRes.json();
-
-        // 4. Load scoped from the new CSV source
+        // 3. Load scoped directly with csv_uri (no DB registration)
         const loadRes = await fetch(
-          `/api/sources/${encodeURIComponent(csvAlias)}/load-scoped`,
+          `/api/sources/${encodeURIComponent(alias)}/load-scoped`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ conditions: [], limit: 200 }),
+            body: JSON.stringify({ conditions: [], limit: 200, csv_uri: s3_uri }),
           },
         );
         if (!loadRes.ok) throw new Error("CSV load failed");
@@ -143,7 +134,8 @@ function SourceCard({
           mode: "csv",
           loaded: true,
           originalAlias: alias,
-          activeAlias: csvAlias,
+          activeAlias: alias,
+          csvS3Uri: s3_uri,
           csvFileName: file.name,
           csvFileSize: file.size,
           csvRowCount: data.total_rows,
