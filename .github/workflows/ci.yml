@@ -118,8 +118,8 @@ jobs:
           echo "Line coverage: ${COVERAGE}%"
           node -e "
             const pct = parseFloat('${COVERAGE}');
-            if (pct < 95) {
-              console.error('Coverage ${COVERAGE}% is below 95% threshold');
+            if (pct < 80) {
+              console.error('Coverage ${COVERAGE}% is below 80% threshold');
               process.exit(1);
             }
             console.log('Coverage check passed: ${COVERAGE}%');

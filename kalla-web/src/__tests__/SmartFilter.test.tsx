@@ -9,18 +9,18 @@ const chips: FilterChip[] = [
 
 describe("SmartFilter", () => {
   test("renders header with sparkle icon", () => {
-    render(<SmartFilter chips={[]} onSubmit={() => {}} onRemoveChip={() => {}} loading={false} />);
+    render(<SmartFilter chips={[]} onSubmit={() => {}} onRemoveChip={() => {}} loading={false} error={null} />);
     expect(screen.getByText("Smart Filter")).toBeInTheDocument();
   });
 
   test("renders NL input and submit button", () => {
-    render(<SmartFilter chips={[]} onSubmit={() => {}} onRemoveChip={() => {}} loading={false} />);
+    render(<SmartFilter chips={[]} onSubmit={() => {}} onRemoveChip={() => {}} loading={false} error={null} />);
     expect(screen.getByPlaceholderText(/describe/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /submit/i })).toBeInTheDocument();
   });
 
   test("renders chips with scope badges", () => {
-    render(<SmartFilter chips={chips} onSubmit={() => {}} onRemoveChip={() => {}} loading={false} />);
+    render(<SmartFilter chips={chips} onSubmit={() => {}} onRemoveChip={() => {}} loading={false} error={null} />);
     expect(screen.getByText("Last 30 days")).toBeInTheDocument();
     expect(screen.getByText("Amount > 100")).toBeInTheDocument();
     expect(screen.getByText("Both")).toBeInTheDocument();
@@ -29,7 +29,7 @@ describe("SmartFilter", () => {
 
   test("calls onSubmit with input text", () => {
     const onSubmit = jest.fn();
-    render(<SmartFilter chips={[]} onSubmit={onSubmit} onRemoveChip={() => {}} loading={false} />);
+    render(<SmartFilter chips={[]} onSubmit={onSubmit} onRemoveChip={() => {}} loading={false} error={null} />);
     const input = screen.getByPlaceholderText(/describe/i);
     fireEvent.change(input, { target: { value: "last 30 days" } });
     fireEvent.click(screen.getByRole("button", { name: /submit/i }));
@@ -38,7 +38,7 @@ describe("SmartFilter", () => {
 
   test("calls onRemoveChip when X clicked", () => {
     const onRemove = jest.fn();
-    render(<SmartFilter chips={chips} onSubmit={() => {}} onRemoveChip={onRemove} loading={false} />);
+    render(<SmartFilter chips={chips} onSubmit={() => {}} onRemoveChip={onRemove} loading={false} error={null} />);
     const removeButtons = screen.getAllByRole("button", { name: /remove/i });
     fireEvent.click(removeButtons[0]);
     expect(onRemove).toHaveBeenCalledWith("c1");

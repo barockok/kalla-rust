@@ -866,13 +866,13 @@ fn sql_like_match(text: &str, pattern: &str) -> bool {
         }
     }
 
-    for i in 0..tlen {
+    for &ti in t.iter().take(tlen) {
         let mut new_dp = vec![false; plen + 1];
         for j in 0..plen {
             if p[j] == b'%' {
                 // % matches zero (new_dp[j]) or one+ chars (dp[j+1])
                 new_dp[j + 1] = new_dp[j] || dp[j + 1];
-            } else if p[j] == b'_' || p[j] == t[i] {
+            } else if p[j] == b'_' || p[j] == ti {
                 new_dp[j + 1] = dp[j];
             }
         }
