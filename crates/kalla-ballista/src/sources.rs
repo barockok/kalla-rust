@@ -80,7 +80,9 @@ pub(crate) async fn load_scoped(
                 .ok_or_else(|| {
                     (
                         StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({ "error": format!("Source '{}' not found", alias) })),
+                        Json(
+                            serde_json::json!({ "error": format!("Source '{}' not found", alias) }),
+                        ),
                     )
                 })?;
         (source.get("source_type"), source.get("uri"))

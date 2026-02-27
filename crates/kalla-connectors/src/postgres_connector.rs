@@ -787,10 +787,7 @@ pub async fn load_db_scoped(
     limit: usize,
 ) -> anyhow::Result<(Vec<ColumnMeta>, Vec<Vec<String>>, usize)> {
     // Validate table name to prevent SQL injection (it is interpolated into format!)
-    if !table_name
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '_')
-    {
+    if !table_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
         anyhow::bail!("Invalid table name: '{}'", table_name);
     }
 

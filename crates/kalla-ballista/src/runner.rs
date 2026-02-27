@@ -846,7 +846,10 @@ pub async fn start_runner(bind_addr: &str, config: RunnerConfig) -> anyhow::Resu
 
     // Initialize S3 config (warn but don't fail if not set — only needed for CSV sources)
     let s3_config = kalla_connectors::S3Config::from_env().unwrap_or_else(|e| {
-        warn!("S3 config not available ({}), CSV source loading will fail", e);
+        warn!(
+            "S3 config not available ({}), CSV source loading will fail",
+            e
+        );
         kalla_connectors::S3Config {
             region: "us-east-1".to_string(),
             access_key_id: String::new(),

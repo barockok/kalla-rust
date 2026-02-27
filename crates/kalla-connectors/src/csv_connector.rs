@@ -836,7 +836,9 @@ fn matches_filter(cell: &str, op: &FilterOp, value: &FilterValue) -> bool {
         (FilterOp::Lt, FilterValue::Number(v)) => cell < format_num(*v).as_str(),
         (FilterOp::Lte, FilterValue::String(v)) => cell <= v.as_str(),
         (FilterOp::Lte, FilterValue::Number(v)) => cell <= format_num(*v).as_str(),
-        (FilterOp::Between, FilterValue::StringArray(vals)) if vals.len() == 2 => cell >= vals[0].as_str() && cell <= vals[1].as_str(),
+        (FilterOp::Between, FilterValue::StringArray(vals)) if vals.len() == 2 => {
+            cell >= vals[0].as_str() && cell <= vals[1].as_str()
+        }
         (FilterOp::In, FilterValue::StringArray(vals)) => vals.iter().any(|v| cell == v),
         (FilterOp::Like, FilterValue::String(pattern)) => sql_like_match(cell, pattern),
         _ => true, // fallback for mismatched op/value

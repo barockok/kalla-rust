@@ -55,14 +55,13 @@ impl ScopedLoader for PostgresLoader {
         conditions: &[FilterCondition],
         limit: usize,
     ) -> anyhow::Result<ScopedResult> {
-        let (columns, rows, total_rows) =
-            crate::postgres_connector::load_db_scoped(
-                &self.conn_string,
-                &self.table_name,
-                conditions,
-                limit,
-            )
-            .await?;
+        let (columns, rows, total_rows) = crate::postgres_connector::load_db_scoped(
+            &self.conn_string,
+            &self.table_name,
+            conditions,
+            limit,
+        )
+        .await?;
         Ok(ScopedResult {
             columns,
             rows,
@@ -89,13 +88,8 @@ impl ScopedLoader for CsvLoader {
         limit: usize,
     ) -> anyhow::Result<ScopedResult> {
         let (col_names, rows, total_rows) =
-            crate::csv_connector::load_csv_scoped(
-                &self.s3_uri,
-                &self.s3_config,
-                conditions,
-                limit,
-            )
-            .await?;
+            crate::csv_connector::load_csv_scoped(&self.s3_uri, &self.s3_config, conditions, limit)
+                .await?;
 
         let columns = col_names
             .into_iter()
@@ -137,15 +131,13 @@ pub fn build_scoped_loader(
             }))
         }
         "postgres" | "postgresql" => {
-            let parsed = url::Url::parse(uri)
-                .map_err(|e| anyhow::anyhow!("Invalid source URI: {}", e))?;
+            let parsed =
+                url::Url::parse(uri).map_err(|e| anyhow::anyhow!("Invalid source URI: {}", e))?;
             let table_name = parsed
                 .query_pairs()
                 .find(|(k, _)| k == "table")
                 .map(|(_, v)| v.to_string())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Missing ?table= in source URI: {}", uri)
-                })?;
+                .ok_or_else(|| anyhow::anyhow!("Missing ?table= in source URI: {}", uri))?;
             let mut conn_url = parsed.clone();
             conn_url.set_query(None);
 
