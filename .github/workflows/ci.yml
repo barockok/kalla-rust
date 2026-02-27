@@ -150,14 +150,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker meta
-        id: meta
+      # --- Scheduler (kallad) image ---
+      - name: Docker meta (scheduler)
+        id: meta-scheduler
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}/kallad
           tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=dev-
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{version}}
 
       - name: Download kallad binary (amd64)
@@ -175,15 +176,36 @@ jobs:
       - name: Prepare binaries
         run: chmod +x bin/amd64/kallad bin/arm64/kallad
 
-      - name: Build and push multi-arch image
+      - name: Build and push scheduler image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.ci
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta-scheduler.outputs.tags }}
+          labels: ${{ steps.meta-scheduler.outputs.labels }}
+
+      # --- App (Next.js) image ---
+      - name: Docker meta (app)
+        id: meta-app
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/app
+          tags: |
+            type=sha,prefix=dev-
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{version}}
+
+      - name: Build and push app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: kalla-web/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta-app.outputs.tags }}
+          labels: ${{ steps.meta-app.outputs.labels }}
 
   # ===== Integration tests =====
   integration:

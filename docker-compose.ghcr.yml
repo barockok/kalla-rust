@@ -1,0 +1,17 @@
+# Kalla — Use pre-built GHCR images instead of local builds
+#
+# Usage (with single-VM setup):
+#   IMAGE_TAG=dev-<sha> docker compose -f docker-compose.yml -f docker-compose.single.yml -f docker-compose.ghcr.yml up -d
+#
+# Find available tags at:
+#   https://github.com/barockok/kalla-rust/pkgs/container/kalla-rust%2Fkallad
+#   https://github.com/barockok/kalla-rust/pkgs/container/kalla-rust%2Fapp
+
+services:
+  app:
+    image: ghcr.io/barockok/kalla-rust/app:${IMAGE_TAG:?Set IMAGE_TAG e.g. dev-abc1234}
+    build: !reset null
+
+  scheduler:
+    image: ghcr.io/barockok/kalla-rust/kallad:${IMAGE_TAG:?Set IMAGE_TAG e.g. dev-abc1234}
+    build: !reset null
