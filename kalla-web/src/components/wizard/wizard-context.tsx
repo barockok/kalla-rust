@@ -50,8 +50,8 @@ function wizardReducer(state: WizardState, action: WizardAction): WizardState {
       return { ...state, sourceFiltersRight: action.filters };
     case "SET_SAMPLE":
       return action.side === "left"
-        ? { ...state, sampleLeft: action.data }
-        : { ...state, sampleRight: action.data };
+        ? { ...state, sampleLeft: action.data, schemaLeft: action.data.columns }
+        : { ...state, sampleRight: action.data, schemaRight: action.data.columns };
     case "SET_LOADING":
       return { ...state, loading: { ...state.loading, [action.key]: action.value } };
     case "SET_ERROR":
